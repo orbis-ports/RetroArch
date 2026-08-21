@@ -1263,7 +1263,8 @@ endif
 # in the VSH process. None of it compiled here; the CI that stayed green only ever
 # linked HAVE_STATIC_DUMMY against stub headers. See ps4/PLAN.md.
 ifeq ($(TARGET), retroarch_orbis)
-   OBJ += frontend/drivers/platform_orbis.o
+   OBJ += frontend/drivers/platform_orbis.o \
+          gfx/drivers/ps4_gfx.o
 endif
 
 ifeq ($(DINGUX), 1)

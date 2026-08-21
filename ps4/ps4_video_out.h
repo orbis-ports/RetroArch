@@ -45,6 +45,12 @@ uint32_t *ps4_video_out_backbuffer(ps4_video_out_t *vo);
 unsigned  ps4_video_out_pitch_px(const ps4_video_out_t *vo);
 void      ps4_video_out_size(const ps4_video_out_t *vo, unsigned *width, unsigned *height);
 
+/* Zeroes EVERY buffer in place, without submitting anything. The buffers rotate, so a
+ * border cleared only in the one being drawn into reappears when the other comes round -
+ * as a band of the previous geometry that no frame ever overwrites. Doing it through flips
+ * instead would put a black frame on screen for each buffer. */
+void ps4_video_out_clear(ps4_video_out_t *vo);
+
 /* Hands the back buffer to the display and rotates. `wait` blocks until the flip has been
  * taken, which is what throttles the frontend to the display's rate; with `wait` false the
  * caller runs ahead and the display shows whatever was most recently completed. */

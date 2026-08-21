@@ -490,6 +490,9 @@ const video_driver_t *video_drivers[] = {
 #ifdef SWITCH
    &video_switch,
 #endif
+#ifdef ORBIS
+   &video_ps4,
+#endif
 #ifdef HAVE_ODROIDGO2
    &video_oga,
 #endif
