@@ -43,6 +43,14 @@
 #endif
 #endif
 
+#if defined(ORBIS)
+/* ⚠ THERE IS NO dlerror() ON THIS PLATFORM, and dylib_error() called it anyway - the ORBIS
+ * build has no <dlfcn.h> at all, so the moment HAVE_DYNAMIC is turned on the file stops
+ * compiling. It cannot have been built here since the branch was written. The module
+ * loader reports through a return code instead, so that is what gets kept. */
+static char last_dyn_err[128];
+#endif
+
 #ifdef _WIN32
 static char last_dyn_err[512];
 
@@ -128,8 +136,20 @@ dylib_t dylib_load(const char *path)
    }
    last_dyn_err[0] = 0;
 #elif defined(ORBIS)
-   int res;
-   dylib_t lib = (dylib_t)sceKernelLoadStartModule(path, 0, NULL, 0, NULL, &res);
+   /* ⚠ THE RETURN VALUE IS A MODULE ID OR A NEGATIVE ERROR, NOT A POINTER. Casting it
+    * straight to dylib_t made every FAILED load look like a successful one: an error such
+    * as 0x8002... is non-NULL, so the caller went on to resolve symbols out of a module
+    * that was never loaded. Check the sign first, and only then carry the id as an opaque
+    * handle. */
+   int      res;
+   int32_t  mod    = (int32_t)sceKernelLoadStartModule(path, 0, NULL, 0, NULL, &res);
+   dylib_t  lib    = (mod < 0) ? NULL : (dylib_t)(intptr_t)mod;
+
+   if (mod < 0)
+      snprintf(last_dyn_err, sizeof(last_dyn_err),
+            "sceKernelLoadStartModule(\"%s\") failed: 0x%08x", path, (unsigned)mod);
+   else
+      last_dyn_err[0] = '\0';
 #elif defined(IOS) || defined(OSX)
     dylib_t lib;
     static const char fw_suffix[] = ".framework";
@@ -154,7 +174,7 @@ dylib_t dylib_load(const char *path)
 
 char *dylib_error(void)
 {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(ORBIS)
    if (last_dyn_err[0])
       return last_dyn_err;
    return NULL;
@@ -193,7 +213,10 @@ function_t dylib_proc(dylib_t lib, const char *proc)
 
    if (lib)
    {
-     sceKernelDlsym((SceKernelModule)lib, proc, &ptr_sym);
+     /* sceKernelDlsym takes the module id as an int32_t (orbis/libkernel.h:125). The
+      * SceKernelModule spelling this used is orbisdev's; OpenOrbis calls the type
+      * OrbisKernelModule, and this entry point does not take it at all. */
+     sceKernelDlsym((int32_t)(intptr_t)lib, proc, &ptr_sym);
      memcpy(&sym, &ptr_sym, sizeof(void*));
    }
 #else
@@ -233,7 +256,7 @@ void dylib_close(dylib_t lib)
    last_dyn_err[0] = 0;
 #elif defined(ORBIS)
    int res;
-   sceKernelStopUnloadModule((SceKernelModule)lib, 0, NULL, 0, NULL, &res);
+   sceKernelStopUnloadModule((OrbisKernelModule)(intptr_t)lib, 0, NULL, 0, NULL, &res);
 #else
 #ifndef NO_DLCLOSE
    dlclose(lib);
