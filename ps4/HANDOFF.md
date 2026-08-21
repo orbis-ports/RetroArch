@@ -165,3 +165,44 @@ PS3 bind table**. A DualShock 4 is not a DualShock 3; Phase 4 owns this.
   `orbis-ld`, and expect a `.self` that the rewritten Makefile does not emit; the stub header
   `.github/workflows/scripts/stubs/orbis/orbis/libkernel.h` still declares orbisdev's
   `get_user_mem_size`. That stub build is what hid every defect above for six years.
+
+---
+
+## 2026-08-22, later still — Phase 3 written, not seen
+
+`gfx/drivers/ps4_gfx.c` and `ps4/ps4_video_out.c` exist, the build links them and the driver
+registers as `"ps4"`. **No pixel has been drawn.** The emulator stops before video init on symbols
+it has not implemented, so everything below is reasoned, not observed.
+
+What went in:
+
+* `configuration.c` had **no ORBIS arm at all** in the default-video-driver chain, so this platform
+  fell through to `VIDEO_NULL`. That is the real reason the port could boot to its banner without a
+  display, and it is fixed.
+* One scaler pass does the scale and the format conversion together, because video-out's only
+  format is byte-for-byte RetroArch's `SCALER_FMT_ABGR8888`.
+* RGUI's menu format comes from a table keyed on the driver ident; `"ps4"` is deliberately not in
+  it, so it takes the RGBA4444 default, which the scaler reads directly.
+
+Known gaps, written into the source at the point they matter rather than listed here:
+
+* **No font backend** - on-screen messages go to the log. RGUI draws its own bitmap font, which is
+  why the menu is unaffected.
+* **The menu replaces the frame, it does not blend over it** - the scaler converts, it does not
+  composite.
+* **The aspect-ratio setting is accepted and ignored** - the driver preserves the source's own
+  pixel ratio, so a core asking for 4:3 from a 256x224 buffer is drawn at 8:7.
+* **1080p is unmeasured.** Every frame is a scale into 2.07 million pixels on a Jaguar core. If
+  60 Hz does not hold, 720p halves the fill; PLAN.md says settle this by measurement.
+* **Alpha is left as the scaler wrote it.** ps4doom ORed `0xFF000000` into every pixel and never
+  established whether scan-out reads the primary plane's alpha. If the screen comes up black or
+  translucent, that is the first thing to try.
+
+### The order of the next session
+
+1. Decide the emulator question (teach `unemups4` the eighteen exports, or go straight to
+   hardware). Nothing else can be verified until one of those happens.
+2. Whichever way: the first thing to look for is a picture, and the first suspects if there is
+   none are the alpha above and the direct-memory buffer registration.
+3. Phases 4 and 5 are unblocked and independent of this - but `ps4_defines.h` has to go first, or
+   the joypad driver inherits a 16-vs-4 user list and a guard that never fires.

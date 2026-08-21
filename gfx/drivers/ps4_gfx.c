@@ -406,6 +406,12 @@ static void ps4_gfx_set_filtering(void *data, unsigned index, bool smooth,
    ps4->last_width = 0;
 }
 
+/* ⚠ THE ASPECT-RATIO SETTING IS ACCEPTED AND NOT HONOURED. ps4_gfx_fit() preserves the
+ * SOURCE's own pixel ratio, so a core that reports a display aspect different from its
+ * framebuffer's - a SNES core at 256x224 asking for 4:3, say - is drawn at 8:7 instead.
+ * Every ratio in the menu therefore looks the same. Wiring this up means asking the
+ * frontend for the ratio rather than computing one, and it is a change to ps4_gfx_fit(),
+ * not to this function; invalidating the scaler here is the half that is already right. */
 static void ps4_gfx_set_aspect_ratio(void *data, unsigned aspect_ratio_idx)
 {
    ps4_video_t *ps4 = (ps4_video_t*)data;
