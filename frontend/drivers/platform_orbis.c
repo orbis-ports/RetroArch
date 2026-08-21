@@ -25,30 +25,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#if defined(HAVE_LIBORBIS)
-#include <kernel.h>
-#include <systemservice.h>
-#include <orbis2d.h>
-#include <orbisPad.h>
-#include <orbisAudio.h>
-#include <modplayer.h>
-#include <ps4link.h>
-#include <orbisKeyboard.h>
-#include <debugnet.h>
-#include <orbisFile.h>
-#endif
-
+/* â  THE orbisdev HEADERS ARE GONE, and the code that used them with them. orbis2d.h,
+ * orbisPad.h, orbisAudio.h, modplayer.h, ps4link.h, orbisKeyboard.h, debugnet.h,
+ * orbisFile.h, user_mem.h and the libSce*.h spellings are all psxdev's SDK. This port
+ * builds against OpenOrbis plus the orbis-compat overlay, where the same services are
+ * <orbis/UserService.h>, <orbis/SystemService.h>, <orbis/Sysmodule.h>. See
+ * ps4/PLAN.md section 1 for why none of the old port survived. */
 #include <signal.h>
 #include <unistd.h>
-#include <orbis/libkernel.h>
-#include <libSceUserService.h>
-#include <libSceSystemService.h>
-#include <libSceSysmodule.h>
-#include <libSceLibcInternal.h>
-#include <defines/ps4_defines.h>
-#include <user_mem.h>
-
 #include <pthread.h>
+
+#include <orbis/libkernel.h>
+#include <orbis/UserService.h>
+#include <orbis/SystemService.h>
+#include <orbis/Sysmodule.h>
+
+/* The console's log channel and its termination policy - orbis-compat/optional. */
+#include <ps4_app.h>
+
+#include "../../ps4/ps4_mem.h"
 
 #include <string/stdstring.h>
 #include <boolean.h>
@@ -69,36 +64,21 @@
 #include "../../verbosity.h"
 
 #define CONTENT_PATH_ARG_INDEX 1
+
+/* â  /app0 IS THE PACKAGE MOUNT AND IS READ-ONLY. Assets that ship inside the pkg live
+ * there and nothing may be written back to them. /data is the writable side, and every
+ * path RetroArch creates, rewrites or grows has to resolve under it - which is why the
+ * core and core-info directories moved there too. */
 #define EBOOT_PATH "/app0/"
 #define USER_PATH "/data/retroarch/"
 #define CORE_DIR "cores"
 #define CORE_INFO_PATH USER_PATH
-#if defined(BUNDLE_CORES)
-#define CORE_PATH EBOOT_PATH
-#else
-#define CORE_PATH "/data/self/retroarch/"
-#endif
-#define MODULE_PATH "/data/self/system/common/lib/"
-#define MODULE_PATH_EXT "/app0/sce_module/"
+#define CORE_PATH USER_PATH
 
 static char eboot_path[512]     = {0};
-SceKernelModule s_piglet_module;
-SceKernelModule s_shacc_module;
 
 static enum frontend_fork orbis_fork_mode = FRONTEND_FORK_NONE;
 
-#define MEM_SIZE (3UL * 1024 * 1024 * 1024) /* 2600 MiB */
-#define MEM_ALIGN (16UL * 1024)
-
-/* TODO/FIXME: INCLUDING <orbislink.h> produces duplication errors */
-int initOrbisLinkAppVanillaGl(void);
-
-#if defined(HAVE_TAUON_SDK)
-void catchReturnFromMain(int exit_code)
-{
-  kill(getpid(), SIGTERM);
-}
-#endif
 
 static void frontend_orbis_get_env(int *argc, char *argv[],
       void *args, void *params_data)
@@ -184,46 +164,48 @@ static void frontend_orbis_get_env(int *argc, char *argv[],
 }
 
 static void frontend_orbis_deinit(void *data) { }
-static void frontend_orbis_shutdown(bool unused) { }
 
-static bool frontend_orbis_init_app(void)
+/* â  DO NOT RETURN FROM main() ON THIS CONSOLE. Returning tears the process down outside
+ * the system's expected path and pops CE-34878-0, which reads to a user as a crash.
+ * ps4_idle_forever() holds the process on a slow heartbeat instead - and returns anyway
+ * when the host left autoexit=1 in /app0/ps4-run.cfg, which is how an automated run
+ * still gets an exit code out of the same bytes. */
+static void frontend_orbis_shutdown(bool unused)
 {
-	if (initOrbisLinkAppVanillaGl() == 0)
-	{
-		debugNetInit(PC_DEVELOPMENT_IP_ADDRESS,PC_DEVELOPMENT_UDP_PORT,3);
-		debugNetPrintf(DEBUGNET_INFO,"Ready to have a lot of fun\n");
-		sceSystemServiceHideSplashScreen();
-		return true;
-	}
-	return false;
+   ps4_idle_forever("retroarch shutdown");
 }
 
 static void frontend_orbis_init(void *data)
 {
-   frontend_orbis_init_app();
-   sceSysmoduleLoadModuleInternal(SCE_SYSMODULE_INTERNAL_AUDIO_OUT);
+   /* First thing the port does: bring up the log channel and read the run config.
+    * ps4_log() and the termination policy both answer out of this call. */
+   ps4_app_init("retroarch", PS4_APP_STAMP);
+
+   /* Take the flexible-memory reading before the frontend has allocated anything much.
+    * There is no way to ask this kernel for the flexible ceiling, so the first reading
+    * is the closest thing to a denominator mem_stats.c will ever get - ps4/ps4_mem.h. */
+   ps4_mem_baseline();
+
+   /* UserService has to be up before anything can ask for the logged-in user id, and
+    * the pad will need the real one: scePadOpen refuses the 0xFF "main user" constant
+    * on hardware (0x809b0001) while accepting it under the emulator. */
+   sceUserServiceInitialize(NULL);
+
+   sceSystemServiceHideSplashScreen();
+
    verbosity_enable();
+   ps4_log("frontend up, build %s", PS4_APP_STAMP);
 }
 
+/* â  NOT IMPLEMENTED, AND SAYING SO. The old body assembled an argv into a local named
+ * argp that shadowed the buffer above it, set args = 2, and then returned - it looked
+ * like a core swap and was a no-op with two unused-variable warnings. Re-launching
+ * another .self is how a console frontend changes core without dlopen; that is Phase 6b
+ * work. Until then a log line beats a convincing nothing. */
 static void frontend_orbis_exec(const char *path, bool should_load_game)
 {
-   int ret;
-   char argp[512] = {0};
-   int   args     = 0;
-
-#ifndef IS_SALAMANDER
-   if (should_load_game && !path_is_empty(RARCH_PATH_CONTENT))
-   {
-      char game_path[PATH_MAX_LENGTH];
-      strlcpy(game_path, path_get(RARCH_PATH_CONTENT), sizeof(game_path));
-      const char * const argp[] = {
-         eboot_path,
-         game_path,
-         NULL
-      };
-      args = 2;
-   }
-#endif
+   ps4_log("exec(%s, load_game=%d): not implemented in this port yet",
+         path ? path : "(null)", (int)should_load_game);
 }
 
 #ifndef IS_SALAMANDER

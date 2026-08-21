@@ -27,7 +27,7 @@
 #endif
 
 #ifdef ORBIS
-#include <debugnet.h>
+#include "ps4/ps4_log.h"
 #endif
 
 RETRO_BEGIN_DECLS
@@ -64,39 +64,39 @@ void logger_send_v(const char *__format, va_list args);
 
 #ifdef ORBIS
 #define RARCH_DBG(...) do { \
-   debugNetPrintf(DEBUGNET_DEBUG,"" __VA_ARGS__); \
+   ps4_rarch_log(FILE_PATH_LOG_DBG, "RetroArch Salamander: " __VA_ARGS__); \
 } while (0)
 
 #define RARCH_LOG(...) do { \
-   debugNetPrintf(DEBUGNET_INFO,"" __VA_ARGS__); \
+   ps4_rarch_log(FILE_PATH_LOG_INFO, "RetroArch Salamander: " __VA_ARGS__); \
 } while (0)
 
 #define RARCH_LOG_V(tag, fmt, vp) do { \
-   debugNetPrintf(DEBUGNET_DEBUG,tag,fmt,vp); \
+   ps4_rarch_log_v(FILE_PATH_LOG_INFO, tag, fmt, vp); \
 } while (0)
 
 #define RARCH_ERR(...) do { \
-   debugNetPrintf(DEBUGNET_ERROR,"" __VA_ARGS__); \
+   ps4_rarch_err(FILE_PATH_LOG_ERROR, "RetroArch Salamander: " __VA_ARGS__); \
 } while (0)
 
 #define RARCH_ERR_V(tag, fmt, vp) do { \
-   debugNetPrintf(DEBUGNET_ERROR,tag,fmt,vp); \
+   ps4_rarch_err_v(FILE_PATH_LOG_ERROR, tag, fmt, vp); \
 } while (0)
 
 #define RARCH_WARN(...) do { \
-   debugNetPrintf(DEBUGNET_INFO,"" __VA_ARGS__); \
+   ps4_rarch_log(FILE_PATH_LOG_WARN, "RetroArch Salamander: " __VA_ARGS__); \
 } while (0)
 
 #define RARCH_WARN_V(tag, fmt, vp) do { \
-   debugNetPrintf(DEBUGNET_DEBUG,tag,fmt,vp); \
+   ps4_rarch_log_v(FILE_PATH_LOG_WARN, tag, fmt, vp); \
 } while (0)
 
 #define RARCH_LOG_OUTPUT(...) do { \
-   debugNetPrintf(DEBUGNET_INFO,"" __VA_ARGS__); \
+   ps4_rarch_log(NULL, "RetroArch Salamander: " __VA_ARGS__); \
 } while (0)
 
 #define RARCH_LOG_OUTPUT_V(tag, fmt, vp) do { \
-   debugNetPrintf(DEBUGNET_INFO,tag,fmt,vp); \
+   ps4_rarch_log_v(NULL, tag, fmt, vp); \
 } while (0)
 
 #else
@@ -144,39 +144,39 @@ void logger_send_v(const char *__format, va_list args);
 
 #ifdef ORBIS
 #define RARCH_DBG(...) do { \
-   debugNetPrintf(DEBUGNET_DEBUG,"" __VA_ARGS__); \
+   ps4_rarch_log(FILE_PATH_LOG_DBG, "" __VA_ARGS__); \
 } while (0)
 
 #define RARCH_LOG(...) do { \
-   debugNetPrintf(DEBUGNET_INFO,"" __VA_ARGS__); \
+   ps4_rarch_log(FILE_PATH_LOG_INFO, "" __VA_ARGS__); \
 } while (0)
 
 #define RARCH_LOG_V(tag, fmt, vp) do { \
-   debugNetPrintf(DEBUGNET_DEBUG,tag,fmt,vp); \
+   ps4_rarch_log_v(FILE_PATH_LOG_INFO, tag, fmt, vp); \
 } while (0)
 
 #define RARCH_ERR(...) do { \
-   debugNetPrintf(DEBUGNET_ERROR,"" __VA_ARGS__); \
+   ps4_rarch_err(FILE_PATH_LOG_ERROR, "" __VA_ARGS__); \
 } while (0)
 
 #define RARCH_ERR_V(tag, fmt, vp) do { \
-   debugNetPrintf(DEBUGNET_ERROR,tag,fmt,vp); \
+   ps4_rarch_err_v(FILE_PATH_LOG_ERROR, tag, fmt, vp); \
 } while (0)
 
 #define RARCH_WARN(...) do { \
-   debugNetPrintf(DEBUGNET_INFO,"" __VA_ARGS__); \
+   ps4_rarch_log(FILE_PATH_LOG_WARN, "" __VA_ARGS__); \
 } while (0)
 
 #define RARCH_WARN_V(tag, fmt, vp) do { \
-   debugNetPrintf(DEBUGNET_DEBUG,tag,fmt,vp); \
+   ps4_rarch_log_v(FILE_PATH_LOG_WARN, tag, fmt, vp); \
 } while (0)
 
 #define RARCH_LOG_OUTPUT(...) do { \
-   debugNetPrintf(DEBUGNET_INFO,"" __VA_ARGS__); \
+   ps4_rarch_log(NULL, "" __VA_ARGS__); \
 } while (0)
 
 #define RARCH_LOG_OUTPUT_V(tag, fmt, vp) do { \
-   debugNetPrintf(DEBUGNET_INFO,tag,fmt,vp); \
+   ps4_rarch_log_v(NULL, tag, fmt, vp); \
 } while (0)
 
 #else

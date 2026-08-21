@@ -284,9 +284,8 @@ input_device_driver_t *joypad_drivers[] = {
 #ifdef _XBOX1
    &xdk_joypad,
 #endif
-#if defined(ORBIS)
-   &ps4_joypad,
-#endif
+/* ⚠ ps4_joypad.c IS ORBISDEV'S, built on orbisPad.h, and does not compile here. The
+ * libScePad driver that replaces it is Phase 4 - ps4/PLAN.md. */
 #if defined(__PSL1GHT__) || defined(__PS3__)
    &ps3_joypad,
 #endif
@@ -356,9 +355,7 @@ input_device_driver_t *joypad_drivers[] = {
 };
 
 input_driver_t *input_drivers[] = {
-#ifdef ORBIS
-   &input_ps4,
-#endif
+/* ⚠ Same as ps4_joypad above: input/drivers/ps4_input.c is orbisdev's. Phase 4. */
 #if defined(__PSL1GHT__) || defined(__PS3__)
    &input_ps3,
 #endif
