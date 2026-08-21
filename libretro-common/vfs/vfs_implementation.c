@@ -1139,7 +1139,11 @@ int64_t retro_vfs_file_truncate_impl(libretro_vfs_implementation_file *stream, i
 	   return 0;
    }
 #endif
-#elif !defined(VITA) && !defined(PSP) && !defined(PS2) && !defined(ORBIS) && (!defined(SWITCH) || defined(HAVE_LIBNX))
+/* ORBIS is not in this exclusion any more: the OpenOrbis SDK declares ftruncate
+ * (include/unistd.h:66). It was excluded when the PS4 build was orbisdev's, and the
+ * cost of leaving it there is that retro_vfs_truncate_impl returns -1 unconditionally -
+ * savestates and any caller that shrinks a file fail for a reason that is not real. */
+#elif !defined(VITA) && !defined(PSP) && !defined(PS2) && (!defined(SWITCH) || defined(HAVE_LIBNX))
    if (stream && stream->fp && ftruncate(fileno(stream->fp), (off_t)len) == 0)
    {
       stream->size = len;
@@ -1932,7 +1936,13 @@ static bool dirent_check_err(libretro_vfs_implementation_dir *rdir)
 {
 #if defined(_WIN32)
    return (rdir->directory == INVALID_HANDLE_VALUE);
-#elif defined(VITA) || defined(ORBIS)
+/* ⚠ ORBIS WAS IN THIS BRANCH AND IS NOT A VITA. The struct above gives ORBIS the
+ * generic `DIR *directory` - it is absent from the VITA arm - and every other dirent
+ * function here (opendir, readdir, get_name, is_dir) correctly takes the POSIX path for
+ * it. Only this check did not, and `DIR* < 0` compiles: 0 is a null pointer constant, so
+ * the comparison is well-formed and ALWAYS FALSE. A failed opendir() was therefore
+ * reported as success, and the caller went on to readdir() a null handle. */
+#elif defined(VITA)
    return (rdir->directory < 0);
 #elif defined(__PSL1GHT__) || defined(__PS3__)
    return (rdir->error != FS_SUCCEEDED);
