@@ -257,8 +257,13 @@ RetroArch's compile surface here is measured, not estimated: `make -f Makefile.o
 | 7 — RADV | 3-6 | thunks are mechanical; `VULKAN_WSI_HEADLESS` is moderate; the long tail is RetroArch's own Vulkan assumptions (slang → glslang → C++) |
 | **all of it** | **15-25, median ~18** | |
 
-⚠ **Phase 1 is the only real unknown, and the rest of this table is not worth trusting until it is
-done.** ps4doom took two days because doomgeneric barely touches POSIX. RetroArch touches all of it:
+⚠ **MEASURED 2026-08-22, AND THE TABLE ABOVE IS NOW WRONG WHERE IT MATTERS MOST.** Phases 0 and 1
+cost one sitting between them, not the 3-7 sessions budgeted, because the libc gap that the whole
+spread hung on turned out to be **empty**: 239 objects compile with zero warnings and not one shim
+had to be written. `ps4/HANDOFF.md` is the account. The rows below Phase 1 have not been re-derived
+- they were always conditioned on Phase 1's answer, and the answer was the good one.
+
+⚠ **Phase 1 was the only real unknown, and this is why nothing after it was worth estimating first.** ps4doom took two days because doomgeneric barely touches POSIX. RetroArch touches all of it:
 VFS, dirent, threading, mmap, sockets, sysconf. `orbis-compat` has three consumers already and may
 cover the lot in one session — or `vfs_implementation.c` and `readdir` may eat six. Phases 0+1 are
 ~3 sessions and collapse the spread on everything after them from ±10 to ±3. Any other order is
