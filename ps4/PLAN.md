@@ -180,8 +180,10 @@ RetroArch side: `libretro-common/gfx/scaler` for core-pixfmt → XRGB8888 scale-
 RGBA4444 menu framebuffer composited over it, `video_driver_t` with `frame`/`set_nonblock_state`/
 `viewport_info`, no `gfx_ctx`. Register `&video_ps4` in `gfx/video_driver.c` under `#ifdef ORBIS`.
 
-Open question to settle by measurement, not by choice up front: 1080p or 720p display buffer. A
-Jaguar core scaling 240p→1080p per frame in software may not hold 60 Hz; 720p halves the fill.
+⚠ **SETTLED 2026-08-22, BY MEASUREMENT: 1080p, and it holds 60 Hz.** The scale costs 6.1 ms of a
+16.67 ms frame - 37% - and the achieved interval is 16683 us, which is the display pacing us
+rather than the other way round. 720p remains the lever if a core ever needs more than the 10.5 ms
+that leaves, and it should be a runtime option rather than a new default. See `ps4/HANDOFF.md`.
 
 ### Phase 4 — input
 `libScePad`. The existing `ps4_joypad.c` is orbisdev's `orbisPad` and gets rewritten.

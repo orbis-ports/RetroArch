@@ -279,12 +279,48 @@ that `write()` fills. An empty ring plays silence rather than skipping the call:
 exactly one grain and will not take a partial one, so something must be handed to it either way.
 Same shape as ps4doom's mixer thread and as `switch_thread_audio.c` in this tree.
 
+### 1080p holds 60 Hz, measured
+
+PLAN.md Phase 3 said to settle 1920x1080 against 1280x720 by measurement and not by choosing up
+front. Measured, on hardware, over several minutes:
+
+    300 frames: scale 6124 us/frame, frame 16683 us (59.9 fps)
+
+Stable to within 30 microseconds across every report. So:
+
+* **The frontend is paced by the display, not by itself.** 16683 us is the vsync interval; nothing
+  is costing an extra refresh.
+* **The scale costs 6.1 ms of a 16.67 ms budget — 37%.** That leaves ~10.5 ms per frame for a core.
+* **1080p stays.** 720p would roughly halve the scale, and there is no reason to spend the
+  resolution to buy time nothing needs yet.
+
+⚠ The measurement is a 320x240 source. Point-scaling cost is dominated by DESTINATION pixels, so a
+higher-resolution core moves this number much less than it moves its own; but a core that needs
+more than 10.5 ms per frame will not hold 60 Hz, and 720p is then the lever - as a runtime option,
+not a new default.
+
+⚠ And it is measured with the default filter. `video_smooth` selects SCALER_TYPE_BILINEAR instead
+of POINT, which is a different and larger number. Nobody has measured that one.
+
+### Audio under load, measured
+
+    audio: 1875 grains, 10 underruns
+    audio: 3750 grains, 10 underruns
+    audio: 5625 grains, 10 underruns
+
+Ten underruns while the pipeline fills, then flat for as long as the run lasts. And a
+free confirmation that the thread keeps the port's clock exactly: 1875 grains per 10 s times 256
+frames is 48 000 frames a second, to the sample.
+
+100% underruns while sitting in the menu is correct, not a fault: there is no core, the ring is
+empty, and the thread plays silence to keep the port's continuity. A thread that skipped the call
+instead would have to prime the port again on the way back into a game.
+
 ### Still unconfirmed
 
-* **60 Hz at 1080p.** Neither 2048 nor a sine generator is a load. A core drawing a full
-  framebuffer every frame is.
 * **A large PRX.** 185 KB proves the mechanism, not the scale.
-* **The audio ring under load.** The underrun counter is there; nothing has yet made it move.
+* **A demanding core.** Nothing has yet asked for more than a fraction of the 10.5 ms of headroom.
+* **The bilinear scaler path.**
 
 ### A rough edge worth fixing
 
