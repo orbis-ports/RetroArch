@@ -42,6 +42,8 @@
 #include "../../verbosity.h"
 #include "../../configuration.h"
 
+#include <ps4_app.h>
+
 /* The console's main video-out mode, and the size RADV's WSI arm registers its buffers at.
  * There is no mode set here: the display is whatever the system gave the process. */
 #define ORBIS_VK_WIDTH  1920
@@ -62,12 +64,27 @@ static void gfx_ctx_orbis_vk_destroy(void *data)
    if (!ctx)
       return;
 
+   /* ⚠ BRACKETED IN THE LOG ON PURPOSE. Every title built against this workshop's Mesa
+    * hangs when the console closes it, and nothing has ever established whether the driver
+    * teardown itself is what wedges: no capture from this console has ever contained
+    * "wsi/orbis: scan-out down", because the titles that came before end by idling or by
+    * CE-34878-0 and both routes skip vkDestroyInstance entirely.
+    *
+    * These two lines make the question answerable from a live process. Unloading content
+    * tears the video driver down and builds it again, so a run that says "destroying" and
+    * then never says "destroyed" has deadlocked INSIDE teardown, with the log still
+    * flowing and the console still usable - which is a great deal more than a hang that
+    * costs a restart to observe. */
+   ps4_log("vulkan: destroying the context");
+
    vulkan_context_destroy(&ctx->vk, true);
 #ifdef HAVE_THREADS
    if (ctx->vk.context.queue_lock)
       slock_free(ctx->vk.context.queue_lock);
 #endif
    free(ctx);
+
+   ps4_log("vulkan: context destroyed");
 }
 
 static void *gfx_ctx_orbis_vk_init(void *video_driver)
