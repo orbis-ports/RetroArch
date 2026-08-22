@@ -139,9 +139,6 @@ static const video_display_server_t dispserv_null = {
 };
 
 static const gfx_ctx_driver_t *gfx_ctx_gl_drivers[] = {
-#if defined(ORBIS) && defined(HAVE_VULKAN)
-   &gfx_ctx_orbis_vk,
-#endif
 /* ⚠ orbis_ctx IS PIGLET, and this port does not use it. gfx/drivers_context/orbis_ctx.c
  * drives Sony's GLES2 out of the VSH process (scePigletSetConfigurationVSH,
  * -lScePigletv2VSH_stub). Video here is CPU-drawn until the RADV port lands - Phase 3

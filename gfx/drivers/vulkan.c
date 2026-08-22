@@ -3270,6 +3270,9 @@ static const gfx_ctx_driver_t *gfx_ctx_vk_drivers[] = {
 #if defined(HAVE_VULKAN_DISPLAY)
    &gfx_ctx_khr_display,
 #endif
+#if defined(ORBIS)
+   &gfx_ctx_orbis_vk,
+#endif
    &gfx_ctx_null,
    NULL
 };
