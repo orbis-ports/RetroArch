@@ -185,14 +185,25 @@ static void frontend_orbis_get_env(int *argc, char *argv[],
 
 static void frontend_orbis_deinit(void *data) { }
 
-/* â  DO NOT RETURN FROM main() ON THIS CONSOLE. Returning tears the process down outside
- * the system's expected path and pops CE-34878-0, which reads to a user as a crash.
- * ps4_idle_forever() holds the process on a slow heartbeat instead - and returns anyway
- * when the host left autoexit=1 in /app0/ps4-run.cfg, which is how an automated run
- * still gets an exit code out of the same bytes. */
+/* â  THIS IDLED FOREVER, AND THAT WAS THE WRONG POLICY FOR A FRONTEND.
+ *
+ * The rule it was copied from is real: returning from main() on a retail console tears the
+ * process down outside the system's expected path and pops CE-34878-0, which reads to a
+ * user as a crash. ps4_idle_forever() exists so a DEMO - something with no quit, that would
+ * otherwise fall off the end of main() - holds the screen instead of showing that dialog.
+ *
+ * A frontend is not a demo. It has a Quit entry, and the console has a close button, and
+ * both of them mean "end". Holding the process on a heartbeat turns either into a hang that
+ * only a console restart clears - which is exactly what this port did.
+ *
+ * â  AND IT IS THE SECOND HALF OF A PROBLEM THIS PORT DOES NOT OWN. Every title built
+ * against this workshop's Mesa hangs on close; OpenGothic hit it first and now dies visibly
+ * rather than hanging, which is the same trade being made here. The dialog is ugly and the
+ * process ends; idling is tidy and it does not. Until the driver-side question is answered,
+ * ending is the better half. */
 static void frontend_orbis_shutdown(bool unused)
 {
-   ps4_idle_forever("retroarch shutdown");
+   ps4_log("shutdown requested - ending the process rather than idling; expect CE-34878-0");
 }
 
 static void frontend_orbis_init(void *data)
