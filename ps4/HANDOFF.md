@@ -365,9 +365,15 @@ down and builds it again — gives:
 **One millisecond, clean, and it comes straight back up.** So the close-hang is not in destroying
 the driver. It is in terminating the process while RADV is live.
 
-That splits a problem this port did not create and cannot fix alone. The next cut is equally cheap:
-switch the video driver to `ps4` (software), so RADV is fully down, and then close the app. If it
-closes, "RADV alive at kill time" is the whole condition.
+That splits a problem this port did not create and cannot fix alone. And the next cut came back
+narrower than expected: **Close Content, then Quit, exits cleanly even on the Vulkan driver** — and
+Close Content re-initialises the driver, so RADV is live at that point. "RADV alive at kill time" is
+therefore NOT the condition. What is left is the combination with a loaded core; the .prx alone was
+fine for a whole session on the software driver, and Vulkan alone is fine here. Nobody has narrowed
+it further than that yet.
+
+Practically it also means the console no longer has to be restarted between tests, which is what
+made every experiment above expensive.
 
 ⚠ RetroArch is a better instrument for this than the title that first hit it: the teardown is one
 menu entry rather than an exit, repeatable in a single session, with the log flowing throughout.

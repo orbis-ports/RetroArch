@@ -119,10 +119,23 @@ else
   HAVE_MENU                 := 1
   HAVE_MENU_COMMON          := 1
   HAVE_RGUI                 := 1
-  HAVE_XMB                  := 0
-  HAVE_OZONE                := 0
-  HAVE_MATERIALUI           := 0
-  HAVE_GFX_WIDGETS          := 0
+
+  # ⚠ THE GPU MENUS COME BACK WITH VULKAN, AND ONLY WITH IT. XMB, Ozone, MaterialUI and the
+  # on-screen widgets all draw through the video driver's texture path rather than into a
+  # framebuffer of their own, which is why the software build has RGUI and nothing else -
+  # RGUI is the one that rasterises itself. With RADV underneath there is a driver that can
+  # carry them, and this is the visible half of what Phase 7 was for.
+  ifeq ($(HAVE_VULKAN),1)
+    HAVE_XMB                := 1
+    HAVE_OZONE              := 1
+    HAVE_MATERIALUI         := 1
+    HAVE_GFX_WIDGETS        := 1
+  else
+    HAVE_XMB                := 0
+    HAVE_OZONE              := 0
+    HAVE_MATERIALUI         := 0
+    HAVE_GFX_WIDGETS        := 0
+  endif
   HAVE_CONFIGFILE           := 1
   HAVE_LIBRETRODB           := 1
   HAVE_CORE_INFO_CACHE      := 1
