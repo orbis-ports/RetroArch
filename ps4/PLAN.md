@@ -97,7 +97,12 @@ What the pieces already are:
   `retro_set_environment`/`retro_set_video_refresh`. So the module needs **zero imports from the
   eboot**, which is the case the PS4 module loader handles and the hard case never arises.
 
-What is genuinely unknown, and what Phase 6b is for:
+⚠ **ALL THREE OF THE UNKNOWNS BELOW CAME BACK ANSWERED ON 2026-08-22, and the answer was yes.**
+A core builds and loads as a PRX, the two libcs did not collide, and `crtlib.o`'s init was enough.
+See `ps4/HANDOFF.md`. The scale question is the only part still open: 185 KB is not tens of
+megabytes.
+
+What was unknown, and what Phase 6b was for:
 
 * whether a core-sized PRX (tens of MB, heavy relocation) loads as readily as a 300-byte sample;
 * whether the PRX and the eboot end up sharing one libc/heap, or two — the consumer sample ships

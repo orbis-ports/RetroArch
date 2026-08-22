@@ -206,3 +206,64 @@ Known gaps, written into the source at the point they matter rather than listed 
    none are the alpha above and the direct-memory buffer registration.
 3. Phases 4 and 5 are unblocked and independent of this - but `ps4_defines.h` has to go first, or
    the joypad driver inherits a 16-vs-4 user list and a guard that never fires.
+
+---
+
+## 2026-08-22 — on hardware: menu, pad, a game, and a core as a module
+
+Everything below was run on a retail console under GoldHEN, in this order, each installed over
+the last.
+
+| build | result |
+|---|---|
+| dummy core, software video | **menu on screen, first try.** Phase 3 had never drawn a pixel anywhere. |
+| + libScePad | **pad works.** D-pad, buttons, and analog all reach the frontend. |
+| + sceAudioOut | port opens, volume set. Nothing to play yet. |
+| 2048 linked statically | **a game runs.** Phase 6. |
+| 2048 as a .prx, `HAVE_DYNAMIC=1` | **the module loads and runs**, and picked up the save the static build had written. |
+
+### D3's three unknowns, answered
+
+The plan said static first because it removed three questions at once, and that a core-sized PRX
+was unproven. All three came back:
+
+1. **A libretro core builds and loads as a PRX.** `create-fself --lib` with `crtlib.o` in place of
+   `crt1.o`; `sceKernelLoadStartModule` finds it, `sceKernelDlsym` resolves `retro_*` by name.
+   185 KB, so this says nothing yet about a core of tens of megabytes.
+2. **The libc/heap question did not bite.** The module links its own `-lc -lc++` and the frontend
+   has its own; nothing crashed, `retro_init` ran, and the core allocated and drew.
+3. **`crtlib.o`'s init path is enough** for a core to be usable by the time `retro_init` is called.
+
+⚠ **This was the first time `libretro-common/dynamic/dylib.c`'s ORBIS branch had ever executed.**
+It could not compile until the fixes in `9ba278d81b`, so the code that loads every dynamic core on
+this platform went from "never built" to "running a game" in one step. Treat its error paths as
+unexercised.
+
+### What a dynamic core costs that a static one does not
+
+* It must carry its own `libretro-common`. `-DSTATIC_LINKING` omits those files for the static
+  build because the frontend supplies them; a module cannot see the frontend's.
+* It must NOT carry the copy it shipped with, if that copy predates this port - `libretro-2048`'s
+  still has `#include <orbisFile.h>`. `ps4/build-core.sh --common` points it at the frontend's.
+
+### Still unconfirmed
+
+* **Audio.** The port opens and the volume is set, but 2048 makes no sound, so nothing has proved a
+  sample reached the speakers. Needs a core with audio and no content requirement.
+* **60 Hz at 1080p.** 2048 is not a load. A core drawing a full framebuffer every frame is.
+* **A large PRX.** 185 KB proves the mechanism, not the scale.
+
+### A rough edge worth fixing
+
+RetroArch creates `/data/retroarch/*` as `drwxr-x---`, and GoldHEN's FTP daemon runs as another
+user, so `put` into `cores/` is refused until something chmods it. Copying a core over the network
+is the only way to deliver one, so the directory mode is part of the delivery path, not a detail.
+
+### ⚠ A correction to the record
+
+An earlier entry in this session claimed `dir_check_defaults("/app0/custom.ini")` had stopped the
+default directories being created on hardware. **It had not.** The directories were there all
+along, dated from an earlier boot; the evidence for the claim was an FTP listing truncated by
+`head -30` before it reached `retroarch/` alphabetically. The change that came out of it - passing
+`NULL`, and checking the result - is kept on its own merits, and its comment now says what actually
+happened.
