@@ -444,3 +444,44 @@ requirement — but a spare that named seven absent files was worth nothing.
 * **Assets are hand-copied.** Nothing ships them and nothing tells a user they are missing; XMB
   without them looks like a menu driver that failed to start.
 * **The RGB565 software path** costs 14.4 ms of a 16.7 ms frame, against 6.1 ms for XRGB8888.
+
+---
+
+## 2026-08-22 — slang shaders run, and Beetle PSX HW builds as a 17 MB module
+
+**Slang shaders work on hardware.** `crt/crt-geom.slangp` renders. That is the whole chain
+executing for the first time: `.slang` -> glslang (compiled into the eboot) -> SPIR-V ->
+SPIRV-Cross -> RADV/ACO -> GCN ISA on Liverpool, compiled at run time on the console. 12 MB of
+`libretro/slang-shaders` (crt, interpolation, misc) copied to `/data/retroarch/shaders`.
+
+**Beetle PSX HW is built and on the console** — 113 objects, a 17 MB `.prx` with 55 `retro_*`
+exports. Three things had to be settled to get there, and each is general rather than specific to
+this core:
+
+* ⚠ **A dynarec needs a mirrored-mapping story this platform does not have.** Lightrec maps the
+  same PSX RAM pages at several addresses through `memfd_create`/`MAP_SHM`; neither exists here
+  (`libretro.c:2345-2574`). Built with `HAVE_LIGHTREC=0`, so the MIPS interpreter. Any dynarec core
+  will hit the same wall, and it is its own piece of work.
+* ⚠ **A core must use the Vulkan headers it was written against, not the driver's.** Forcing
+  Mesa's current `vulkan_core.h` broke it on `VK_IMAGE_TYPE_RANGE_SIZE`, an enum removed from the
+  spec years after this core started using it. The rule that the loader shim needs the exact
+  headers RADV was built against does NOT generalise to consumers: a core is an ordinary Vulkan
+  client and the ABI is backward compatible. The frontend is the special case, not the core.
+* ⚠ **The core's Makefile has the stale-object problem too.** Turning `HAVE_LIGHTREC` off left
+  `cpu.o` compiled against the old flags, and the link failed on `lightrec_destroy` for a source
+  file that no longer referenced it. Same shape as the one fixed in `Makefile.orbis`; the fix
+  there was a flags stamp, the fix here was `find -name '*.o' -delete`.
+
+The core's own Makefile grew an `orbis` platform arm - the same shape as its `vita` one - which
+compiles the objects; the archive and the `create-fself --lib` step are done outside it, because a
+libretro module here is a PRX rather than a shared object.
+
+### D3's last unknown, answered
+
+The plan said 185 KB proves the mechanism and not the scale. 17 MB is the scale, and it links.
+Whether it LOADS at that size is still for the console to say.
+
+### What it needs before it can run
+
+A PlayStation BIOS in `/data/retroarch/system` (`scph5500/5501/5502.bin`) and a disc image. Neither
+is something this port can supply.
