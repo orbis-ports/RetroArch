@@ -894,38 +894,14 @@ build-static-retroarch-dummy-psl1ght:
   script:
     - "make -f Makefile.psl1ght.salamander -j$NUMPROC create-salamander"
 
-build-static-retroarch-orbis:
-  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-orbis:latest
-  stage: prepare-for-static-cores
-  before_script:
-    - export NUMPROC=$(($(nproc)/3))
-  artifacts:
-    paths:
-    -  retroarch-precompiled/
-    expire_in: 10 min
-  dependencies: []
-  needs:
-    # Dummy build requires no core
-    - build-static-retroarch-dummy-orbis
-  script:
-    # Allow failure since we don't have a core
-    - "make -f Makefile.orbis -j$NUMPROC ||:"
-    - "mkdir .retroarch-precompiled"
-    - "cp -r ./* .retroarch-precompiled/"
-    - "mv .retroarch-precompiled/ retroarch-precompiled/"
-
-build-static-retroarch-dummy-orbis:
-  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-orbis:latest
-  stage: build
-  before_script:
-    - export NUMPROC=$(($(nproc)/3))
-  artifacts:
-    paths:
-    -  retroarch_orbis.self
-    expire_in: 10 min
-  dependencies: []
-  script:
-    - "make -f Makefile.orbis -j$NUMPROC HAVE_STATIC_DUMMY=1"
+# ⚠ THE ORBIS JOBS ARE GONE, AND SO IS THEIR CONTAINER. They ran
+# libretro-build-orbis, which carries the orbisdev SDK; this port builds against
+# OpenOrbis plus the orbis-compat overlay, neither of which is in any published
+# image. They also expected retroarch_orbis.self, which Makefile.orbis no longer
+# emits -- it produces eboot.bin and a .pkg. And the one that mattered ran with
+# `||:`, so it could not fail: six years of bit-rot hid behind a job that was
+# green by construction. See ps4/PLAN.md. Restoring CI for this platform means
+# publishing an image with the toolchain in it first.
 
 build-static-retroarch-djgpp:
   image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-djgpp-build-container:latest

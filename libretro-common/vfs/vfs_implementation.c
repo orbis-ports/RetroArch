@@ -1836,6 +1836,14 @@ int retro_vfs_mkdir_impl(const char *dir)
       int ret = sceIoMkdir(dir, 0777);
 #elif defined(__QNX__)
       int ret = mkdir(dir, 0777);
+#elif defined(ORBIS)
+      /* ⚠ 0777, LIKE THE VITA AND QNX ABOVE, AND FOR A DELIVERY REASON RATHER THAN A
+       * philosophical one. The generic 0750 below leaves /data/retroarch/cores writable
+       * only by the process that made it, and GoldHEN's FTP daemon - the only way a core
+       * gets onto this console at all - runs as somebody else. With 0750 every core has to
+       * be preceded by a manual chmod, which makes the directory mode part of the delivery
+       * path rather than a detail. */
+      int ret = mkdir(dir, 0777);
 #elif defined(GEKKO) || defined(WIIU)
       /* On GEKKO platforms, mkdir() fails if
        * the path has a trailing slash. We must

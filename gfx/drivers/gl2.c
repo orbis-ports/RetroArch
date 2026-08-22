@@ -1353,7 +1353,10 @@ static void gl2_size_format(GLint* internalFormat)
 #endif
 }
 
-#if !defined(HAVE_PSGL) && !defined(ORBIS) && !defined(VITA) && !defined(IOS)
+/* ORBIS is not excluded here any more: the exclusion encoded "the PS4's GL is Piglet, which
+ * has no glTexStorage", and this port has no Piglet. If a GL path ever comes back on this
+ * console it will be Mesa's, where tex-storage is the fast path rather than a missing one. */
+#if !defined(HAVE_PSGL) && !defined(VITA) && !defined(IOS)
 static bool gl2_tex_storage_allowed(void)
 {
    static int allowed = -1;
@@ -1405,7 +1408,7 @@ static void gl2_load_texture_image(GLenum target,
       GLenum type,
       const GLvoid * data)
 {
-#if !defined(HAVE_PSGL) && !defined(ORBIS) && !defined(VITA) && !defined(IOS)
+#if !defined(HAVE_PSGL) && !defined(VITA) && !defined(IOS)
 #ifdef HAVE_OPENGLES2
    enum gl_capability_enum cap = GL_CAPS_TEX_STORAGE_EXT;
 #else

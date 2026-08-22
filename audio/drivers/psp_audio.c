@@ -33,10 +33,6 @@
 #elif defined(PSP)
 #include <pspkernel.h>
 #include <pspaudio.h>
-#elif defined(ORBIS)
-#include <libSceAudioOut.h>
-#include <defines/ps4_defines.h>
-#include <verbosity.h>
 #endif
 
 #include "../audio_driver.h"
@@ -74,10 +70,6 @@ static int psp_configure_audio(unsigned rate)
    return sceAudioOutOpenPort(
          SCE_AUDIO_OUT_PORT_TYPE_MAIN, AUDIO_OUT_COUNT,
          rate, SCE_AUDIO_OUT_MODE_STEREO);
-#elif defined(ORBIS)
-   return sceAudioOutOpen(0xff,
-         SCE_AUDIO_OUT_PORT_TYPE_MAIN, 0, AUDIO_OUT_COUNT,
-         rate, SCE_AUDIO_OUT_MODE_STEREO);
 #else
    return sceAudioSRCChReserve(AUDIO_OUT_COUNT, rate, 2);
 #endif
@@ -110,7 +102,7 @@ static void psp_audio_mainloop(void *data)
       scond_signal(psp->cond);
       slock_unlock(psp->cond_lock);
 
-#if defined(VITA) || defined(ORBIS)
+#if defined(VITA)
       sceAudioOutOutput(psp->port,
         cond ? (psp->zeroBuffer)
               : (psp->buffer + read_pos_2));
@@ -142,9 +134,6 @@ static void *psp_audio_init(const char *device,
       return NULL;
    }
 
-#if defined(ORBIS)
-   sceAudioOutInit();
-#endif
    /* Cache aligned, not necessary but helpful. */
    psp->buffer        = (uint32_t*)malloc(AUDIO_BUFFER_SIZE * sizeof(uint32_t));
    memset(psp->buffer, 0, AUDIO_BUFFER_SIZE * sizeof(uint32_t));
@@ -194,8 +183,6 @@ static void psp_audio_free(void *data)
 
 #if defined(VITA)
       sceAudioOutReleasePort(psp->port);
-#elif defined(ORBIS)
-      sceAudioOutClose(psp->port);
 #else
       sceAudioSRCChRelease();
 #endif
@@ -258,9 +245,10 @@ static bool psp_audio_stop(void *data)
 {
    psp_audio_t* psp = (psp_audio_t*)data;
 
-#if defined(ORBIS)
-   return false;
-#else
+   /* ⚠ THIS USED TO RETURN false OUTRIGHT ON ORBIS, with no explanation anywhere. That
+    * arm is gone with the rest of this file's PS4 support: the PlayStation 4 has its own
+    * driver in audio/drivers/ps4_audio.c, and what is left here is the PSP's and the
+    * Vita's, which is all it was ever written to be. */
    if (psp)
    {
       psp->running = false;
@@ -272,7 +260,6 @@ static bool psp_audio_stop(void *data)
       }
    }
    return true;
-#endif
 }
 
 static bool psp_audio_start(void *data, bool is_shutdown)
@@ -330,8 +317,6 @@ audio_driver_t audio_psp = {
    psp_audio_use_float,
 #if defined(VITA)
    "vita",
-#elif defined(ORBIS)
-   "orbis",
 #else
    "psp",
 #endif

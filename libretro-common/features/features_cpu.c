@@ -209,8 +209,16 @@ retro_perf_tick_t cpu_features_get_perf_counter(void)
    __asm__ volatile( "mrs %0, cntvct_el0" : "=r"(time_ticks) );
 #elif defined(PSP) || defined(VITA)
    time_ticks = sceKernelGetSystemTimeWide();
-#elif defined(ORBIS)
-   sceRtcGetCurrentTick((SceRtcTick*)&time_ticks);
+/* ⚠ NO ORBIS ARM HERE ANY MORE, AND ITS ABSENCE IS THE FIX. It read
+ * sceRtcGetCurrentTick((SceRtcTick*)&time_ticks) - a type the SDK does not declare, from a
+ * header this file does not include, in a library the link line does not carry. It never
+ * showed because the _POSIX_MONOTONIC_CLOCK branch above wins on this platform (musl
+ * defines it), so the arm was unreachable AND unbuildable: a trap for whoever eventually
+ * reorders this chain. The reachable path, ra_clock_gettime(CLOCK_MONOTONIC), is answered
+ * by orbis-compat and measured working on hardware.
+ *
+ * The ORBIS arm in cpu_features_get_time_usec() below is left alone: it is equally
+ * unreachable but it compiles and is correct. */
 #elif defined(PS2)
    time_ticks = ps2_clock();
 #elif defined(_3DS)
