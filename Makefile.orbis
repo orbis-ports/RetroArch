@@ -36,6 +36,21 @@ HAVE_STATIC_DUMMY  ?= 1
 # its own symbol table and the frontend's copies are not visible to it. ps4/build-core.sh
 # knows the difference.
 HAVE_DYNAMIC       ?= 0
+
+# ⚠ PHASE 7: THE RADV PORT, AND IT IS OFF BY DEFAULT UNTIL IT DRAWS. With HAVE_VULKAN=1 the
+# frontend links Mesa's RADV as a static ICD and talks to it through orbis-compat's
+# vkloader, because this console has no Vulkan loader and cannot have one: the eboot is
+# statically linked, there is no libvulkan.so to dlopen and no icd.d to read.
+#
+#   make -f Makefile.orbis HAVE_VULKAN=1 ...
+#
+# ⚠ THE HEADERS MUST BE THE ONES THE DRIVER WAS BUILT AGAINST. A mismatched vulkan_core.h
+# is a struct-layout bug that compiles cleanly and fails at run time in a way that looks
+# like a driver defect. They come out of the Mesa checkout, not the SDK.
+HAVE_VULKAN        ?= 0
+ORBIS_MESA_SRC     ?= $(HOME)/src-ps4/mesa-ps4
+ORBIS_MESA_BUILD   ?= $(ORBIS_MESA_SRC)/build-orbis
+RADV_ARCHIVE       := $(ORBIS_MESA_BUILD)/src/amd/vulkan/libvulkan_radeon.a
 WHOLE_ARCHIVE_LINK ?= 0
 
 # TITLE_ID is AAAA00000 - four letters, five digits - because param.sfo and the content id
@@ -131,6 +146,19 @@ else
   HAVE_FILTERS_BUILTIN      := 1
   HAVE_STATIC_VIDEO_FILTERS := 1
   HAVE_STATIC_AUDIO_FILTERS := 1
+  ifeq ($(HAVE_VULKAN),1)
+    HAVE_VULKAN             := 1
+    # ⚠ SLANG IS NOT OPTIONAL ONCE VULKAN IS ON. gfx/drivers/vulkan.c calls
+    # vulkan_filter_chain_* unconditionally - twenty-odd entry points - and they live in
+    # gfx/drivers_shader/shader_vulkan.cpp, which HAVE_SLANG gates. Without it the driver
+    # compiles and does not link. glslang and SPIRV-Cross are vendored under deps/, so this
+    # costs compile time rather than a new dependency.
+    HAVE_SLANG              := 1
+    HAVE_SHADERS_COMMON     := 1
+    HAVE_BUILTINGLSLANG     := 1
+    HAVE_SPIRV_CROSS        := 1
+    HAVE_BUILTINSPIRV_CROSS := 1
+  endif
   HAVE_NETWORKING           := 0
   HAVE_IFINFO               := 0
   HAVE_SOCKET_LEGACY        := 1
@@ -173,6 +201,21 @@ CXX_INCLUDES := -isystem $(TOOLCHAIN)/include/c++/v1 \
 INCDIRS += -I. -Ideps -Ilibretro-common/include -Ideps/rcheevos/include \
            -I$(ORBIS_COMPAT_DIR)/include
 
+ifeq ($(HAVE_VULKAN),1)
+  ifeq ($(wildcard $(RADV_ARCHIVE)),)
+    $(error No RADV archive at $(RADV_ARCHIVE). Build it with mesa-ps4's build.sh, or set ORBIS_MESA_BUILD.)
+  endif
+  # The driver's own headers first, and the loader's, which declares vk_icdGetInstanceProcAddr.
+  INCDIRS += -I$(ORBIS_MESA_SRC)/include -I$(ORBIS_COMPAT_DIR)/vkloader
+  # ⚠ ONE ARCHIVE, NOT THREE. meson merges addrlib and amd_common into libvulkan_radeon.a
+  # and also emits them separately; adding those produces a thousand duplicate-symbol
+  # errors that read as a broken driver. --whole-archive because a statically linked driver
+  # must have all of itself present - nothing later will dlopen the members the linker
+  # decided were unreachable.
+  RADV_LINK := -Wl,--whole-archive $(RADV_ARCHIVE) -Wl,--no-whole-archive
+  ORBIS_COMPAT_OBJ += ps4/oc_vkloader.o ps4/oc_vkthunks.o
+endif
+
 # ⚠ THE LOG CHANNEL IS ADOPTED BY NAMING ITS SOURCE, which is how orbis-compat/optional
 # is meant to be used: it is POLICY, not correction, so it is deliberately NOT inside
 # liborbis-compat.a. ps4_app.cpp decides that a dying process idles rather than returns
@@ -214,8 +257,14 @@ else
   CORE_LIB := $(WHOLE_START) -lretro_orbis $(WHOLE_END)
 endif
 
-CFLAGS   := $(ARCHFLAGS) $(C_INCLUDES)   $(INCDIRS) $(DEFINES) $(CFLAGS)
-CXXFLAGS := $(ARCHFLAGS) $(CXX_INCLUDES) $(INCDIRS) $(DEFINES)
+# ⚠ $(INCLUDE_DIRS) AS WELL AS $(INCDIRS), AND ITS ABSENCE WAS A LATENT BUG FROM THE FIRST
+# BUILD. Makefile.common appends every include path it needs to INCLUDE_DIRS - a different
+# variable from the INCDIRS this file composes - so all of them were being dropped on the
+# floor. Nothing noticed while the feature set was small enough that no enabled block added
+# one; turning on SPIRV-Cross did, and the symptom was `spirv_glsl.hpp file not found` for
+# a header sitting in a directory the compiler was never told about.
+CFLAGS   := $(ARCHFLAGS) $(C_INCLUDES)   $(INCDIRS) $(INCLUDE_DIRS) $(DEFINES) $(CFLAGS)
+CXXFLAGS := $(ARCHFLAGS) $(CXX_INCLUDES) $(INCDIRS) $(INCLUDE_DIRS) $(DEFINES)
 
 ifeq ($(DEBUG),1)
   CFLAGS   += -O0 -g -fno-inline
@@ -244,6 +293,18 @@ endif
 PS4_LIBS := -lSceVideoOut -lScePad -lSceAudioOut -lSceUserService \
             -lSceSystemService -lSceSysmodule -lSceIme -lSceNet
 
+# ⚠ APPENDED HERE AND NOT WHERE HAVE_VULKAN IS HANDLED, because PS4_LIBS is a := assignment
+# further down the file than that block: appending up there is overwritten by the line
+# above. The same shape of mistake as the HAVE_STATIC_DUMMY ordering earlier in this file,
+# and worth the second comment.
+#
+# The RADV archive drives the GNM ring itself - it submits command buffers and sets the
+# shader stages - so libSceGnmDriver is a dependency of the DRIVER rather than of any
+# particular frontend, and orbis-compat's vkloader declares it the same way.
+ifeq ($(HAVE_VULKAN),1)
+  PS4_LIBS += -lSceGnmDriver
+endif
+
 LDFLAGS := -nostdlib -fuse-ld=lld -pie --target=x86_64-pc-freebsd12-elf \
            -Wl,-m,elf_x86_64 -Wl,--script=$(TOOLCHAIN)/link.x \
            -Wl,--eh-frame-hdr -Wl,--no-rosegment \
@@ -254,7 +315,7 @@ ifeq ($(WHOLE_ARCHIVE_LINK),1)
   WHOLE_END   := -Wl,--no-whole-archive
 endif
 
-LIBS := $(CORE_LIB) $(PS4_LIBS) \
+LIBS := $(CORE_LIB) $(RADV_LINK) $(PS4_LIBS) \
         -Wl,--whole-archive $(ORBIS_COMPAT_LIB) -Wl,--no-whole-archive \
         -lc -lkernel -lc++ -lc++abi -lunwind $(TOOLCHAIN)/lib/crt1.o
 
@@ -322,6 +383,14 @@ info:
 ps4/oc_ps4_app.o: $(ORBIS_COMPAT_DIR)/optional/ps4_app.cpp
 	@$(if $(Q), $(shell echo echo CXX $<),)
 	$(Q)$(CXX) $(CXXFLAGS) $(OC_DEFINES) -c $(OBJOUT)$@ $<
+
+ps4/oc_vkloader.o: $(ORBIS_COMPAT_DIR)/vkloader/vkloader.c
+	@$(if $(Q), $(shell echo echo CC $<),)
+	$(Q)$(CC) $(CFLAGS) -c $(OBJOUT)$@ $<
+
+ps4/oc_vkthunks.o: $(ORBIS_COMPAT_DIR)/vkloader/vkthunks.c
+	@$(if $(Q), $(shell echo echo CC $<),)
+	$(Q)$(CC) $(CFLAGS) -c $(OBJOUT)$@ $<
 
 ps4/oc_netlog.o: $(ORBIS_COMPAT_DIR)/optional/orbis_netlog.cpp
 	@$(if $(Q), $(shell echo echo CXX $<),)
