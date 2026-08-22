@@ -485,3 +485,95 @@ Whether it LOADS at that size is still for the console to say.
 
 A PlayStation BIOS in `/data/retroarch/system` (`scph5500/5501/5502.bin`) and a disc image. Neither
 is something this port can supply.
+
+---
+
+## 2026-08-22, close of day — hardware render works, and one core draws it wrong
+
+Beetle PSX HW runs Spyro 3 through RADV with the libretro hardware-render callback: the core is
+handed a Vulkan context and builds its own pipelines on this driver. Nothing about that path had
+ever run — until today RADV only drew what RetroArch told it to, and now foreign graphics code
+does. 40 fps on the MIPS interpreter, which is more than expected with no dynarec.
+
+The picture is wrong in a specific way: the static scene is correct — sky, terrain, castle,
+lighting, colours — and every animated model is shredded, with one quad showing stripes of garbage
+where a texture belongs.
+
+### What the elimination found, in order
+
+Each of these cost one experiment and each removed a whole class of cause.
+
+1. **The core's own software renderer draws the same content correctly.** So the geometry reaching
+   the GPU is right, and the GPU's reading of it is not. That rules out the CPU side entirely,
+   including the interpreter we are forced onto by `HAVE_LIGHTREC=0`.
+2. **`ORBIS_3D_LINEAR=1` and `ORBIS_NO_TESS=1` were not applied, and now are.** RetroArch never
+   read `/data/tempest-env.txt`, so it had been running the driver in a configuration no other
+   title runs in — see the commit; the file itself says those two "are not options". Applying them
+   did **not** change the picture, which is worth knowing on its own: this artefact is not the
+   tiling that file exists to avoid.
+3. **Doubling the internal resolution changes nothing.** Different resolutions mean different
+   pipeline variants; a shader miscompile would have moved. It did not, so ACO is not the first
+   suspect.
+
+### Where that leaves it: the vertex attribute path
+
+`rhi/rhi_lib_vulkan.c:6032-6038` declares seven vertex attributes, and **four of the seven are
+integer formats**:
+
+    0  R32G32B32A32_SFLOAT   position
+    1  R32G32B32A32_SFLOAT   color
+    2  R8G8B8A8_UINT         window      <-- integer
+    3  R16G16B16A16_SINT     pal_x       <-- integer
+    4  R16G16B16A16_SINT     u  (UV)     <-- integer
+    5  R16G16B16A16_UINT     min_u       <-- integer
+    6  R32G32B32A32_SFLOAT   fog
+
+Attributes 3 and 4 are palette and texture coordinates. A quad showing stripes of garbage instead
+of a texture is what wrongly fetched UVs look like. Integer vertex formats are a far less travelled
+path in any driver, and more so on GFX7.
+
+⚠ **This is answerable with the CTS already ported to this console, without RetroArch, without
+Spyro and without guessing:** `dEQP-VK.pipeline.*vertex_input*` tests attribute fetch per format
+and in combination. If one of those four fails, the cause is named to the format.
+`/data/deqp-cases.txt` currently holds 49 `api.object_management` cases from an earlier
+investigation and has not been touched.
+
+### ⚠ A fourth knob with no reader
+
+`ORBIS_TILE_MODE` was going to be the next experiment. It has exactly one occurrence in mesa-ps4:
+
+    src/amd/common/ac_orbis_drm.c:4412
+       getenv("ORBIS_TILE_MODE") ? getenv("ORBIS_TILE_MODE") : "unset",
+
+— printing its own value into a log line. Nothing acts on it. `tempest-env.example.txt` documents
+it as working and lists three other names that were found readerless on 2026-08-21; this is a
+fourth. Setting it would have produced exactly what that file warns about: "the run comes back
+clean and reads as a measurement."
+
+### What a console operator has to know
+
+Delivery over FTP is a two-user problem in both directions, and the modes are not uniform:
+
+    .prx  (modules)       777   must be executable; sceKernelLoadStartModule loads them as modules
+    data files            666   BIOS, discs, .info, fonts, shaders
+    directories           777
+
+Setting `666` on a core makes it fail to load with no useful message. `mkdir` on this platform now
+creates 0777 (`vfs_implementation.c`), but files written by the FTP daemon are its own and nothing
+on the RetroArch side controls them.
+
+Cores must be named `<name>_libretro.prx` with a matching `<name>_libretro.info`, and
+`/data/retroarch/info/core_info.cache` must be deleted after adding one — a cache built while the
+info directory was half-populated stays empty and the menu says "No cores available" for ever,
+which then presents as an empty content browser because a frontend with no core info has no
+extension filter.
+
+### Still open
+
+* The vertex-attribute question above.
+* **The close-hang**, which every title on this Mesa has. Narrowed: driver teardown is clean, and
+  Close Content followed by Quit exits properly, so the condition involves a loaded core.
+* **`orbis_paths.cpp:19` hard-codes `/data/OpenGothic/`** as the anchor for relative paths. Every
+  relative path RetroArch opens - and it does open some, `Main Menu.png` among them - lands in
+  another title's directory. Flagged on 2026-08-21 as harmless; it is not.
+* Assets, shaders and cores are hand-copied, and nothing tells a user when they are missing.
