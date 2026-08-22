@@ -174,6 +174,7 @@ enum audio_driver_enum
    AUDIO_RWEBAUDIO,
    AUDIO_AUDIOWORKLET,
    AUDIO_PSP,
+   AUDIO_PS4,
    AUDIO_PS2,
    AUDIO_CTR,
    AUDIO_SWITCH,
@@ -535,7 +536,9 @@ static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_XENON360;
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_WII;
 #elif defined(WIIU)
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_WIIU;
-#elif defined(PSP) || defined(VITA) || defined(ORBIS)
+#elif defined(ORBIS)
+static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_PS4;
+#elif defined(PSP) || defined(VITA)
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_PSP;
 #elif defined(PS2)
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_PS2;
@@ -1000,6 +1003,8 @@ const char *config_get_default_audio(void)
          return "gx";
       case AUDIO_WIIU:
          return "AX";
+      case AUDIO_PS4:
+         return "ps4";
       case AUDIO_PSP:
 #if defined(VITA)
          return "vita";

@@ -1266,7 +1266,8 @@ ifeq ($(TARGET), retroarch_orbis)
    OBJ += frontend/drivers/platform_orbis.o \
           gfx/drivers/ps4_gfx.o \
           input/drivers/ps4_input.o \
-          input/drivers_joypad/ps4_joypad.o
+          input/drivers_joypad/ps4_joypad.o \
+          audio/drivers/ps4_audio.o
 endif
 
 ifeq ($(DINGUX), 1)

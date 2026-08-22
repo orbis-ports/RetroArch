@@ -45,9 +45,11 @@
 #define MENU_ENUM_LABEL_AUDIO_DRIVER_WIIU_STR "AX"
 #if defined(VITA)
 #define MENU_ENUM_LABEL_AUDIO_DRIVER_PSP_STR "vita"
-#elif defined(ORBIS)
-#define MENU_ENUM_LABEL_AUDIO_DRIVER_PSP_STR "orbis"
 #else
+/* ORBIS had an arm here naming a driver "orbis". It was the label for AUDIO_PSP, which was
+ * the PS4's default until it had a driver of its own; the PS4's is AUDIO_PS4, ident "ps4",
+ * and nothing has answered to "orbis" since. A label that names no driver is an entry the
+ * menu can offer and the frontend cannot honour. */
 #define MENU_ENUM_LABEL_AUDIO_DRIVER_PSP_STR "psp"
 #endif
 #define MENU_ENUM_LABEL_AUDIO_DRIVER_PS2_STR "ps2"
