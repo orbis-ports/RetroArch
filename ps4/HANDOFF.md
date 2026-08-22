@@ -246,12 +246,45 @@ unexercised.
 * It must NOT carry the copy it shipped with, if that copy predates this port - `libretro-2048`'s
   still has `#include <orbisFile.h>`. `ps4/build-core.sh --common` points it at the frontend's.
 
+### Audio, confirmed — and the two things that had to be got right
+
+A clean 300 Hz tone from `libretro-samples/audio/audio_no_callback`, built as a PRX and dropped
+into `/data/retroarch/cores` with no reinstall. Two defects stood between the driver and that, and
+both are worth carrying to any other consumer of this API.
+
+**1. `sceAudioOutInit` returns ALREADY_INIT on the second call, and the constant was wrong.**
+RetroArch initialises its audio driver twice — once at startup, again when content loads — so the
+second call in a process always fails this way. The driver tolerated `0x8026000d` and bailed on
+anything else, which killed audio at content load with "Failed to initialize audio driver".
+
+    0x8026000D  ORBIS_AUDIO_OUT_ERROR_OUT_OF_MEMORY
+    0x8026000E  ORBIS_AUDIO_OUT_ERROR_ALREADY_INIT
+
+⚠ The wrong number came from `~/src/ps4doom/platform/doom_sound_ps4.c`, transcribed together with
+a comment naming it ALREADY_INIT. **That comment is wrong there too** and has never shown, because
+ps4doom initialises audio once. Worth fixing there before it travels again. Use the SDK's named
+constant; a magic number carries its explanation with it, and a wrong explanation travels just as
+well as a right one.
+
+**2. `sceAudioOutOutput` blocks until the grain is CONSUMED, so the port needs a thread.**
+When it returns, nothing is queued behind it. Fed from RetroArch's main loop — which also blocks on
+vsync — the port runs dry between the last write of one frame and the first of the next, and a dry
+port clicks once per frame. That is exactly what the first working build did.
+
+It is also a throughput problem: at 48 kHz and 60 fps a frame is ~3.1 grains at 5.33 ms each, so
+16.6 ms of vsync plus 16.6 ms of audio serialises into 33 ms — 30 fps.
+
+The driver now has a dedicated thread permanently inside `sceAudioOutOutput`, pulling from a ring
+that `write()` fills. An empty ring plays silence rather than skipping the call: the port takes
+exactly one grain and will not take a partial one, so something must be handed to it either way.
+Same shape as ps4doom's mixer thread and as `switch_thread_audio.c` in this tree.
+
 ### Still unconfirmed
 
-* **Audio.** The port opens and the volume is set, but 2048 makes no sound, so nothing has proved a
-  sample reached the speakers. Needs a core with audio and no content requirement.
-* **60 Hz at 1080p.** 2048 is not a load. A core drawing a full framebuffer every frame is.
+* **60 Hz at 1080p.** Neither 2048 nor a sine generator is a load. A core drawing a full
+  framebuffer every frame is.
 * **A large PRX.** 185 KB proves the mechanism, not the scale.
+* **The audio ring under load.** The underrun counter is there; nothing has yet made it move.
 
 ### A rough edge worth fixing
 
