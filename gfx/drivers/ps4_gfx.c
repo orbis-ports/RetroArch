@@ -36,6 +36,7 @@
 #include <string.h>
 
 #include <gfx/scaler/scaler.h>
+#include <features/features_cpu.h>
 #include <compat/strl.h>
 #include <string/stdstring.h>
 #include <retro_miscellaneous.h>
@@ -101,6 +102,18 @@ typedef struct ps4_video
     * configured in port 1" into eleven identical lines in the capture, and a 60-frame
     * message into sixty. */
    char               last_msg[128];
+
+   /* ⚠ THE ONE MEASUREMENT PLAN.md ASKED FOR AND NOBODY HAD TAKEN. Phase 3 says to settle
+    * 1080p against 720p by measurement rather than by choosing up front, and the cost lives
+    * in THIS driver rather than in any core: every frame is a scale into 2.07 million
+    * pixels regardless of what produced it. So the numbers to have are how long the scale
+    * itself takes, and what interval the frontend actually achieves once vsync has had its
+    * say. Reported every few seconds, which a render loop can afford. */
+   retro_time_t       t_last_frame;
+   retro_time_t       t_scale_total;
+   retro_time_t       t_frame_total;
+   retro_time_t       t_report;
+   unsigned           frames;
 } ps4_video_t;
 
 /* Where a source of in_w x in_h lands inside the display, letter- or pillarboxed. The
@@ -196,9 +209,13 @@ static bool ps4_gfx_frame(void *data, const void *frame,
    uint32_t    *fb;
    unsigned     dst_pitch_px;
    bool         drew = false;
+   retro_time_t t_enter;
+   retro_time_t t_scaled;
 
    if (!ps4)
       return false;
+
+   t_enter = cpu_features_get_time_usec();
 
    if (!(fb = ps4_video_out_backbuffer(ps4->vo)))
       return false;
@@ -328,6 +345,8 @@ static bool ps4_gfx_frame(void *data, const void *frame,
    else
       ps4->last_msg[0] = '\0';
 
+   t_scaled = cpu_features_get_time_usec();
+
    if (!drew)
    {
       /* Nothing was written into this buffer. Presenting it would show whatever it held
@@ -339,6 +358,38 @@ static bool ps4_gfx_frame(void *data, const void *frame,
    }
 
    ps4_video_out_flip(ps4->vo, ps4->vsync);
+
+   {
+      retro_time_t now = cpu_features_get_time_usec();
+
+      ps4->t_scale_total += t_scaled - t_enter;
+      if (ps4->t_last_frame)
+         ps4->t_frame_total += now - ps4->t_last_frame;
+      ps4->t_last_frame = now;
+      ps4->frames++;
+
+      if (!ps4->t_report)
+         ps4->t_report = now;
+      else if (now - ps4->t_report >= 5000000 && ps4->frames > 1)
+      {
+         /* Two numbers, and they answer different questions. `scale` is what this driver
+          * costs per frame and is the one that would drop by going to 720p. `frame` is the
+          * interval actually achieved - if it is 16.7 ms the display is pacing us and the
+          * scale fits inside it; if it is 33 ms something is taking a whole extra vsync. */
+         RARCH_LOG("[PS4] %u frames: scale %u us/frame, frame %u us (%.1f fps)\n",
+               ps4->frames,
+               (unsigned)(ps4->t_scale_total / ps4->frames),
+               (unsigned)(ps4->t_frame_total / (ps4->frames - 1)),
+               1000000.0 / (double)(ps4->t_frame_total / (ps4->frames - 1)));
+
+         ps4->t_report      = now;
+         ps4->frames        = 0;
+         ps4->t_scale_total = 0;
+         ps4->t_frame_total = 0;
+         ps4->t_last_frame  = 0;
+      }
+   }
+
    return true;
 }
 
