@@ -22,6 +22,7 @@
 #define PS4_LOG_H__
 
 #include <stdarg.h>
+#include <boolean.h>
 #include <retro_common_api.h>
 
 RETRO_BEGIN_DECLS
