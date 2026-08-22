@@ -325,8 +325,29 @@ pkg: eboot.bin
 		--version $(PS4_PKG_VERSION) --content-label $(PS4_CONTENT_LABEL) \
 		--sdk $(TOOLCHAIN)
 
+# Upload to the console over GoldHEN's FTP. lftp rather than curl: it is what the packages
+# in /data/pkg were put there with, and it retries a stalled transfer instead of leaving a
+# truncated .pkg that the installer accepts and then fails on.
+#
+#   make -f Makefile.orbis send PS4=192.168.100.2
+#
+# Install afterwards ON THE CONSOLE: Settings -> Debug Settings -> Package Installer ->
+# /data/pkg/retroarch.pkg. Nothing here can do that half.
+PS4        ?= 192.168.100.2
+PS4_FTP_PORT ?= 2121
+PKG_REMOTE ?= /data/pkg
+PKG_NAME   ?= retroarch.pkg
+PKG_FILE   := IV0000-$(PS4_TITLE_ID)_00-$(PS4_CONTENT_LABEL).pkg
+
+send: pkg
+	@echo "FTP $(PKG_FILE) -> $(PS4):$(PKG_REMOTE)/$(PKG_NAME)"
+	$(Q)lftp -c "set net:timeout 10; set ftp:passive-mode on; \
+		open -p $(PS4_FTP_PORT) $(PS4); mkdir -p $(PKG_REMOTE); \
+		put -O $(PKG_REMOTE) $(PKG_FILE) -o $(PKG_NAME)"
+	@echo "uploaded. Install via Debug Settings -> Package Installer on the console."
+
 clean:
 	$(Q)rm -f $(OBJ) $(TARGET).elf $(TARGET).oelf eboot.bin pkg.gp4
 	$(Q)rm -rf sce_sys
 
-.PHONY: all clean info pkg
+.PHONY: all clean info pkg send
