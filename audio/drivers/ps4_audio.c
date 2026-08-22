@@ -86,9 +86,19 @@ static void *ps4_audio_init(const char *device, unsigned rate,
    sceUserServiceInitialize(NULL);
 
    rc = sceAudioOutInit();
-   /* Already initialised is not a failure - something else in this process got there
-    * first, which on a frontend that restarts its audio driver is the normal case. */
-   if (rc != 0 && rc != (int32_t)0x8026000d /* ALREADY_INIT */)
+
+   /* ⚠ ALREADY_INIT IS NOT A FAILURE, AND THE MAGIC NUMBER THIS USED WAS THE WRONG ONE.
+    * RetroArch initialises its audio driver twice - once at startup and again when content
+    * loads - so the second sceAudioOutInit in a process ALWAYS returns ALREADY_INIT. This
+    * tolerated 0x8026000d, copied verbatim from ~/src/ps4doom together with a comment
+    * calling it ALREADY_INIT. The SDK says otherwise: 0x8026000D is OUT_OF_MEMORY and
+    * ALREADY_INIT is 0x8026000E. So the driver tolerated an allocation failure and treated
+    * "already up" as fatal - exactly backwards - and audio died on the second init with
+    * "Failed to initialize audio driver. Will continue without audio."
+    *
+    * ps4doom has the same wrong constant and never noticed, because it initialises once.
+    * The named constant is used here so the question cannot come up again. */
+   if (rc != 0 && rc != (int32_t)ORBIS_AUDIO_OUT_ERROR_ALREADY_INIT)
    {
       RARCH_ERR("[PS4] sceAudioOutInit failed: 0x%08x\n", (unsigned)rc);
       return NULL;
