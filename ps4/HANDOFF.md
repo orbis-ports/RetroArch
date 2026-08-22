@@ -396,3 +396,51 @@ scale, convert out. 87% of the frame leaves almost nothing for a core, so on the
 16-bit core is the demanding case and a 32-bit one is not. Untouched for now because Vulkan is the
 path that matters, but it is the number to remember if the software driver is ever the fallback for
 a real core.
+
+---
+
+## 2026-08-22 — Phase 7 is done: XMB on RADV, icons and text
+
+The GPU menus are back. XMB draws through the Vulkan driver's texture path with the monochrome
+icon theme and readable text, which is the visible half of what Phase 7 was for — the software
+build has RGUI and nothing else, because RGUI is the only menu driver that rasterises itself.
+
+Two things had to be true and only one of them was:
+
+* **The GPU menus need a driver that can carry them.** RADV provides it. They are enabled whenever
+  `HAVE_VULKAN=1` and off otherwise, so the software build is unchanged.
+* **They need assets, and the console had none.** `/data/retroarch/assets` was an empty directory
+  that `dir_check_defaults` had created and nothing had ever filled. 16 MB of
+  `libretro/retroarch-assets` — `xmb/monochrome`, `ozone`, and two fonts from `pkg` — copied over
+  FTP is enough for both drivers.
+
+⚠ **The system-font list was pointing at files that do not exist.** It was the Vita's seven PVF
+names with the directory swapped to `/preinst/common/font`; a retail console's own directory has
+`DFHEI5-SONY.ttf` and the SST family and none of those seven. Fixed, and ordered by what
+`stb_truetype` can parse rather than alphabetically: SST is `.otf` with CFF outlines and
+stb_truetype reads TrueType `glyf`, so the one real TTF goes first. In practice
+`assets/pkg/fallback-font.ttf` is what XMB uses, so the system list is now a spare rather than a
+requirement — but a spare that named seven absent files was worth nothing.
+
+### Where the port stands
+
+| | |
+|---|---|
+| build | 239 objects, no warnings, no libc shims written |
+| video, software | 1080p @ 60 Hz measured, 6.1 ms/frame for a 32-bit core |
+| video, Vulkan | RADV, 1080p @ 60 Hz, zero-copy scan-out |
+| menus | RGUI on software; XMB, Ozone, MaterialUI, widgets on Vulkan |
+| input | DualShock 4, digital and analog |
+| audio | 48 kHz, threaded, no underruns under load |
+| cores | static and `.prx`; saves survive across both |
+| packaging | `.pkg`, `make send` over lftp |
+
+### Still open
+
+* **The close-hang**, which this port did not create: every title on this Mesa has it. Narrowed
+  today — driver teardown is clean, and Close Content followed by Quit exits properly even on
+  Vulkan, so the condition involves a loaded core rather than RADV being live.
+* **Slang shaders** compile in and have never been run.
+* **Assets are hand-copied.** Nothing ships them and nothing tells a user they are missing; XMB
+  without them looks like a menu driver that failed to start.
+* **The RGB565 software path** costs 14.4 ms of a 16.7 ms frame, against 6.1 ms for XRGB8888.

@@ -210,7 +210,7 @@ against a core whose static build already works, so any difference is the PRX an
 
 Unlocks: one eboot for all cores, the core downloader, and playlists that are not per-binary.
 
-### Phase 7 — RADV
+### Phase 7 — RADV  ✅ 2026-08-22
 Only now, and in this order:
 1. `vkloader`: run `orbis-compat/vkloader/gen.py` over RetroArch's own objects to emit
    `ps4/vkthunks.c` (per-consumer by design — Tempest's list is not ours).
