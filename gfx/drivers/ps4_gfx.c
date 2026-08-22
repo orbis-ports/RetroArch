@@ -89,10 +89,16 @@ typedef struct ps4_video
    unsigned           last_width;
    unsigned           last_height;
 
+   /* The core's own frame size, for the "Core Provided" ratio, which means "do not scale
+    * at all" rather than "work the ratio out from the geometry". */
+   unsigned           o_width;
+   unsigned           o_height;
+
    bool               rgb32;
    bool               vsync;
    bool               menu_active;
    bool               keep_aspect;
+   bool               o_size;
    bool               smooth;
    bool               clear_pending;
 
@@ -116,50 +122,28 @@ typedef struct ps4_video
    unsigned           frames;
 } ps4_video_t;
 
-/* Where a source of in_w x in_h lands inside the display, letter- or pillarboxed. The
- * frame is centred; the parts of the screen it does not cover are cleared by
- * ps4_video_out_clear() when the geometry changes, not every frame. */
-static void ps4_gfx_fit(ps4_video_t *ps4, unsigned in_w, unsigned in_h,
-      unsigned *out_x, unsigned *out_y, unsigned *out_w, unsigned *out_h)
+/* ⚠ THE FRONTEND WORKS THE VIEWPORT OUT, NOT THIS DRIVER, AND THAT IS THE FIX FOR A REAL
+ * DIVERGENCE. This used to compute its own letterbox from the source's pixel ratio and
+ * ignore RetroArch's aspect-ratio setting entirely - which looked correct for years of
+ * nothing, and then stopped looking correct the moment the Vulkan driver ran beside it and
+ * honoured the same config. Two drivers, one setting, two pictures.
+ *
+ * video_driver_update_viewport() is what every other driver uses; going through it buys
+ * the named ratios, integer scaling and the custom viewport as well, all consistent with
+ * whatever else is running. Same shape as switch_nx_gfx.c, including the special case:
+ * "Core Provided" means draw at the core's own size, centred, not scaled to fit. */
+static void ps4_gfx_update_viewport(ps4_video_t *ps4)
 {
-   unsigned disp_w = 0, disp_h = 0;
-
-   ps4_video_out_size(ps4->vo, &disp_w, &disp_h);
-
-   if (!ps4->keep_aspect || in_w == 0 || in_h == 0)
+   if (ps4->o_size)
    {
-      *out_x = *out_y = 0;
-      *out_w = disp_w;
-      *out_h = disp_h;
+      ps4->vp.x      = (int)((float)ps4->vp.full_width  - ps4->o_width)  / 2;
+      ps4->vp.y      = (int)((float)ps4->vp.full_height - ps4->o_height) / 2;
+      ps4->vp.width  = ps4->o_width;
+      ps4->vp.height = ps4->o_height;
       return;
    }
 
-   {
-      float src_aspect = (float)in_w  / (float)in_h;
-      float dsp_aspect = (float)disp_w / (float)disp_h;
-      unsigned w, h;
-
-      if (src_aspect > dsp_aspect)
-      {
-         w = disp_w;
-         h = (unsigned)((float)disp_w / src_aspect + 0.5f);
-      }
-      else
-      {
-         h = disp_h;
-         w = (unsigned)((float)disp_h * src_aspect + 0.5f);
-      }
-
-      if (w > disp_w)
-         w = disp_w;
-      if (h > disp_h)
-         h = disp_h;
-
-      *out_w = w;
-      *out_h = h;
-      *out_x = (disp_w - w) / 2;
-      *out_y = (disp_h - h) / 2;
-   }
+   video_driver_update_viewport(&ps4->vp, false, ps4->keep_aspect, true);
 }
 
 static void *ps4_gfx_init(const video_info_t *video,
@@ -229,7 +213,13 @@ static bool ps4_gfx_frame(void *data, const void *frame,
    {
       unsigned x, y, w, h;
 
-      ps4_gfx_fit(ps4, width, height, &x, &y, &w, &h);
+      ps4->o_width  = width;
+      ps4->o_height = height;
+      ps4_gfx_update_viewport(ps4);
+      x = (unsigned)ps4->vp.x;
+      y = (unsigned)ps4->vp.y;
+      w = ps4->vp.width;
+      h = ps4->vp.height;
 
       if (     width  != ps4->last_width
             || height != ps4->last_height
@@ -267,11 +257,6 @@ static bool ps4_gfx_frame(void *data, const void *frame,
          /* The geometry moved, so the bands the new picture does not cover still hold the
           * old one. */
          ps4_video_out_clear(ps4->vo);
-
-         ps4->vp.x      = x;
-         ps4->vp.y      = y;
-         ps4->vp.width  = w;
-         ps4->vp.height = h;
       }
 
       scaler_ctx_scale(&ps4->frame_scaler,
@@ -282,9 +267,14 @@ static bool ps4_gfx_frame(void *data, const void *frame,
 #ifdef HAVE_MENU
    if (ps4->menu_active && ps4->menu_frame)
    {
-      unsigned x, y, w, h;
+      /* ⚠ THE MENU IS NOT SUBJECT TO THE CORE'S ASPECT SETTING. RGUI's framebuffer is the
+       * frontend's own surface, drawn at whatever size it chose; running it through the
+       * viewport meant for the core's picture would letterbox the menu to the core's
+       * ratio. It gets the full display, which is what every other driver gives it. */
+      unsigned x = 0, y = 0;
+      unsigned w = 0, h = 0;
 
-      ps4_gfx_fit(ps4, ps4->menu_width, ps4->menu_height, &x, &y, &w, &h);
+      ps4_video_out_size(ps4->vo, &w, &h);
 
       if (     (unsigned)ps4->menu_scaler.in_width   != ps4->menu_width
             || (unsigned)ps4->menu_scaler.in_height  != ps4->menu_height
@@ -475,18 +465,37 @@ static void ps4_gfx_set_filtering(void *data, unsigned index, bool smooth,
    ps4->last_width = 0;
 }
 
-/* ⚠ THE ASPECT-RATIO SETTING IS ACCEPTED AND NOT HONOURED. ps4_gfx_fit() preserves the
- * SOURCE's own pixel ratio, so a core that reports a display aspect different from its
- * framebuffer's - a SNES core at 256x224 asking for 4:3, say - is drawn at 8:7 instead.
- * Every ratio in the menu therefore looks the same. Wiring this up means asking the
- * frontend for the ratio rather than computing one, and it is a change to ps4_gfx_fit(),
- * not to this function; invalidating the scaler here is the half that is already right. */
 static void ps4_gfx_set_aspect_ratio(void *data, unsigned aspect_ratio_idx)
 {
-   ps4_video_t *ps4 = (ps4_video_t*)data;
+   settings_t  *settings = config_get_ptr();
+   ps4_video_t *ps4      = (ps4_video_t*)data;
 
-   if (ps4)
-      ps4->last_width = 0;
+   if (!ps4)
+      return;
+
+   ps4->keep_aspect = true;
+   ps4->o_size      = false;
+
+   switch (aspect_ratio_idx)
+   {
+      case ASPECT_RATIO_CORE:
+         ps4->o_size      = true;
+         ps4->keep_aspect = false;
+         break;
+      case ASPECT_RATIO_CUSTOM:
+         if (settings->bools.video_scale_integer)
+         {
+            video_driver_set_viewport_core();
+            ps4->o_size      = true;
+            ps4->keep_aspect = false;
+         }
+         break;
+      default:
+         break;
+   }
+
+   /* Rebuild the scaler on the next frame: its output rectangle just changed. */
+   ps4->last_width = 0;
 }
 
 static void ps4_gfx_apply_state_changes(void *data)

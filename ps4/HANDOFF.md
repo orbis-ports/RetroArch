@@ -190,8 +190,8 @@ Known gaps, written into the source at the point they matter rather than listed 
   why the menu is unaffected.
 * **The menu replaces the frame, it does not blend over it** - the scaler converts, it does not
   composite.
-* **The aspect-ratio setting is accepted and ignored** - the driver preserves the source's own
-  pixel ratio, so a core asking for 4:3 from a 256x224 buffer is drawn at 8:7.
+* ~~The aspect-ratio setting is accepted and ignored~~ - fixed once Vulkan ran beside it and
+  honoured the same config, which is how the divergence became visible at all.
 * **1080p is unmeasured.** Every frame is a scale into 2.07 million pixels on a Jaguar core. If
   60 Hz does not hold, 720p halves the fill; PLAN.md says settle this by measurement.
 * **Alpha is left as the scaler wrote it.** ps4doom ORed `0xFF000000` into every pixel and never
