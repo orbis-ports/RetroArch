@@ -265,6 +265,27 @@ ifneq ($(V),1)
   Q := @
 endif
 
+# ⚠ OBJECTS DEPEND ON THE FLAGS THEY WERE BUILT WITH, and make does not know that on its
+# own. Switching HAVE_DYNAMIC or HAVE_STATIC_DUMMY changes DEFINES for every translation
+# unit while leaving every .o newer than its .c, so the next build links objects compiled
+# under two different configurations. That has now cost two confusing link failures - the
+# first blamed on cores/dynamic_dummy.c, the second on the core loader - and both times the
+# object was simply stale.
+#
+# The stamp holds the flags; it is rewritten only when they actually change, so a no-op
+# build stays a no-op and a changed switch rebuilds everything that saw it.
+PS4_CONFIG_STAMP := .ps4-build-config
+PS4_CONFIG_NOW   := $(CFLAGS) | $(CXXFLAGS) | $(LIBS)
+$(shell test "$$(cat $(PS4_CONFIG_STAMP) 2>/dev/null)" = "$(PS4_CONFIG_NOW)" \
+  || printf '%s' "$(PS4_CONFIG_NOW)" > $(PS4_CONFIG_STAMP))
+
+# ⚠ .DEFAULT_GOAL BEFORE THE RULE BELOW, NOT AFTER. A rule's first target becomes the
+# default goal, and $(OBJ) begins with version_git.o - so adding this dependency silently
+# made `make -f Makefile.orbis` build one object file and stop, reporting success.
+.DEFAULT_GOAL := all
+
+$(OBJ): $(PS4_CONFIG_STAMP)
+
 OBJOUT  := -o
 TARGETS := $(TARGET).elf eboot.bin
 
@@ -363,7 +384,7 @@ send: pkg
 	@echo "uploaded. Install via Debug Settings -> Package Installer on the console."
 
 clean:
-	$(Q)rm -f $(OBJ) $(TARGET).elf $(TARGET).oelf eboot.bin pkg.gp4
+	$(Q)rm -f $(OBJ) $(TARGET).elf $(TARGET).oelf eboot.bin pkg.gp4 $(PS4_CONFIG_STAMP)
 	$(Q)rm -rf sce_sys
 
 .PHONY: all clean info pkg send

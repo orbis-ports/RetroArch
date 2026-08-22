@@ -63,6 +63,16 @@ typedef struct ps4_audio
    size_t   grain_fill;      /* samples, not frames */
    bool     nonblock;
    bool     running;
+
+   /* ⚠ DIAGNOSTIC, AND DELIBERATELY BOUNDED. The first hardware run of this driver was
+    * silent with no error anywhere: the port opened, the volume was set, and nothing came
+    * out. Nothing in the path reported a return code, so there was no way to tell whether
+    * write() was even being called. These count and report, loudly for the first few calls
+    * and then rarely, which is what a render-loop log can afford. */
+   uint64_t writes;
+   uint64_t grains;
+   uint64_t dropped;
+   int32_t  last_rc;
 } ps4_audio_t;
 
 static void *ps4_audio_init(const char *device, unsigned rate,
@@ -127,6 +137,12 @@ static ssize_t ps4_audio_write(void *data, const void *s, size_t len)
    if (!ps4 || !src)
       return -1;
 
+   ps4->writes++;
+   if (ps4->writes <= 3)
+      RARCH_LOG("[PS4] audio: write #%llu, %u bytes, running=%d nonblock=%d\n",
+            (unsigned long long)ps4->writes, (unsigned)len,
+            (int)ps4->running, (int)ps4->nonblock);
+
    while (left > 0)
    {
       size_t room = (PS4_AUDIO_GRAIN * PS4_AUDIO_CHANNELS) - ps4->grain_fill;
@@ -148,9 +164,21 @@ static ssize_t ps4_audio_write(void *data, const void *s, size_t len)
        * time, so the grain is dropped instead. Silence while fast-forwarding is what every
        * other frontend does; a fast-forward that runs at 1x is not. */
       if (!ps4->running || ps4->nonblock)
+      {
+         ps4->dropped++;
          continue;
+      }
 
-      sceAudioOutOutput(ps4->handle, ps4->grain);
+      ps4->last_rc = sceAudioOutOutput(ps4->handle, ps4->grain);
+      ps4->grains++;
+
+      /* The first three grains, then one every ten seconds of audio. */
+      if (ps4->grains <= 3 || (ps4->grains % (PS4_AUDIO_RATE * 10 / PS4_AUDIO_GRAIN)) == 0)
+         RARCH_LOG("[PS4] audio: grain %llu, sceAudioOutOutput rc=%d, "
+               "%llu write(s), %llu dropped\n",
+               (unsigned long long)ps4->grains, (int)ps4->last_rc,
+               (unsigned long long)ps4->writes,
+               (unsigned long long)ps4->dropped);
    }
 
    return (ssize_t)(done * sizeof(int16_t));
@@ -167,6 +195,8 @@ static bool ps4_audio_stop(void *data)
     * pause, and the grain in flight would be lost either way. Writes are discarded while
     * stopped, which is what "stopped" has to mean for a port that only accepts whole
     * grains. */
+   RARCH_LOG("[PS4] audio: stop after %llu grain(s), %llu dropped\n",
+         (unsigned long long)ps4->grains, (unsigned long long)ps4->dropped);
    ps4->running = false;
    return true;
 }
@@ -178,6 +208,7 @@ static bool ps4_audio_start(void *data, bool is_shutdown)
    if (!ps4)
       return false;
 
+   RARCH_LOG("[PS4] audio: start (shutdown=%d)\n", (int)is_shutdown);
    ps4->running    = true;
    /* Anything half-collected belongs to the audio from before the pause. */
    ps4->grain_fill = 0;

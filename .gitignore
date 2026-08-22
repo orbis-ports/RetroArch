@@ -310,3 +310,4 @@ pkg.gp4
 /sce_sys/
 IV0000-*.pkg
 cores/*.a
+.ps4-build-config
