@@ -336,3 +336,57 @@ along, dated from an earlier boot; the evidence for the claim was an FTP listing
 `head -30` before it reached `retroarch/` alphabetically. The change that came out of it - passing
 `NULL`, and checking the result - is kept on its own merits, and its comment now says what actually
 happened.
+
+---
+
+## 2026-08-22 — Vulkan on RADV, and where the close-hang is not
+
+RetroArch draws through Mesa's RADV on the console. 19 456 frames in one run at `frame 16683 us`
+— the same 60 Hz the software driver holds — and the scan-out is the zero-copy path, not a copy:
+
+    wsi/orbis: scan-out up - 1920x1080 pitch 1920, 4 swapchain buffer(s), A8B8G8R8_SRGB linear
+               - ZERO COPY, the flip shows what the GPU rendered into
+    wsi/orbis: the scan-out copy took 0 us for 8100 KiB (worst 27 us over 19 456 frames)
+
+### ⚠ Vulkan teardown works, and this is the first evidence anywhere that it does
+
+Every title built against this Mesa hangs when the console closes it. Nothing had established
+whether the driver teardown was the thing that wedged, because **no capture from this console had
+ever contained `wsi/orbis: scan-out down`** — the titles that came before end by idling or by
+CE-34878-0, and both routes skip `vkDestroyInstance` entirely. The path had never run.
+
+Forcing it from a live process — load a core, then Close Content, which tears the video driver
+down and builds it again — gives:
+
+    15:19:26.718  wsi/orbis: scan-out down after 493 flip(s)
+    15:19:26.719  wsi/orbis: scan-out up - 1920x1080 ...
+    15:19:26.719  [PS4] Vulkan up: 1920x1080 swapchain on RADV.
+
+**One millisecond, clean, and it comes straight back up.** So the close-hang is not in destroying
+the driver. It is in terminating the process while RADV is live.
+
+That splits a problem this port did not create and cannot fix alone. The next cut is equally cheap:
+switch the video driver to `ps4` (software), so RADV is fully down, and then close the app. If it
+closes, "RADV alive at kill time" is the whole condition.
+
+⚠ RetroArch is a better instrument for this than the title that first hit it: the teardown is one
+menu entry rather than an exit, repeatable in a single session, with the log flowing throughout.
+
+### A side effect of the hang, worth knowing before it wastes an hour
+
+**The config is never saved.** RetroArch writes `retroarch.cfg` on a clean exit, and there are no
+clean exits yet — so a driver picked in the menu is forgotten on the next launch, every time. The
+file on the console was four hours stale while the menu showed the right thing. The Vulkan default
+now comes from `configuration.c` rather than from a file that does not get written.
+
+### The software scaler is much more expensive for RGB565 cores
+
+    XRGB8888 source:  scale  6 124 us/frame   (37% of a 16.67 ms budget)
+    RGB565   source:  scale 14 450 us/frame   (87%)
+
+Both at 320x240 into the same viewport, so the difference is the pixel format alone: an XRGB8888
+source is already the scaler's internal format, and RGB565 costs a whole extra pass — convert in,
+scale, convert out. 87% of the frame leaves almost nothing for a core, so on the software path a
+16-bit core is the demanding case and a 32-bit one is not. Untouched for now because Vulkan is the
+path that matters, but it is the number to remember if the software driver is ever the fallback for
+a real core.

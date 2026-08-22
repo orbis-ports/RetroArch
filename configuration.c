@@ -499,9 +499,19 @@ static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_CTR;
 #elif defined(SWITCH)
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_SWITCH;
 #elif defined(ORBIS)
-/* The PS4's software driver. Until it existed this platform fell through the whole chain
- * to VIDEO_NULL, which is why the port could boot without a display at all. */
+/* ⚠ THE DEFAULT HAS TO BE RIGHT HERE, NOT LEFT TO THE SAVED CONFIG, because on this
+ * platform the saved config is not reliably saved: RetroArch writes it on a clean exit, and
+ * a clean exit is exactly what does not happen yet (see ps4/HANDOFF.md). A driver chosen in
+ * the menu is therefore forgotten on the next launch, every time.
+ *
+ * Vulkan when the build has it - that is the point of building it - and the software driver
+ * otherwise. Before either existed this platform fell through the whole chain to
+ * VIDEO_NULL, which is why the port could boot without a display at all. */
+#ifdef HAVE_VULKAN
+static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_VULKAN;
+#else
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_PS4;
+#endif
 #elif defined(HAVE_XVIDEO)
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_XVIDEO;
 #elif defined(HAVE_SDL3)
