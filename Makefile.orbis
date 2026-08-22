@@ -213,7 +213,6 @@ ifeq ($(HAVE_VULKAN),1)
   # must have all of itself present - nothing later will dlopen the members the linker
   # decided were unreachable.
   RADV_LINK := -Wl,--whole-archive $(RADV_ARCHIVE) -Wl,--no-whole-archive
-  ORBIS_COMPAT_OBJ += ps4/oc_vkloader.o ps4/oc_vkthunks.o
 endif
 
 # ⚠ THE LOG CHANNEL IS ADOPTED BY NAMING ITS SOURCE, which is how orbis-compat/optional
@@ -223,6 +222,14 @@ endif
 # Both register into orbis_log.h's hooks, which is how the overlay's own corrections get
 # a channel without knowing this file exists.
 ORBIS_COMPAT_OBJ := ps4/oc_ps4_app.o ps4/oc_netlog.o ps4/ps4_log.o ps4/ps4_mem.o ps4/ps4_video_out.o
+
+# ⚠ APPENDED AFTER THE := ABOVE, for the fourth time in this file and the same reason
+# every time: a `+=` that runs before the assignment it means to extend is thrown away.
+# This one cost an "undefined symbol: vkGetInstanceProcAddr" for a function whose source
+# file was sitting right there, simply never compiled.
+ifeq ($(HAVE_VULKAN),1)
+  ORBIS_COMPAT_OBJ += ps4/oc_vkloader.o ps4/oc_vkthunks.o
+endif
 OBJ += $(ORBIS_COMPAT_OBJ)
 
 # Where the datagrams go, and what the first log line says the console is running.

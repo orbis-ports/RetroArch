@@ -154,6 +154,12 @@ enum vulkan_wsi_type
    VULKAN_WSI_MVK_MACOS,
    VULKAN_WSI_MVK_IOS,
    VULKAN_WSI_SDL3,
+   /* VK_EXT_headless_surface. Not "no display" - it is the surface a driver offers when
+    * the platform's scan-out is not any WSI Vulkan knows about, and the driver presents
+    * through its own path behind it. On the PS4 that path is RADV's own, which opens
+    * video-out, registers the scan-out buffers and flips; there is no DRM here, no
+    * dma-buf and no compositor for any other platform to describe. */
+   VULKAN_WSI_HEADLESS,
 };
 
 enum vulkan_context_flags

@@ -1133,6 +1133,9 @@ static VkInstance vulkan_context_create_instance_wrapper(void *opaque, const VkI
       case VULKAN_WSI_DISPLAY:
          required_extensions[required_extension_count++] = "VK_KHR_display";
          break;
+      case VULKAN_WSI_HEADLESS:
+         required_extensions[required_extension_count++] = "VK_EXT_headless_surface";
+         break;
       case VULKAN_WSI_MVK_MACOS:
       case VULKAN_WSI_MVK_IOS:
          required_extensions[required_extension_count++] = "VK_EXT_metal_surface";
@@ -1798,6 +1801,24 @@ bool vulkan_surface_create(gfx_ctx_vulkan_data_t *vk,
                   &width, &height,
                   (const struct vulkan_display_surface_info*)display))
             return false;
+         break;
+      case VULKAN_WSI_HEADLESS:
+         {
+            VkHeadlessSurfaceCreateInfoEXT surf_info;
+            PFN_vkCreateHeadlessSurfaceEXT create;
+
+            if (!VULKAN_SYMBOL_WRAPPER_LOAD_INSTANCE_SYMBOL(vk->context.instance,
+                     "vkCreateHeadlessSurfaceEXT", create))
+               return false;
+
+            surf_info.sType = VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT;
+            surf_info.pNext = NULL;
+            surf_info.flags = 0;
+
+            if (create(vk->context.instance, &surf_info, NULL, &vk->vk_surface)
+                  != VK_SUCCESS)
+               return false;
+         }
          break;
       case VULKAN_WSI_MVK_MACOS:
       case VULKAN_WSI_MVK_IOS:
@@ -2876,6 +2897,25 @@ bool vulkan_context_init(gfx_ctx_vulkan_data_t *vk,
 
    vk->wsi_type = type;
 
+#ifdef ORBIS
+   /* ⚠ THERE IS NO LOADER TO OPEN ON THIS CONSOLE, AND THERE CANNOT BE ONE. The eboot is
+    * statically linked: there is no libvulkan.so to dlopen and no icd.d for anything to
+    * read. What exists is Mesa's RADV linked in as an archive, whose only public door is
+    * vk_icdGetInstanceProcAddr, and orbis-compat's vkloader puts the ordinary Vulkan C ABI
+    * in front of it - so vkGetInstanceProcAddr is a symbol this binary already has.
+    *
+    * Taken here rather than in a context driver because this is where the loader question
+    * is asked, and answering it anywhere else would leave the dylib path below reachable on
+    * a platform where it can only fail. */
+   /* Declared here rather than included: RetroArch's symbol wrapper defines
+    * VK_NO_PROTOTYPES, so no vk* prototype exists in this translation unit, and pulling in
+    * vkloader.h would drag a second vulkan.h include chain through a file that has already
+    * arranged its own. The signature is the one vkloader.c defines. */
+   extern PFN_vkVoidFunction VKAPI_CALL orbis_vkGetInstanceProcAddr(
+         VkInstance instance, const char *pName) __asm__("vkGetInstanceProcAddr");
+
+   GetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)orbis_vkGetInstanceProcAddr;
+#else
    if (!vulkan_library)
    {
 #ifdef _WIN32
@@ -2918,6 +2958,7 @@ bool vulkan_context_init(gfx_ctx_vulkan_data_t *vk,
       RARCH_ERR("[Vulkan] Failed to load vkGetInstanceProcAddr symbol, broken loader?\n");
       return false;
    }
+#endif
 
    vulkan_symbol_wrapper_init(GetInstanceProcAddr);
 
