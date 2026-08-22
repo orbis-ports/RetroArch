@@ -21,8 +21,10 @@
 #include "../../config.h"
 #endif
 
-#include <orbis/libScePad.h>
-#include <defines/ps4_defines.h>
+/* <orbis/libScePad.h> is not a header this SDK has - it is orbisdev's spelling - and
+ * defines/ps4_defines.h is deleted: every macro in it was either supplied correctly by one
+ * of the SDK's own type headers, or wrong. Neither was needed here - the joypad driver
+ * owns the pad. */
 
 #include <boolean.h>
 #include <libretro.h>
