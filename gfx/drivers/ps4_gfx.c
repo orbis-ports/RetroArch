@@ -36,6 +36,8 @@
 #include <string.h>
 
 #include <gfx/scaler/scaler.h>
+#include <compat/strl.h>
+#include <string/stdstring.h>
 #include <retro_miscellaneous.h>
 
 #ifdef HAVE_CONFIG_H
@@ -92,6 +94,13 @@ typedef struct ps4_video
    bool               keep_aspect;
    bool               smooth;
    bool               clear_pending;
+
+   /* ⚠ THE LAST MESSAGE, KEPT SO IT IS LOGGED ONCE. An OSD message stays up for its
+    * duration - 60 frames for a task notification - and this driver has no font to draw it
+    * with, so it goes to the log instead. Logging it per frame turned one "PS4 Controller
+    * configured in port 1" into eleven identical lines in the capture, and a 60-frame
+    * message into sixty. */
+   char               last_msg[128];
 } ps4_video_t;
 
 /* Where a source of in_w x in_h lands inside the display, letter- or pillarboxed. The
@@ -306,9 +315,18 @@ static bool ps4_gfx_frame(void *data, const void *frame,
    /* ⚠ NO ON-SCREEN MESSAGES. This driver has no font backend: RGUI draws its own bitmap
     * font into its own framebuffer, which is why the menu works, but `msg` has nowhere to
     * go. Every notification the frontend raises is invisible here and reaches the log
-    * instead. A font driver is Phase 7's problem, with the rest of the widgets. */
+    * instead - ONCE, on the frame it changes. A font driver is Phase 7's problem, with the
+    * rest of the widgets. */
    if (msg && *msg)
-      RARCH_LOG("[PS4] %s\n", msg);
+   {
+      if (!string_is_equal(msg, ps4->last_msg))
+      {
+         strlcpy(ps4->last_msg, msg, sizeof(ps4->last_msg));
+         RARCH_LOG("[PS4] %s\n", msg);
+      }
+   }
+   else
+      ps4->last_msg[0] = '\0';
 
    if (!drew)
    {
