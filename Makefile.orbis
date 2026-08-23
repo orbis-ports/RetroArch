@@ -419,16 +419,63 @@ ps4/oc_netlog.o: $(ORBIS_COMPAT_DIR)/optional/orbis_netlog.cpp
 $(ORBIS_COMPAT_LIB):
 	$(error orbis-compat is not built: no $(ORBIS_COMPAT_LIB). Run ./build.sh in $(ORBIS_COMPAT_DIR).)
 
+# ⚠ SAY WHAT WAS BUILT, EVERY LINK. The three switches below are invisible in the result: the ELF is
+# the same size either way, the .pkg is byte-for-byte the same size as the previous day's, and a
+# frontend built with HAVE_STATIC_DUMMY=1 simply shows no cores - which reads as a broken console,
+# a lost core directory or a stale info cache, and sends whoever is looking anywhere but here.
+#
+# Measured 2026-08-23: a rebuild made to carry a driver fix was invoked with HAVE_VULKAN=1 alone,
+# because that is the only flag the file's own comments name. It shipped, it installed, and the core
+# list was empty. Worse, it then WROTE AN EMPTY /data/retroarch/info/core_info.cache, which would have
+# kept the menu empty across every later install until somebody deleted it by hand.
+#
+# The configuration that loads .prx cores is all three together:
+#
+#   make -f Makefile.orbis HAVE_VULKAN=1 HAVE_STATIC_DUMMY=0 HAVE_DYNAMIC=1 -j$(nproc) pkg
+#
+# ⚠ AND CHANGING THEM NEEDS A `clean` FIRST - they are -D defines, and this Makefile has no header
+# dependencies, so objects built under the other setting are silently reused.
+# ⚠ THE DRIVER LINE BELOW USES A SHELL `if`, NOT make's own conditional function, and both of the
+# reasons cost a build:
+#
+#   1. make splits that function's arguments on the FIRST comma, and the text to print contains one.
+#      The line was truncated inside an open quote, and the link failed with "unexpected EOF while
+#      looking for matching quote" - AFTER the ELF had already been written.
+#   2. make expands variable references in recipe lines even when the line is a shell comment, so a
+#      comment that merely NAMED the function was expanded as a call to it and stopped the parse.
+#
+# Both were measured on 2026-08-23, in the space of five minutes, while adding a check meant to stop
+# exactly this kind of silence.
+define ORBIS_BUILD_SUMMARY
+   cores:    $(if $(filter 1,$(HAVE_DYNAMIC)),.prx modules via sceKernelLoadStartModule,STATIC DUMMY ONLY - the core list will be empty)
+   dummy:    HAVE_STATIC_DUMMY=$(HAVE_STATIC_DUMMY)
+   vulkan:   $(if $(filter 1,$(HAVE_VULKAN)),RADV linked from $(RADV_ARCHIVE),OFF - software rendering only)
+endef
+export ORBIS_BUILD_SUMMARY
+
 $(TARGET).elf: $(OBJ) $(ORBIS_COMPAT_LIB)
 	@$(if $(Q), $(shell echo echo LD $@),)
 	$(Q)$(LD) $(OBJ) $(LDFLAGS) $(LIBS) -o $@
+	@echo "== $@"
+	@echo "$$ORBIS_BUILD_SUMMARY"
+	@if [ "$(HAVE_VULKAN)" = "1" ]; then \
+	   echo "   driver:   built $$(date -r $(RADV_ARCHIVE) '+%Y-%m-%d %H:%M:%S') - $$(stat -c %s $(RADV_ARCHIVE)) bytes"; \
+	 fi
 
 # create-fself turns the ELF into an Orbis ELF and the eboot.bin a console expects.
 # unemups4 loads the plain .elf directly, so the eboot is only the hardware path.
 # PAID 0x3800000000000011 is the value every OpenOrbis sample uses for homebrew.
+#
+# ⚠ create-fself READS OO_PS4_TOOLCHAIN FROM THE ENVIRONMENT and refuses without it, even though
+# it is being invoked by absolute path out of that very toolchain. The `pkg` target below already
+# passes it; this one did not, so the build linked the ELF, failed here with status 255, and left
+# the PREVIOUS DAY'S eboot.bin and .pkg sitting beside a freshly linked .elf. Measured 2026-08-23:
+# a package that would have been installed as "the rebuild" and was nothing of the kind.
+#
+# It only ever worked because the shell that ran make happened to have the variable exported.
 eboot.bin: $(TARGET).elf
 	@$(if $(Q), $(shell echo echo FSELF $@),)
-	$(Q)$(OO_BINDIR)/create-fself -in=$(TARGET).elf -out=$(TARGET).oelf \
+	$(Q)OO_PS4_TOOLCHAIN=$(TOOLCHAIN) $(OO_BINDIR)/create-fself -in=$(TARGET).elf -out=$(TARGET).oelf \
 		--eboot $@ --paid 0x3800000000000011 >/dev/null
 
 # ⚠ THE .pkg IS THE ONLY THING A CONSOLE CAN INSTALL. eboot.bin alone is what unemups4

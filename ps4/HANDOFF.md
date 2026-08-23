@@ -458,10 +458,12 @@ SPIRV-Cross -> RADV/ACO -> GCN ISA on Liverpool, compiled at run time on the con
 exports. Three things had to be settled to get there, and each is general rather than specific to
 this core:
 
-* ⚠ **A dynarec needs a mirrored-mapping story this platform does not have.** Lightrec maps the
-  same PSX RAM pages at several addresses through `memfd_create`/`MAP_SHM`; neither exists here
-  (`libretro.c:2345-2574`). Built with `HAVE_LIGHTREC=0`, so the MIPS interpreter. Any dynarec core
-  will hit the same wall, and it is its own piece of work.
+* ~~⚠ **A dynarec needs a mirrored-mapping story this platform does not have.**~~ **SUPERSEDED
+  2026-08-23 - see the section at the end of this file.** Lightrec maps the same PSX RAM pages at
+  several addresses through `memfd_create`/`MAP_SHM`; neither exists here (`libretro.c:2345-2574`),
+  and that part is still true. **The conclusion drawn from it was not.** The platform's own
+  direct-memory API makes mirrored mappings, and it was measured doing so. `HAVE_LIGHTREC=0` is
+  still what the shipped core is built with, and the reason recorded for it no longer holds.
 * ⚠ **A core must use the Vulkan headers it was written against, not the driver's.** Forcing
   Mesa's current `vulkan_core.h` broke it on `VK_IMAGE_TYPE_RANGE_SIZE`, an enum removed from the
   spec years after this core started using it. The rule that the loader shim needs the exact
@@ -514,6 +516,14 @@ Each of these cost one experiment and each removed a whole class of cause.
 3. **Doubling the internal resolution changes nothing.** Different resolutions mean different
    pipeline variants; a shader miscompile would have moved. It did not, so ACO is not the first
    suspect.
+
+### ~~Where that leaves it: the vertex attribute path~~ SOLVED 2026-08-23
+
+⚠ **Read the correction at the end of this file before spending time on anything below.** The
+suspect named here was right in its neighbourhood and wrong in its name: the variable is not that
+the formats are integer, it is that their ELEMENTS ARE LARGER THAN FOUR BYTES. The driver was
+fetching them from addresses that are not multiples of their size, silently getting the wrong bytes,
+and it is fixed. Spyro 3 draws correctly now.
 
 ### Where that leaves it: the vertex attribute path
 
@@ -577,3 +587,248 @@ extension filter.
   relative path RetroArch opens - and it does open some, `Main Menu.png` among them - lands in
   another title's directory. Flagged on 2026-08-21 as harmless; it is not.
 * Assets, shaders and cores are hand-copied, and nothing tells a user when they are missing.
+
+---
+
+## 2026-08-23 — both open questions answered, from the driver side
+
+Written into this file by the Mesa workshop (`~/src-ps4/mesa-ps4`, `~/src-ps4/ps4-mesa-docs`)
+because both answers were measured there and both contradict something this file states as fact.
+The full account, with every log line, is `ps4-mesa-docs/docs/HANDOFF.md` from
+"The integer-attribute suspect has a name" onwards.
+
+### 1. The shredded models: SOLVED, and it was alignment rather than integers
+
+The suspect was one step off. Not "integer vertex formats are a thinly travelled path" - the
+variable is **element size**. `src/amd/common/ac_shader_util.c`'s `is_fetch_size_safe()` exempts
+GFX7-GFX9 from every alignment requirement: on those parts it declares any typed vertex fetch safe
+at any address. That is a claim about silicon, inherited from upstream, and **it is false on
+Liverpool.** A multi-byte element read from an address that is not a multiple of its size returns
+the wrong bytes, with no fault and no log.
+
+Measured with the Vulkan CTS, 1853 cases of `dEQP-VK.pipeline.monolithic.vertex_input`, same case
+list and same binary, one environment line apart:
+
+    believing the exemption   Passed 1657   Failed 98
+    splitting the fetches     Passed 1754   Failed  1
+
+97 Fail→Pass, 0 Pass→anything, 0 other verdict changes. The one survivor is a geometry-shader case
+and a different defect.
+
+**Why Beetle's picture looked the way it did:** formats built from 32-bit channels are immune,
+because dword alignment IS element alignment there. So the three `R32G32B32A32_SFLOAT` attributes
+were always correct and the three `R16G16B16A16_*` were not. ⚠ And the prediction this makes, which
+"integer formats are less travelled" does not: **attribute 2, `R8G8B8A8_UINT`, was never affected** -
+a 4-byte element is aligned wherever a dword is.
+
+Fixed in the driver, `ORBIS_VS_STRICT_ALIGN`, **on by default on this platform** and only this one.
+`ORBIS_VS_STRICT_ALIGN=0` restores the old behaviour and logs a warning, because the off state is now
+the dangerous one. Nothing is needed on the RetroArch side except a rebuild against a driver from
+2026-08-23 or later — the log line to check is
+
+    orbis: vertex fetches are split to natural alignment
+
+Its absence means the binary predates the fix. **Every title links `libvulkan_radeon.a` statically,
+so an installed build carries whatever driver it was linked with.**
+
+### 2. Where Spyro's frame actually goes, and it is not the GPU
+
+From the driver's own BUDGET instrumentation during a Beetle PSX HW session, 97 five-second windows:
+
+    menu           0.05 cores    60.0 fps
+    3D scene       1.00 cores    40 fps, and 1.00 cores at 23 fps
+    time waited for the GPU, in EVERY window without exception: 0 ms
+    the whole Vulkan API, per frame:  263 us against a frame of 43967 us  = 0.6%
+    23 draws, 4 render passes, 1.68 screenfuls of 1920x1080, 2 dispatches
+
+One CPU thread saturated, the GPU never waited on, the graphics driver at 0.1-0.4% of the window.
+⚠ **The audio running slow is the same fact, not a second one:** the core is at ~38% of realtime, so
+the samples come out at ~38% of the rate. Precaching the disc does not help because the bottleneck is
+not I/O. Internal resolution and renderer settings will not move it either - that is now measured
+rather than assumed.
+
+The interpreter is the entire cost, and the dynarec is the only lever.
+
+### 3. Lightrec's wall does not exist. All three mechanisms measured on hardware
+
+    mirrored RAM       sceKernelMapDirectMemory called repeatedly with the SAME phys gives EIGHT
+                       simultaneous views - the probe's own cap, not the kernel's; it had not
+                       refused. Coherent in BOTH directions at two offsets 2 MiB apart, and
+                       unmapping one leaves the rest intact.
+    fixed placement    ORBIS_MAP_FIXED puts a mapping at an address of our choosing. Not new -
+                       ac_orbis_drm.c:6464 does it in production every time a buffer moves bus.
+    executable code    map READ|WRITE, then sceKernelMprotect to 0x07, then EXECUTE. Six bytes of
+                       x86-64 (b8 ee ff c0 00 c3) were written and CALLED; it returned 0x00c0ffee
+                       and the process carried on.
+
+⚠ **THE OBVIOUS FORM OF THE LAST ONE IS REFUSED.** `sceKernelMapDirectMemory` asked for
+READ|EXECUTE up front returns `0x8002000d` = EACCES - understood and declined, not malformed. The
+policy lives at map time, not at protect time. **Anyone who tries the direct form first will conclude
+this is impossible**, which is exactly what the probe concluded one rung before it turned out true.
+
+⚠ **Only the mprotect route was actually EXECUTED.** `sceKernelMapFlexibleMemory` and
+`sceKernelMmap` both granted 0x07 as well and neither was called. On this console a granted
+protection is not an honoured one - it has charged for that distinction three times now.
+
+⚠ **`MAP_PRIVATE|MAP_ANON` is `0x1002` here, not `0x0022`.** The SDK's `sys/mman.h` is musl's and
+carries Linux's value; orbis-compat sits ahead of it in the include path and corrects it to the
+FreeBSD one. Passing the wrong value makes the kernel treat the mapping as file-backed, validate
+`fd = -1`, and return EBADF - which reads as a refusal of the protection and is nothing of the kind.
+`orbis-compat/src/orbis_mmap.cpp:53` has a `static_assert` for this. **Ask the compiler for
+constants (`clang -dM`), not a header you found with grep.**
+
+The probe is `orbis_test_mirror_mapping()` in `ac_orbis_drm.c`, behind `ORBIS_TEST_MIRROR=1` for the
+safe rungs and `=exec` for the jump. It runs once at device init in any title, takes 2 MiB and gives
+it back. If the port hits a wall, that ladder re-establishes the ground truth in one run.
+
+### What this does and does not promise
+
+It removes the reason recorded for not building Lightrec, and that reason was the whole of the case.
+**It does not say the port is short.** Lightrec brings its own code emitter, its own build system and
+its own assumptions about the host; the platform blockers are gone and the size of the remaining work
+is unmeasured.
+
+⚠ And one trap already in this file, worth re-reading before starting: turning `HAVE_LIGHTREC` back
+on needs `find -name '*.o' -delete` first. The core's Makefile has the stale-object problem, and
+switching the flag the other way already cost a link failure on `lightrec_destroy`.
+
+### ⚠ And the build line, because this file never wrote it down and that cost a package
+
+The frontend needs **three** flags, not one. `Makefile.orbis`'s own comments put only
+`HAVE_VULKAN=1` in a command line, and a rebuild made with just that shipped, installed, booted,
+drew — and showed **no cores at all**:
+
+    make -f Makefile.orbis HAVE_VULKAN=1 HAVE_STATIC_DUMMY=0 HAVE_DYNAMIC=1 -j$(nproc) pkg
+
+⚠ **Changing any of them needs a `clean` first.** They are `-D` defines and this Makefile has no
+header dependencies, so objects built under the other setting are silently reused.
+
+⚠ **Nothing in the artefact says which configuration it is.** The ELF is the same size either way and
+the `.pkg` has come out 41680896 bytes for four days running. The grep that answers it:
+
+    sceKernelLoadStartModule    static build 0    dynamic build 3
+    libretro_dummy              25 either way, so NOT the marker to look for
+
+The link step now prints the configuration every time (`cores:`, `dummy:`, `vulkan:`, and the driver
+archive's build date), so this should not be able to recur silently.
+
+⚠ **A static build also POISONS `/data/retroarch/info/core_info.cache`** — it writes 65 bytes
+decompressing to `{"version": "1.2", "items": []}`, and that empty cache keeps the menu empty across
+every later install until somebody deletes it by hand. If the core list is empty after a good build,
+delete that file first.
+
+Two defects in `Makefile.orbis` were fixed while finding this, both uncommitted for review:
+
+    the eboot.bin recipe did not pass OO_PS4_TOOLCHAIN, which create-fself reads from the
+    environment and refuses without - although it is invoked by absolute path out of that very
+    toolchain. The `pkg` target passes it; this one did not. The build linked a new .elf, failed at
+    status 255, and left the PREVIOUS DAY'S eboot.bin and .pkg beside it, ready to be uploaded as
+    "the rebuild". It had only ever worked because the shell that ran make happened to export it.
+
+    the link step now prints what it built, as above.
+
+### How everything here is compiled, so it is not rediscovered
+
+Verified against the trees on 2026-08-23. Every path is a real entry point that was run that day.
+
+**Order matters.** The overlay is what the driver and the frontend both compile against, and the
+driver is what the frontend links, so a change low down means rebuilding upward:
+
+    1  orbis-compat   ./build.sh                      -> build/liborbis-compat.a
+    2  mesa-ps4       ./ps4/build.sh                  -> build-orbis/src/amd/vulkan/libvulkan_radeon.a
+    3  RetroArch      make -f Makefile.orbis ... pkg  -> eboot.bin, IV0000-RTRA00001_*.pkg
+    3b cores          ps4/build-core.sh               -> <name>_libretro.prx + .info
+
+⚠ **Nothing rebuilds anything below it automatically.** The frontend links whatever
+`libvulkan_radeon.a` is sitting there; it does not check whether the driver sources are newer. The
+link step prints the archive's build date for exactly that reason - **read it, and ask whether that
+is the driver you meant.**
+
+    orbis-compat/build.sh
+        Consumers need exactly two things, and both matter:
+          -isystem <orbis-compat>/include   AHEAD of the SDK's include directory
+          build/liborbis-compat.a           with --whole-archive
+        ⚠ The include order is not a preference. The SDK ships musl's headers behind a FreeBSD
+        triple, and the overlay corrects the constants that differ - MAP_ANON among them. Put the
+        SDK first and you get Linux values for a FreeBSD kernel, silently.
+
+    mesa-ps4/ps4/build.sh   [--host-too] [--host-orbis] [--sdk <dir>] [--work <dir>]
+        no arguments   cross-build the driver for the console. This is the one that matters.
+        --host-too     also build a plain Linux RADV, for the drm-shim probes
+        --host-orbis   build THIS arm as an ordinary Linux ICD and run its self-tests. Catches
+                       anything structural without a console trip.
+        ⚠ It prints the driver path and modification time every run because a path that looks
+        right pointing at another day's build has cost this workshop an evening.
+
+    RetroArch  make -f Makefile.orbis HAVE_VULKAN=1 HAVE_STATIC_DUMMY=0 HAVE_DYNAMIC=1 -j$(nproc) pkg
+        The three flags and the `clean` rule are in the section above. `make ... info` dumps the
+        whole flag set if something looks wrong.
+
+    RetroArch  ps4/build-core.sh --core <dir> --out <path> [--prx] [--name <label>] [--common <dir>]
+        --prx     a loadable module rather than a static archive
+        --name    also writes the minimal <out>.info RetroArch needs to show a readable name
+        --common  use the FRONTEND's libretro-common instead of the core's own vendored copy,
+                  which for anything predating this platform still has the orbisdev-era ORBIS
+                  branch and will not compile
+
+**All four resolve the toolchain and the overlay the same way**, through
+`orbis-compat/scripts/ps4/orbis-env.sh`: `ORBIS_COMPAT_DIR` if set, else a sibling directory, else
+`~/src-ps4/orbis-compat`; and `OO_PS4_TOOLCHAIN` or `~/.local/opt/openorbis`. A fresh clone of the
+`orbis-ports` organisation with the repositories side by side needs no environment at all.
+
+    deploy   orbis-compat/scripts/ps4/deploy.sh --pkg <file> --name <short>
+                                                [--also <local>:<remote>]... [--host <ip>]
+        Uploads to /data/pkg/<name>-YYYYMMDD.pkg - ⚠ this console installs from /data/pkg and
+        nowhere else. Verifies by READING BACK: sizes for packages, byte-for-byte for anything
+        under a megabyte. It ends by saying INSTALL + RUN or RUN, no install, and that line is
+        the answer to "do I need to reinstall".
+
+    configuration on the console
+        /data/tempest-env.txt    read first, by every title
+        /data/retroarch-env.txt  read second, ours, and only the log destination belongs in it
+        Both are plain KEY=VALUE, applied with setenv() before anything touches Vulkan.
+
+⚠ **The Beetle PSX HW source is NOT in this workshop.** The built `.prx` and its `.info` are on the
+console under `/data/retroarch/cores/` and `/data/retroarch/info/`, and the checkout they came from
+is not on the machine - a search on 2026-08-23 found nothing. Anyone picking up the Lightrec work
+starts by fetching the core again, and the `orbis` platform arm its Makefile grew is not upstream.
+
+### Where the Lightrec work goes: one fork, and probably only one
+
+    orbis-ports/beetle-psx-libretro, branch ps4-support
+
+Upstream is `beetle-psx-libretro`; the binary it produces here is `mednafen_psx_hw_libretro.prx`.
+Same shape as the other eight repositories in the organisation.
+
+**Why one fork and not two.** Lightrec is a separate project (pcercuei's) vendored into the core, so
+the instinct is that a platform change belongs upstream in Lightrec. ⚠ **The evidence in this file
+says otherwise:** the citation for the mirrored-mapping code is `libretro.c:2345-2574`, and that is
+**Beetle's own file, not Lightrec's**. The recompiler is handed pointers; arranging the host mappings
+is the core's job. If that holds, the whole change is one fork and Lightrec is untouched.
+
+⚠ **UNVERIFIED - the core's source is not in this workshop and this was not checked.** After
+cloning, two greps settle it:
+
+    rg -n "memfd_create|MAP_SHM|mmap" --glob '!deps/lightrec/**' libretro.c
+    rg -rn "memfd_create|MAP_SHM" deps/lightrec/
+
+Hits only in the first: one fork. Hits in the second as well: Lightrec maps for itself, that is a
+general "platform without POSIX shared memory" problem rather than ours, and it belongs upstream in
+Lightrec rather than in a PS4 fork of the core.
+
+⚠ **And the port work may not all be recoverable from a fresh clone.** The `orbis` platform arm this
+file records the core's Makefile growing is **not upstream**, and the checkout it was written in is
+gone. Look for a patch or a stashed tree before starting from zero; if there is none, that arm has to
+be written again, and this file's own note that its `libretro-common` is too old to compile here
+applies from the first build.
+
+### ⚠ Do not switch cores to get a better recompiler
+
+`pcsx_rearmed` has a mature x86-64 dynarec and is far lighter than Beetle, which makes it look like
+the shorter road. **It has no Vulkan hardware renderer.** Beetle PSX HW is the only thing in this
+port where foreign graphics code builds its own pipelines on our RADV, and it is what found the
+vertex-fetch defect that had been silently corrupting every title. Moving to a software-rendered core
+would trade the whole diagnostic value of this arrangement for a frame rate, and would throw away the
+port work already spent on Beetle.
+
+The core is right. The recompiler is what is missing from it.
