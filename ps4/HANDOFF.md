@@ -1090,3 +1090,34 @@ because its byte-for-byte check is limited to files under a megabyte.)
 unicast datagram to exactly one of them and which one is not defined. "The log says nothing"
 can mean "it went to a file from two days ago". Check with `ss -ulnp | grep 18194` before
 reading silence as evidence.
+
+### Confirmed on hardware, same evening
+
+    [Lightrec]: Threaded recompiler started with 5 workers.
+
+⚠ **The first attempt at this reported `1 workers` from a correct fix**, and that is its own
+entry above: `-MMD` omits `-isystem` headers, so nothing rebuilt and the `.prx` came out
+byte-identical in size. `beetle-psx-libretro/ps4/build.sh` now stamps the overlay's newest
+mtime alongside HAVE_LIGHTREC and cleans when either moves.
+
+What the driver's BUDGET saw, gameplay windows only:
+
+    before (PGXP on, 1 worker)     1.00 cores flat    152-189 presents / 5 s   ~31-38 fps
+    after  (options + 5 workers)   0.80-0.95 cores    197-260 presents / 5 s   ~39-52 fps
+
+⚠ **That delta does NOT separate the core options from the worker count** - both changed
+between the two measurements, and the frontend was never run with one without the other. If
+the split matters, `ORBIS_NCPU=1` in `/data/retroarch-env.txt` isolates the workers without a
+rebuild.
+
+Audio, which is the other thing five compile threads on six cores could have wrecked:
+
+    1 worker    warm-up burst to 1145 underruns, then FLAT - no new underruns for two minutes
+    5 workers   warm-up burst to  879 underruns, then FLAT from 40 s after load
+
+So the burst is recompilation warm-up in both cases and it got *shorter*, not longer. No
+starvation. One window did show 70 submissions and 61 presents at 0.95 cores - about 12 fps -
+which is a genuinely heavy moment rather than a regression.
+
+The GPU still waited 0 ms. Internal resolution remains free, and the remaining cost is
+Beetle's own C++ (GPU command translation, SPU) plus the recompiled code itself.
