@@ -1171,3 +1171,41 @@ being measured.
 
 `ORBIS_NCPU` has been removed from the console's env file. The default of 6 stands, because a
 shorter warm-up for free is still worth having.
+
+### Where the frame goes inside the core - and the target it is already hitting
+
+⚠ **The per-thread route is closed.** `sceKernelGetCpuUsage` links and returns `0x8002004e`,
+ENOSYS - this kernel does not offer it to this process. `ps4/ps4_threads.c` keeps the attempt
+and the return code so nobody spends an evening on it again.
+
+The split therefore comes from inside the core (`ORBIS_CORE_PROFILE=1`, beetle's `retro_run`).
+Twelve consecutive five-second windows, Spyro 3, hardware renderer, 2x internal:
+
+    249 frames every window, without exception   = 49.78 fps
+    CPU_Run              9.8-12.3 ms/f   49-61%   emulated machine + everything it schedules
+    rest of retro_run    7.8-10.3 ms/f   38-51%   parallel-psx building the frame, audio batch
+    outside the core                       0.1%   the frontend itself
+
+⚠ **THE DISC IS PAL AND THE CORE IS AT 100% OF TARGET.**
+
+    [Core] Geometry: 320x240, FPS: 50.0000, Sample rate: 44100 Hz
+    SET_SYSTEM_AV_INFO: FPS: 49.7610
+
+49.76 requested, 49.78 delivered. There is no deficit left to recover in steady state - but the
+thread is 99.9% busy doing it, so there is also no slack. Anything gained from here buys margin
+against the dips rather than frames.
+
+⚠ **HALF THE FRAME IS NOT THE RECOMPILER**, which is the answer to "can the JIT be optimised
+further": at most half of a frame that is already meeting its target. And `rest` is not the
+software framebuffer - that option is already off - nor the driver, whose submit path BUDGET
+puts at 0.3% of wall. It is parallel-psx's own command building, above the driver.
+
+⚠ **AND THERE IS A PACING PROBLEM NO AMOUNT OF SPEED FIXES:**
+
+    [Video] Timings deviate too much. Will not adjust. (Target = 59.94 Hz, Game = 50.00 Hz)
+
+A 50 Hz game on a 59.94 Hz output judders by construction, and this console does not output 50
+Hz. An NTSC copy of the same title would match the display exactly. Worth knowing before
+anyone reads uneven pacing as a performance problem and optimises at it.
+
+`beetle_psx_dynarec_spgp_opt` is still `disabled` - the one recommended knob not applied.
