@@ -234,7 +234,7 @@ endif
 # and obliges the link to carry -lSceNet; orbis_netlog.cpp is the UDP transport under it.
 # Both register into orbis_log.h's hooks, which is how the overlay's own corrections get
 # a channel without knowing this file exists.
-ORBIS_COMPAT_OBJ := ps4/oc_ps4_app.o ps4/oc_netlog.o ps4/ps4_log.o ps4/ps4_mem.o ps4/ps4_video_out.o
+ORBIS_COMPAT_OBJ := ps4/oc_ps4_app.o ps4/oc_netlog.o ps4/ps4_log.o ps4/ps4_mem.o ps4/ps4_video_out.o ps4/ps4_threads.o
 
 # ⚠ APPENDED AFTER THE := ABOVE, for the fourth time in this file and the same reason
 # every time: a `+=` that runs before the assignment it means to extend is thrown away.
