@@ -832,3 +832,157 @@ would trade the whole diagnostic value of this arrangement for a frame rate, and
 port work already spent on Beetle.
 
 The core is right. The recompiler is what is missing from it.
+
+---
+
+## 2026-08-23 (evening) — Lightrec built, and the fork it lives in
+
+The Mesa side's entry above removes the reason this file recorded for not building the dynamic
+recompiler. This is the other half: the recompiler is built, it is on by default here, and the
+core is on the console. **It has not been run on hardware yet** - what follows is what was
+written and why, not what was measured.
+
+### ⚠ First: the checkout this file said was gone is not gone
+
+The entry above records the Beetle PSX HW source as unrecoverable - "a search on 2026-08-23
+found nothing" - and tells whoever picks the work up to re-fetch it and rewrite the platform
+arm. It was in the previous session's **scratchpad** (`/tmp/claude-1000/.../scratchpad/`), with
+the `orbis` arm uncommitted in its working tree, exactly as it had been left.
+
+The search was of `~` and `~/src-ps4`. A scratchpad is where a session is *told* to put
+working files, so it is the first place to look for a missing one and it was not looked at.
+The tree is now `~/src-ps4/beetle-psx-libretro`, branch `ps4-support`, origin
+`git@github.com:orbis-ports/beetle-psx-libretro.git` (not yet pushed - the repository may not
+exist yet), upstream `libretro/beetle-psx-libretro`. The recovered arm is its first commit, so
+the Lightrec work reads as a diff against it rather than as one lump.
+
+### The fork is one fork, and the grep the entry above asked for has been run
+
+    rg "memfd_create|MAP_SHM|mmap" libretro.c        53 hits
+    rg "memfd_create|shm_open" deps/lightrec/         0 hits
+
+Confirmed: arranging host mappings is **Beetle's** job, not Lightrec's. The recompiler is
+handed pointers. Nothing goes upstream to pcercuei; the whole change is in this fork.
+
+### What the platform arm actually needed
+
+`libretro.c` builds the maps behind five macros and a descriptor - `MAP`, `MAP_SHM`,
+`MAP_CODE`, `UNMAP`, `MFAILED`, and a `MEMFDTYPE`. Every existing arm fills them with POSIX
+shared memory, ashmem or Win32 file mappings. The PS4 arm fills them with Sony's allocator, and
+the shapes line up one for one:
+
+    memfd_create + ftruncate    ->  sceKernelAllocateDirectMemory   (physical pages, an off_t)
+    mmap(MAP_SHARED, memfd)     ->  sceKernelMapDirectMemory        (a view of those pages)
+    mmap(MAP_ANON|MAP_PRIVATE)  ->  the same call on its own allocation
+    PROT_EXEC at mmap time      ->  REFUSED - map RW, then sceKernelMprotect
+
+`MEMFDTYPE` is `off_t` here and the "memfd" is not a descriptor: it is the offset into the
+console's physical memory. New files: `ps4/orbis_lightrec_mem.{c,h}` in the core.
+
+### ⚠ Three things that differ from every other arm, and all three are load-bearing
+
+**MAP_FIXED here has no `_NOREPLACE` form.** The Linux arm asks for an address and checks what
+came back; on this kernel the check runs after the frontend's heap has already been replaced.
+Every fixed mapping asks whether the range is empty first.
+
+**The range check walks a granule at a time, deliberately.** The natural call is
+`sceKernelVirtualQuery(addr, 1, ...)` - "the first mapping at or above" - one call for a whole
+range. Nothing in this workshop has ever passed 1. The only established value is 0, from
+`ac_orbis_drm.c`, where a nonzero return means nothing is mapped there. ⚠ **The two ways of
+being wrong are not the same size:** a guessed flag that makes the call fail reports every
+address as free, MAP_FIXED lands on the heap, and the result is a corrupted process rather than
+a refusal. Being too conservative only loses the recompiler. ~18,000 queries per content load
+buys that, which is nothing against the load itself. If flags=1 is ever established, it
+collapses to one call.
+
+**Direct memory is not reclaimed when a mapping goes away**, and `lightrec_init_mmap` is called
+*twice* on the way in (hugetlb, then without). Released explicitly on both the failing and the
+succeeding path, or it is 2 MiB of unswappable memory per content load.
+
+### The code buffer is mandatory here, unlike everywhere else
+
+Without one, Lightrec lets GNU lightning allocate its own with `mmap(PROT_EXEC)`
+(`deps/lightning/lib/lightning.c:2516-2531`). This kernel refuses execute at map time. ⚠ **A
+block emitted into non-executable pages does not fail, it ends the process** - so if the
+promotion to RWX is refused, `psx_dynarec` is clamped to `DYNAREC_DISABLED` and the interpreter
+runs, with a line saying why.
+
+The guard is in two places because the core reads its options *before* it maps anything:
+`check_variables` sees "refused", `InitCommon` sees "not available". "Not tried yet" must not
+read as "refused", or the recompiler switches itself off on the way in every time.
+
+### The option default is flipped on this platform only
+
+Upstream defaults `beetle_psx_cpu_dynarec` to `disabled` and hides it under **Hacks**. Given
+the measurement in the entry above - one CPU thread saturated, the GPU waited on for 0 ms in
+every window, the whole Vulkan API at 0.6% of the frame - an interpreter default here is an
+unplayable default. `#ifdef __ORBIS__` -> `"execute"`, everywhere else unchanged.
+
+⚠ **A saved `.opt` file wins over a default.** `/data/retroarch/config/Beetle PSX/Beetle
+PSX.opt` on the console has no `cpu_dynarec` line, because the core that wrote it had no such
+option - so the new default does apply. Delete the line, not the file, if this ever needs
+re-testing.
+
+### ⚠ The build is reproducible now, which it was not
+
+The `.prx` that ran for a day could not be rebuilt from the repository: the arm was
+uncommitted and the link was a shell command nobody wrote down. `ps4/build.sh` in the fork is
+that link. Two things it exists to prevent:
+
+    make platform=orbis           tries to LINK, with $(LD) = $(CXX) = the host driver, and
+                                  fails on host libstdc++. The previous route was to run make,
+                                  let the link fail, and pick .o files out of the tree.
+    make platform=orbis objects   a new target: compile and stop. This is what build.sh uses.
+
+`STATIC_LINKING` is not the escape - it is a `-D` define about whether the core is built INTO a
+frontend, not a link mode.
+
+⚠ **`HAVE_LIGHTREC` needs a clean when it changes.** It is a `-D` define with no header
+dependency, so objects built the other way are silently reused - which already cost a link
+failure on `lightrec_destroy`. `build.sh` keeps a `.ps4-lightrec` stamp and cleans itself.
+
+### On the console now
+
+    /data/retroarch/cores/mednafen_psx_hw_libretro.prx   18903168 bytes, mode 777
+    /data/retroarch/info/mednafen_psx_hw_libretro.info   mode 666
+    /data/retroarch/info/core_info.cache                 DELETED, as it must be after any change
+
+Nothing on the frontend side changed and no RetroArch rebuild is needed - the whole change is
+inside the core.
+
+### What the first run should say
+
+The lines to look for, in order. `[PS4] lightrec:` is the prefix throughout.
+
+    <addr> is taken (...)              one per rejected io_base, with what is there. This is
+                                       the only account of where this process's address space
+                                       is, and it is worth reading even on a successful run.
+    N KiB code buffer at <addr>, writable and executable
+                                       the promotion worked. Absent means it did not.
+    no executable code buffer ...      the clamp fired; the interpreter is running.
+
+Then the frame rate. The interpreter measured ~38% of realtime on Spyro 3 (40 fps in scene, 23
+fps in the worst window). ⚠ **Audio pitch is the same fact as the frame rate here**, not a
+second problem: the core runs slow, so samples come out slow.
+
+### Still open, unchanged from the entry above
+
+* The close-hang every title on this Mesa has.
+* `orbis_paths.cpp:19` hard-codes `/data/OpenGothic/` as the relative-path anchor.
+* `ORBIS_TILE_MODE` has no reader in mesa-ps4 and `tempest-env.example.txt` documents it.
+* The temporary ORBIS instrumentation in `vfs_implementation.c` and `core_info.c` - both carry
+  "Remove once ps4/HANDOFF.md has the answer", and both answers are in this file now.
+
+### And one upstream defect found on the way, not fixed
+
+`libretro.c`'s generic no-shared-memory arm does not compile, and has not for as long as the
+mman deps have been there:
+
+    #define MAP_SHM(addr,size,fd,offset)\
+    #define MAP_CODE(addr,size,fd,offset)\
+            MAP(addr,size,fd,offset)
+
+The first `#define` ends in a backslash with nothing after it, so it swallows the `#define`
+below it and `MAP_SHM` becomes an empty macro that is then called as a function. Any platform
+falling into that arm gets four errors. Left alone here - the PS4 arm sits above it and fixing
+it invites a conflict with upstream - but it is why nobody has exercised that path.
