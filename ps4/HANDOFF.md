@@ -986,3 +986,107 @@ The first `#define` ends in a backslash with nothing after it, so it swallows th
 below it and `MAP_SHM` becomes an empty macro that is then called as a function. Any platform
 falling into that arm gets four errors. Left alone here - the PS4 arm sits above it and fixing
 it invites a conflict with upstream - but it is why nobody has exercised that path.
+
+---
+
+## 2026-08-23 (late) — the recompiler runs, and what was actually slowing it down
+
+Measured on hardware, not predicted. Beetle PSX HW, Spyro 3, Vulkan renderer, 2x internal.
+
+    [PS4] lightrec: calling 0x10800000 to see whether it executes...
+    [PS4] lightrec: 0x10800000 returned 0x00c0ffee - the code buffer executes
+    [PS4] lightrec: 8192 KiB code buffer at 0x10800000, writable and executable
+    Lightrec map addresses: M=0x10000000, P=0x899a9c020, R=0x2fc00000, H=0x2f800000
+    [Lightrec]: Using 32-bit LUT
+
+The io_base search took the FIRST 32-bit candidate, 0x10000000, so the mirrors, the BIOS at
++0x1fc00000 and the scratch pad at +0x1f800000 all placed on the first try and the 32-bit LUT
+is available. `mirrors_mapped` is true; the map is not "perfect" only because that requires the
+guest's RAM at host address 0, which libretro.c deliberately refuses (psx_mem == NULL would be
+indistinguishable from failure).
+
+### ⚠ The first run failed, and the defect was in the check rather than the platform
+
+    lightrec: sceKernelMprotect returned 0 for 0x10800000 but the range reads back as
+              prot 0x03, without execute. Not using it.       (x16, one per base address)
+
+**`sceKernelQueryMemoryProtection` reports the protection a range was MAPPED with, not the one
+`sceKernelMprotect` has just set.** The pages were executable throughout; mesa-ps4's probe had
+already established that by CALLING a stub in exactly this arrangement (`MIRROR rung 7 OK`,
+same day). It never asked the query API, so nothing had caught it.
+
+⚠ **This is the fifth call on this console that answers, and answers about something else** -
+after GB_ADDR_CONFIG, the three tessellation registers, and the readerless env knobs. The rule
+this workshop keeps re-learning has a sharper form now: **on this platform, a query API is not
+a measurement of the thing it names.** The check was not deleted, it was replaced with the
+probe's own: write `b8 ee ff c0 00 c3` into the buffer and call it, expect 0x00c0ffee.
+
+⚠ **And the pair of log lines around that jump are BOTH at RARCH_ERR on purpose.** This
+frontend puts everything below ERR on UDP alone (ps4/ps4_log.h). The warning before the jump
+was at ERR and the confirmation after it was at INFO, so a klog reader saw "calling %p" and
+then nothing - which is exactly what the death that line warns about looks like.
+
+### Where the frame really went, and it was a core option
+
+With the recompiler running the driver's BUDGET instrumentation still said, in twelve
+consecutive five-second windows:
+
+    1.00 cores busy    exactly one thread saturated
+    GPU waited 0 ms    every window, no exception
+    submit path        12-18 ms out of 5000 = 0.3%
+
+The saved options carried **`beetle_psx_pgxp_mode = "memory only"`**. That is not cosmetic:
+`mednafen/psx/cpu.c` in PGXP memory mode sets
+
+    lightrec_map[PSX_MAP_KERNEL_USER_RAM].ops = &pgxp_nonhw_regs_ops;
+    lightrec_map[PSX_MAP_BIOS].ops            = &pgxp_nonhw_regs_ops;
+    lightrec_map[PSX_MAP_SCRATCH_PAD].ops     = &pgxp_nonhw_regs_ops;
+
+Without PGXP those three are NULL and recompiled code reads memory directly. With it, **every
+load and store to main RAM becomes a C function call**, which is the most expensive single
+thing that can be switched on in a PSX dynarec. The whole benefit is geometry precision.
+
+The set that made it smooth, all live-togglable (cpu.c:2890 watches pgxpMode, invalidate and
+spgp and re-inits Lightrec without a reload):
+
+    PGXP Operation Mode                 Memory Only -> Disabled     the big one
+    Dynarec SP GP Hit RAM Optimization  Disabled    -> Enabled
+    Dynarec Code Invalidation           Full        -> DMA Only
+    Dynarec …Event Cycles               128         -> 512
+    GTE Overclock                       Enabled     -> Disabled     an overclock costs host time
+    Software Framebuffer                Enabled     -> Disabled     the only visual risk
+
+⚠ **Internal resolution is NOT a lever here and raising it is nearly free** - the GPU waited
+0 ms in every window measured, both before and after.
+
+### ⚠ A stub that returns -1 is not a neutral stub
+
+    [Lightrec]: Threaded recompiler started with 1 workers.
+
+on six cores. `orbis-compat/include/sys/sysctl.h` answered every sysctl with -1, and **every
+caller's fallback for "how many CPUs" is one** - the answer that switches parallelism off
+rather than degrading it. Lightrec's `recompiler.c` takes the `__FreeBSD__` arm,
+`sysctlbyname("hw.ncpu", ...) ? 1 : count`; Mesa's `u_cpu_detect.c` asks the same question with
+a `{CTL_HW, HW_NCPU}` mib, in every title.
+
+Fixed in the overlay, both spellings, six cores, `ORBIS_NCPU` to override. Six and not a guess
+at seven: `sceKernelGetCpumode()` exists and reportedly separates the two modes, but this SDK
+ships no constants for its return values and six against seven is a rounding error beside six
+against one.
+
+⚠ **Mesa does not get this until it is rebuilt**, and whether it should is an open question
+rather than an oversight: more util threads in a driver the GPU never waits on could contend
+with the emulation thread. That is a measurement somebody should make deliberately.
+
+### Two console-facing traps found while doing this
+
+⚠ **FTP hands back a `.prx` DECRYPTED.** A file uploaded as 18903088 bytes of self reads back
+as 19807720 bytes starting `7F 45 4C 46`. md5 can never match, and an upload that worked looks
+like an upload that silently failed. Verify by SIZE and MTIME. (`deploy.sh` dodges this only
+because its byte-for-byte check is limited to files under a megabyte.)
+
+⚠ **Two UDP log receivers were bound to 18194** - one from that day and one left over from
+2026-08-21. `log-receiver.py` sets `SO_REUSEADDR` and not `SO_REUSEPORT`, so Linux delivers a
+unicast datagram to exactly one of them and which one is not defined. "The log says nothing"
+can mean "it went to a file from two days ago". Check with `ss -ulnp | grep 18194` before
+reading silence as evidence.
