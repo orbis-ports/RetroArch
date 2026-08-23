@@ -1121,3 +1121,48 @@ which is a genuinely heavy moment rather than a regression.
 
 The GPU still waited 0 ms. Internal resolution remains free, and the remaining cost is
 Beetle's own C++ (GPU command translation, SPU) plus the recompiled code itself.
+
+### ⚠ The isolation run first measured nothing, and found something larger
+
+`ORBIS_NCPU=1` was written into `/data/retroarch-env.txt`, the console relaunched, and the core
+reported **five** workers. Not a parse error, not a stale build.
+
+**The SDK's `libc.a` is a real static musl archive** - 1481 objects, `getenv` and `setenv` as
+defined text rather than stubs into a shared libc module. So the eboot and every `.prx` it
+loads link their own copy, each with its own `environ`. `platform_orbis.c`'s reader setenv()s
+into the *executable's*; a core calling `getenv()` reads its own, which nothing ever wrote.
+
+⚠ **EVERY ENV KNOB THIS WORKSHOP HAS IS EXPOSED TO THIS, and none of them showed it.**
+ORBIS_3D_LINEAR, ORBIS_NO_TESS, MESA_LOG_FILE, RADV_DEBUG, all of tempest-env.example.txt - all
+read by Mesa, and Mesa is linked INTO the executable. The first knob that had to reach a
+loadable module was the first to fail, and it failed by looking exactly like a knob with no
+reader: a clean run that reads as a measurement. That is the shape tempest-env.example.txt
+spends half its length warning about, and it had a second cause nobody had named.
+
+Fixed in the overlay: `orbis_env_get()` (`orbis-compat/src/orbis_env.cpp`, `include/orbis_env.h`)
+answers from the image's own environment first and falls back to parsing the env files itself.
+`sys/sysctl.h` uses it. ⚠ **Anything in a `.prx` that reads a knob must use it rather than
+`getenv()`.** The file list naming "retroarch" is a seam, not a design - the honest mechanism is
+a loader handing its module what it applied, and libretro has no channel for that.
+
+### What the workers are actually worth
+
+With the fix in, `ORBIS_NCPU=1` took, and the comparison is:
+
+    warm-up underruns before the count goes flat
+      1 worker    1145  and  1124   (two independent runs, which is why this metric is trusted)
+      5 workers    879                (one run)
+    steady state  both FLAT - zero new underruns in either
+    frame rate    NOT distinguishable; presents per window overlap and the scenes differ
+
+So the workers buy a **warm-up about 22% shorter and nothing at all afterwards**, which is what
+they should buy: they compile blocks, and once the blocks are compiled there is no work left.
+
+⚠ **THE SMOOTHNESS WAS THE CORE OPTIONS, PRINCIPALLY PGXP** - not the worker count. Both changed
+in the same interval earlier and the entry above said the delta could not separate them. It can
+now, and the answer is that the part which felt like the win was the part that was not being
+tested. ⚠ The 5-worker figure is n=1; the 1-worker figure replicated. A second 5-worker sample
+would firm it up.
+
+`ORBIS_NCPU` has been removed from the console's env file. The default of 6 stands, because a
+shorter warm-up for free is still worth having.
