@@ -1149,20 +1149,25 @@ a loader handing its module what it applied, and libretro has no channel for tha
 
 With the fix in, `ORBIS_NCPU=1` took, and the comparison is:
 
-    warm-up underruns before the count goes flat
-      1 worker    1145  and  1124   (two independent runs, which is why this metric is trusted)
-      5 workers    879                (one run)
-    steady state  both FLAT - zero new underruns in either
+    warm-up underruns before the count goes flat, two runs each
+      1 worker    1145, 1124     mean 1134   spread  21  (1.9%)     flat at ~45 s
+      5 workers    879,  831     mean  855   spread  48  (5.6%)     flat at ~38 s
+    steady state  both FLAT afterwards - zero new underruns, held for two minutes
     frame rate    NOT distinguishable; presents per window overlap and the scenes differ
 
-So the workers buy a **warm-up about 22% shorter and nothing at all afterwards**, which is what
-they should buy: they compile blocks, and once the blocks are compiled there is no work left.
+**24.6% shorter warm-up, and nothing at all afterwards** - which is what the workers should
+buy: they compile blocks, and once the blocks are compiled there is no work left. The two
+groups do not overlap - the worst 5-worker run (879) is comfortably below the best 1-worker run
+(1124), and the 245-underrun gap is five times either group's internal spread.
 
 ⚠ **THE SMOOTHNESS WAS THE CORE OPTIONS, PRINCIPALLY PGXP** - not the worker count. Both changed
 in the same interval earlier and the entry above said the delta could not separate them. It can
 now, and the answer is that the part which felt like the win was the part that was not being
-tested. ⚠ The 5-worker figure is n=1; the 1-worker figure replicated. A second 5-worker sample
-would firm it up.
+tested.
+
+⚠ **The metric is warm-up underruns, and it is only comparable across runs that BOOT THE DISC.**
+Loading a save state skips the code the first run had to compile, which is the whole quantity
+being measured.
 
 `ORBIS_NCPU` has been removed from the console's env file. The default of 6 stands, because a
 shorter warm-up for free is still worth having.
