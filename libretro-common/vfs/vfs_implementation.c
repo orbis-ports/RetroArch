@@ -192,15 +192,6 @@
 
 #include <vfs/vfs_implementation.h>
 
-#if defined(ORBIS)
-#include "../../ps4/ps4_log.h"
-/* ⚠ PER-DIRECTORY, NOT A GLOBAL BUDGET. The first version of this counted 24 entries across
- * the whole process, which the core and playlist listings spent before the directory under
- * investigation was ever opened - so the interesting listing logged nothing and looked like
- * a readdir that returned no entries. Reset on every opendir; a cap that hides the case you
- * are looking at is worse than no cap. */
-static unsigned ps4_dirent_said;
-#endif
 #include <libretro.h>
 #if defined(HAVE_MMAP)
 #include <memmap.h>
@@ -2089,16 +2080,6 @@ libretro_vfs_implementation_dir *retro_vfs_opendir_impl(
    rdir->entry           = NULL;
 #endif
 
-#if defined(ORBIS)
-   /* ⚠ TEMPORARY, AND BOUNDED. A directory the frontend created lists fine and one copied in
-    * over FTP lists as empty, with nothing anywhere saying which step failed - opendir
-    * refusing, readdir returning nothing, or the entries being filtered out afterwards.
-    * These two lines separate the three. Remove once the answer is in ps4/HANDOFF.md. */
-   ps4_dirent_said = 0;
-   ps4_rarch_log("[INFO]", "[PS4] opendir(\"%s\") -> %p\n",
-         name ? name : "(null)", (void*)rdir->directory);
-#endif
-
 #ifdef _WIN32
 #if defined(LEGACY_WIN32_RUNTIME)
    /* Same field, same offset in both arms of the union - but C wants
@@ -2236,17 +2217,6 @@ static const char *vfs_win32_name_utf16(
 
 const char *retro_vfs_dirent_get_name_impl(libretro_vfs_implementation_dir *rdir)
 {
-#if defined(ORBIS)
-   /* Paired with the opendir line above: the names as they arrive, before anything filters
-    * them. opendir succeeding with nothing here means readdir is the step at fault; names
-    * here with an empty menu means the filter is. */
-   if (rdir && rdir->entry && ps4_dirent_said < 40)
-   {
-      ++ps4_dirent_said;
-      ps4_rarch_log("[INFO]", "[PS4] dirent: \"%s\"\n", rdir->entry->d_name);
-   }
-#endif
-
 #ifdef HAVE_SMBCLIENT
    if (rdir->smb_handle)
       return rdir->smb_path;

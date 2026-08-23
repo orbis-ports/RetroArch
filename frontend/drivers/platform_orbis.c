@@ -44,7 +44,6 @@
 #include <ps4_app.h>
 
 #include "../../ps4/ps4_mem.h"
-#include "../../ps4/ps4_threads.h"
 
 #include <string/stdstring.h>
 #include <boolean.h>
@@ -184,10 +183,7 @@ static void frontend_orbis_get_env(int *argc, char *argv[],
 #endif
 }
 
-static void frontend_orbis_deinit(void *data)
-{
-   ps4_threads_census_stop();
-}
+static void frontend_orbis_deinit(void *data) { }
 
 /* â  THIS IDLED FOREVER, AND THAT WAS THE WRONG POLICY FOR A FRONTEND.
  *
@@ -207,7 +203,6 @@ static void frontend_orbis_deinit(void *data)
  * ending is the better half. */
 static void frontend_orbis_shutdown(bool unused)
 {
-   ps4_threads_census_stop();
    ps4_log("shutdown requested - ending the process rather than idling; expect CE-34878-0");
 }
 
@@ -312,9 +307,6 @@ static void frontend_orbis_init(void *data)
    sceSystemServiceHideSplashScreen();
 
    verbosity_enable();
-
-   /* Off unless the env file asks for it: ORBIS_THREAD_CENSUS=1. */
-   ps4_threads_census_start();
 
    ps4_log("frontend up, build %s", PS4_APP_STAMP);
 }
