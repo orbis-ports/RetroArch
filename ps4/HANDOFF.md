@@ -1209,3 +1209,24 @@ Hz. An NTSC copy of the same title would match the display exactly. Worth knowin
 anyone reads uneven pacing as a performance problem and optimises at it.
 
 `beetle_psx_dynarec_spgp_opt` is still `disabled` - the one recommended knob not applied.
+
+### Scan Directory: "Scanning unsuccessful, no database found"
+
+Two causes, both present, and neither is a defect in this port:
+
+`/data/retroarch/database/rdb/` was **empty**. `tasks/task_database.c:3447` reports exactly that
+message when the database list comes back size 0 and the scan is in LOOSE or STRICT mode. The
+file wanted is `Sony - PlayStation.rdb` from libretro-database (7709655 bytes).
+
+The core's `.info` declared **no `database` field**, so even with the .rdb present nothing
+associates a scanned disc with this core. `ps4/build.sh` in the core's fork now writes
+`database = "Sony - PlayStation"`, and the name must match the .rdb's filename exactly.
+
+⚠ **AND THE FILE-MODE RULE IS NOT ONLY ABOUT FILES.** The directories RetroArch creates come out
+`drwxr-x---`, which the FTP daemon cannot write into - so the upload "succeeded" and the
+directory stayed empty, twice, with no error anywhere. The writable ones (`cores`, `info`,
+`assets`, `shaders`, `system`, `roms`) are 777 only because they were chmod'ed by hand at some
+point. `chmod 777` the directory before putting anything in a fresh one.
+
+Both were fixed on the console by hand. For a shippable package the `.rdb` belongs in `/app0`
+alongside the core and its `.info`.
