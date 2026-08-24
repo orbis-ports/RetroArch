@@ -112,6 +112,28 @@ static void set_dl_err(void)
  * exports crtlib.o's BSS pair: a one-entry array containing zero. Calling that would jump to
  * address zero and take the process down - worse than the bug being fixed. Skipping nulls makes
  * an old core a no-op instead. */
+/* ⚠ THE TABLE IS CLEARED ON UNLOAD, AND LEAVING THAT OUT COST A CORE. sceKernelStopUnloadModule
+ * frees the id and the kernel HANDS THE SAME ONE TO THE NEXT MODULE. Measured 2026-08-24:
+ * nestopia loaded and was unloaded, quicknes loaded into the same id, this table still held it,
+ * its two constructors were skipped, and the core died on a null read at 0x20 - a SIGSEGV that
+ * looks exactly like a broken core and was the loader forgetting to forget. */
+static int32_t dylib_orbis_ctors_done[16];
+static unsigned dylib_orbis_n_done;
+
+static void dylib_orbis_forget(dylib_t lib)
+{
+   int32_t  mod = (int32_t)(intptr_t)lib;
+   unsigned i;
+
+   for (i = 0; i < dylib_orbis_n_done; i++)
+   {
+      if (dylib_orbis_ctors_done[i] != mod)
+         continue;
+      dylib_orbis_ctors_done[i] = dylib_orbis_ctors_done[--dylib_orbis_n_done];
+      return;
+   }
+}
+
 static void dylib_orbis_run_init_array(dylib_t lib, const char *path)
 {
    typedef void (*orbis_ctor_t)(void);
@@ -124,15 +146,14 @@ static void dylib_orbis_run_init_array(dylib_t lib, const char *path)
     * Sixteen slots because a session with more distinct cores loaded than that is not a case this
     * needs to be clever about - past the end it simply stops running constructors, which is the
     * behaviour every core had before this function existed. */
-   static int32_t done[16];
-   static unsigned n_done;
+   unsigned j;
    orbis_ctor_t *first = NULL, *last = NULL;
    int32_t       mod   = (int32_t)(intptr_t)lib;
    unsigned      ran   = 0;
    unsigned      i;
 
-   for (i = 0; i < n_done; i++)
-      if (done[i] == mod)
+   for (j = 0; j < dylib_orbis_n_done; j++)
+      if (dylib_orbis_ctors_done[j] == mod)
          return;
 
    if (sceKernelDlsym(mod, "__init_array_start", (void**)&first) != 0 || !first)
@@ -151,8 +172,8 @@ static void dylib_orbis_run_init_array(dylib_t lib, const char *path)
       }
    }
 
-   if (n_done < sizeof(done) / sizeof(done[0]))
-      done[n_done++] = mod;
+   if (dylib_orbis_n_done < sizeof(dylib_orbis_ctors_done) / sizeof(dylib_orbis_ctors_done[0]))
+      dylib_orbis_ctors_done[dylib_orbis_n_done++] = mod;
 
    if (ran)
       RARCH_LOG("[PS4] ran %u global constructor(s) for %s\n", ran, path);
@@ -340,6 +361,7 @@ void dylib_close(dylib_t lib)
    last_dyn_err[0] = 0;
 #elif defined(ORBIS)
    int res;
+   dylib_orbis_forget(lib);
    sceKernelStopUnloadModule((OrbisKernelModule)(intptr_t)lib, 0, NULL, 0, NULL, &res);
 #else
 #ifndef NO_DLCLOSE

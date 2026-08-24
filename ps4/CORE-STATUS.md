@@ -72,7 +72,7 @@ have left seven cores condemned for somebody else's bug.
 | `bsnes_mercury` | bsnes_mercury | 3,2M | `ea22363` | untested | |
 | `cannonball` | Cannonball | 1,1M | `0d83575` | untested | OutRun set now on the console at `roms/outrun/` with a dummy `cannonball.game` - load that file |
 | `cap32` | Amstrad - CPC/GX4000 (Caprice32) | 2,1M | `4abfb8b` | untested | |
-| `clownmdemu` | Sega - MD/CD (ClownMDEmu) | 1,6M | `935d6fc` | untested | |
+| `clownmdemu` | Sega - MD/CD (ClownMDEmu) | 1,6M | `935d6fc` | plays |  |
 | `crocods` | Amstrad - CPC (CrocoDS) | 1,3M | `a9c63b2` | untested | |
 | `desmume2015` | Nintendo - DS (DeSmuME 2015) | 5,3M | `422b688` | untested | |
 | `dice` | Arcade (DICE) | 8,6M | `b11714f` | untested | |
@@ -125,7 +125,7 @@ have left seven cores condemned for somebody else's bug.
 | `mu` | Palm OS (Mu) | 1,4M | `f9d34a0` | untested | |
 | `nekop2` | NEC - PC-98 (Neko Project II) | 2,1M | `5fdbb21` | untested | |
 | `neocd` | SNK - Neo Geo CD (NeoCD) | 2,9M | `8f2d42c` | untested | |
-| `nestopia` | Nintendo - NES / Famicom (Nestopia) | 7,1M | `6c2d242` | untested | was crash; relinked with ps4/orbis-module.ld |
+| `nestopia` | Nintendo - NES / Famicom (Nestopia) | 7,1M | `6c2d242` | broken | loads and runs, green screen, exits cleanly - renders wrong, not a crash |
 | `numero` | Texas Instruments TI-83 (Numero) | 1,5M | `c0b07a3` | untested | |
 | `nxengine` | Cave Story (NXEngine) | 1,7M | `fd1c068` | untested | |
 | `o2em` | Magnavox - Odyssey2 / Philips Videopac+ (O2EM) | 1,1M | `679d6fe` | untested | |
@@ -139,7 +139,7 @@ have left seven cores condemned for somebody else's bug.
 | `puae` | Commodore - Amiga (PUAE) | 24M | `96ebfcf` | untested | |
 | `px68k` | Sharp - X68000 (PX68k) | 1,6M | `0ad84d7` | untested | |
 | `quasi88` | NEC - PC-8000 / PC-8800 series (QUASI88) | 3,1M | `b5a0e04` | untested | |
-| `quicknes` | Nintendo - NES / Famicom (QuickNES) | 2,3M | `26bb785` | untested | was crash; relinked with ps4/orbis-module.ld |
+| `quicknes` | Nintendo - NES / Famicom (QuickNES) | 2,3M | `26bb785` | untested | SIGSEGV at 0x20 was the loader reusing a module id and skipping this core's constructors; fixed, not retested |
 | `race` | SNK - Neo Geo Pocket / Color (RACE) | 1,3M | `c7810dd` | untested | |
 | `reminiscence` | Flashback (REminiscence) | 1,2M | `e6c0b00` | untested | |
 | `retro8` | PICO-8 (Retro8) | 1,7M | `ddc06a1` | untested | |
