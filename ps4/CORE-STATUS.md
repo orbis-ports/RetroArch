@@ -45,6 +45,26 @@ the console, and each looked like a defect in whichever core happened to hit it.
 Confirmed playing afterwards: bsnes_cplusplus98, mednafen_gba, mesen, mesen-s, mrboom, nestopia
 (renders wrong, but loads), quicknes, snes9x, vbam.
 
+### Arcade: parked, and the reason is content
+
+`fbalpha2012_neogeo` plays Metal Slug once `neogeo.zip` sits beside it, so the arcade path works.
+The other seven are `blocked` rather than `untested`: each wants romsets of a specific vintage
+(MAME 0.37b5, MAME 0.78, FBA 2012's own), and a set from the wrong generation is not a damaged
+file to them, it is an unknown game.
+
+Checked by CRC against FBA's own DAT, over all 231 sets in the collection to hand:
+
+    129  match FBA 2012        almost the whole Neo Geo library
+     98  wrong revision
+      4  not in FBA's list
+
+⚠ **The first pass of that check said "1 match" and was wrong.** A merged DAT lists the BIOS
+chips inside every Neo Geo game while they physically live in `neogeo.zip`, so counting them as
+missing condemned the entire library - including the game that had just been observed playing.
+Trusting it over the observation would have been a mistake.
+
+One core proving the path works is enough for now; the rest wait for matching content.
+
 ## Built and on the console — 100 cores
 
 | Core | Name | Size | Built from | Status | Notes |
@@ -60,14 +80,14 @@ Confirmed playing afterwards: bsnes_cplusplus98, mednafen_gba, mesen, mesen-s, m
 | `clownmdemu` | Sega - MD/CD (ClownMDEmu) | 1,6M | `935d6fc` | plays |  |
 | `crocods` | Amstrad - CPC (CrocoDS) | 1,3M | `a9c63b2` | untested | |
 | `desmume2015` | Nintendo - DS (DeSmuME 2015) | 5,3M | `422b688` | untested | |
-| `dice` | Arcade (DICE) | 8,6M | `b11714f` | untested | |
+| `dice` | Arcade (DICE) | 8,6M | `b11714f` | blocked | needs a romset of the version this core expects - not a port problem; see CORE-CONTENT.md |
 | `dinothawr` | Dinothawr | 1,9M | `601063d` | untested | |
 | `doublecherrygb` | doublecherrygb | 2,2M | `1587acd` | untested | |
 | `ecwolf` | Wolfenstein 3D (ECWolf) | 2,7M | `0cccd9a` | untested | |
-| `fbalpha2012` | Arcade (FB Alpha 2012) | 28M | `0ce3153` | untested | |
-| `fbalpha2012_cps1` | Arcade (FB Alpha 2012 CPS-1) | 4,3M | `5542c18` | untested | |
-| `fbalpha2012_cps3` | Arcade (FB Alpha 2012 CPS-3) | 1,1M | `57f8015` | untested | |
-| `fbalpha2012_neogeo` | Arcade (FB Alpha 2012 Neo Geo) | 3,3M | `e092097` | untested | |
+| `fbalpha2012` | Arcade (FB Alpha 2012) | 28M | `0ce3153` | blocked | needs a romset of the version this core expects - not a port problem; see CORE-CONTENT.md |
+| `fbalpha2012_cps1` | Arcade (FB Alpha 2012 CPS-1) | 4,3M | `5542c18` | blocked | needs a romset of the version this core expects - not a port problem; see CORE-CONTENT.md |
+| `fbalpha2012_cps3` | Arcade (FB Alpha 2012 CPS-3) | 1,1M | `57f8015` | blocked | needs a romset of the version this core expects - not a port problem; see CORE-CONTENT.md |
+| `fbalpha2012_neogeo` | Arcade (FB Alpha 2012 Neo Geo) | 3,3M | `e092097` | plays | Metal Slug, with neogeo.zip beside it |
 | `fceumm` | Nintendo - NES / Famicom (FCEUmm) | 5,5M | `236ccdf` | plays | loads Zelda |
 | `fmsx` | Microsoft - MSX (fMSX) | 908K | `f013e21` | untested | |
 | `freechaf` | Fairchild - ChannelF (FreeChaF) | 756K | `76c7a84` | untested | |
@@ -89,9 +109,9 @@ Confirmed playing afterwards: bsnes_cplusplus98, mednafen_gba, mesen, mesen-s, m
 | `jumpnbump` | Jump 'n Bump | 712K | `2cc8401` | untested | |
 | `lowresnx` | LowRes NX | 664K | `12aeb16` | untested | |
 | `lutro` | Lua Engine (Lutro) | 4,4M | `6224157` | untested | |
-| `mame2000` | Arcade (MAME 2000) | 20M | `f099ba4` | untested | |
-| `mame2003` | Arcade (MAME 2003) | 46M | `259339e` | untested | |
-| `mame2003_plus` | Arcade (MAME 2003-Plus) | 50M | `6c514a3` | untested | |
+| `mame2000` | Arcade (MAME 2000) | 20M | `f099ba4` | blocked | needs a romset of the version this core expects - not a port problem; see CORE-CONTENT.md |
+| `mame2003` | Arcade (MAME 2003) | 46M | `259339e` | blocked | needs a romset of the version this core expects - not a port problem; see CORE-CONTENT.md |
+| `mame2003_plus` | Arcade (MAME 2003-Plus) | 50M | `6c514a3` | blocked | needs a romset of the version this core expects - not a port problem; see CORE-CONTENT.md |
 | `mednafen_gba` | Nintendo - Game Boy Advance (Beetle GBA) | 1,1M | `bb9edd1` | plays | needed the constructors run once per module, not per load |
 | `mednafen_lynx` | Atari - Lynx (Beetle Lynx) | 852K | `fcdefcf` | untested | |
 | `mednafen_ngp` | SNK - Neo Geo Pocket / Color (Beetle NeoPop) | 1,1M | `a50d5ac` | untested | |
