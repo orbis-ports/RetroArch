@@ -49,6 +49,17 @@ Testing them one by one confirms a pattern that is already 17 for 17. Two or thr
 are worth more than twenty-four, and the time saved is better spent on the one core that would
 falsify it - a C++ core that works, or a C core that does not.
 
+### ⚠ The crash column was reset on 2026-08-24, and the reason matters
+
+Seven cores were recorded as `crash` before the cause was known. It was not in any of them: no
+`.prx` on this console had ever run a global constructor, so every C++-dominant core met an
+unconstructed global the first time it asked one for a size. `libretro-common/dynamic/dylib.c`
+carries the full measurement.
+
+All 100 have been relinked with `ps4/orbis-module.ld` and re-uploaded. Those seven are back to
+`untested` because their old verdict was about the frontend, not about them - keeping it would
+have left seven cores condemned for somebody else's bug.
+
 ## Built and on the console — 100 cores
 
 | Core | Name | Size | Built from | Status | Notes |
@@ -57,7 +68,7 @@ falsify it - a C++ core that works, or a C core that does not.
 | `a5200` | Atari - 5200 (a5200) | 1000K | `40c6f2f` | untested | |
 | `atari800` | Atari - 400/800/600XL/800XL/130XE/5200 (Atari800) | 1,8M | `cd72179` | untested | |
 | `bk` | Elektronika - BK-0010/BK-0011(M) | 864K | `fe64da4` | untested | |
-| `bsnes_cplusplus98` | Nintendo - SNES / SFC (bsnes C++98 (v085)) | 1,9M | `4b97b39` | crash |  |
+| `bsnes_cplusplus98` | Nintendo - SNES / SFC (bsnes C++98 (v085)) | 1,9M | `4b97b39` | untested | was crash; relinked with ps4/orbis-module.ld |
 | `bsnes_mercury` | bsnes_mercury | 3,2M | `ea22363` | untested | |
 | `cannonball` | Cannonball | 1,1M | `0d83575` | untested | OutRun set now on the console at `roms/outrun/` with a dummy `cannonball.game` - load that file |
 | `cap32` | Amstrad - CPC/GX4000 (Caprice32) | 2,1M | `4abfb8b` | untested | |
@@ -96,7 +107,7 @@ falsify it - a C++ core that works, or a C core that does not.
 | `mame2000` | Arcade (MAME 2000) | 20M | `f099ba4` | untested | |
 | `mame2003` | Arcade (MAME 2003) | 46M | `259339e` | untested | |
 | `mame2003_plus` | Arcade (MAME 2003-Plus) | 50M | `6c514a3` | untested | |
-| `mednafen_gba` | Nintendo - Game Boy Advance (Beetle GBA) | 1,1M | `bb9edd1` | crash | takes RetroArch down |
+| `mednafen_gba` | Nintendo - Game Boy Advance (Beetle GBA) | 1,1M | `bb9edd1` | untested | was crash; relinked with ps4/orbis-module.ld |
 | `mednafen_lynx` | Atari - Lynx (Beetle Lynx) | 852K | `fcdefcf` | untested | |
 | `mednafen_ngp` | SNK - Neo Geo Pocket / Color (Beetle NeoPop) | 1,1M | `a50d5ac` | untested | |
 | `mednafen_pce` | NEC - PC Engine / SuperGrafx / CD (Beetle PCE) | 6,3M | `ae99235` | untested | |
@@ -109,12 +120,12 @@ falsify it - a C++ core that works, or a C core that does not.
 | `mednafen_vb` | Nintendo - Virtual Boy (Beetle VB) | 844K | `83ed426` | untested | |
 | `mednafen_wswan` | Bandai - WonderSwan/Color (Beetle Wonderswan) | 1,9M | `4b01295` | untested | |
 | `mesen` | Nintendo - NES / Famicom (Mesen) | 5,2M | `0102910` | plays | was the crash that found the constructor bug |
-| `mesen-s` | Nintendo - SNES / SFC / Game Boy / Color (Mesen-S) | 4,2M | `9e4fdeb` | crash |  |
+| `mesen-s` | Nintendo - SNES / SFC / Game Boy / Color (Mesen-S) | 4,2M | `9e4fdeb` | untested | was crash; relinked with ps4/orbis-module.ld |
 | `mrboom` | Mr.Boom (Bomberman) | 9,2M | `40ac320` | untested | |
 | `mu` | Palm OS (Mu) | 1,4M | `f9d34a0` | untested | |
 | `nekop2` | NEC - PC-98 (Neko Project II) | 2,1M | `5fdbb21` | untested | |
 | `neocd` | SNK - Neo Geo CD (NeoCD) | 2,9M | `8f2d42c` | untested | |
-| `nestopia` | Nintendo - NES / Famicom (Nestopia) | 7,1M | `6c2d242` | crash |  |
+| `nestopia` | Nintendo - NES / Famicom (Nestopia) | 7,1M | `6c2d242` | untested | was crash; relinked with ps4/orbis-module.ld |
 | `numero` | Texas Instruments TI-83 (Numero) | 1,5M | `c0b07a3` | untested | |
 | `nxengine` | Cave Story (NXEngine) | 1,7M | `fd1c068` | untested | |
 | `o2em` | Magnavox - Odyssey2 / Philips Videopac+ (O2EM) | 1,1M | `679d6fe` | untested | |
@@ -128,14 +139,14 @@ falsify it - a C++ core that works, or a C core that does not.
 | `puae` | Commodore - Amiga (PUAE) | 24M | `96ebfcf` | untested | |
 | `px68k` | Sharp - X68000 (PX68k) | 1,6M | `0ad84d7` | untested | |
 | `quasi88` | NEC - PC-8000 / PC-8800 series (QUASI88) | 3,1M | `b5a0e04` | untested | |
-| `quicknes` | Nintendo - NES / Famicom (QuickNES) | 2,3M | `26bb785` | crash |  |
+| `quicknes` | Nintendo - NES / Famicom (QuickNES) | 2,3M | `26bb785` | untested | was crash; relinked with ps4/orbis-module.ld |
 | `race` | SNK - Neo Geo Pocket / Color (RACE) | 1,3M | `c7810dd` | untested | |
 | `reminiscence` | Flashback (REminiscence) | 1,2M | `e6c0b00` | untested | |
 | `retro8` | PICO-8 (Retro8) | 1,7M | `ddc06a1` | untested | |
 | `same_cdi` | Philips - CDi (SAME CDi) | 15M | `418be50` | untested | |
 | `sameboy` | Nintendo - Game Boy / Color (SameBoy) | 1,1M | `aa158a8` | untested | |
 | `smsplus` | Sega - MS/GG (SMS Plus GX) | 872K | `8a63f82` | untested | |
-| `snes9x` | Nintendo - SNES / SFC (Snes9x) | 4,5M | `890b5d4` | crash |  |
+| `snes9x` | Nintendo - SNES / SFC (Snes9x) | 4,5M | `890b5d4` | untested | was crash; relinked with ps4/orbis-module.ld |
 | `snes9x2002` | Nintendo - SNES / SFC (Snes9x 2002) | 1,5M | `5bd8bd6` | plays |  |
 | `snes9x2005` | Nintendo - SNES / SFC (Snes9x 2005) | 1,5M | `deb49d8` | plays |  |
 | `snes9x2005_plus` | Nintendo - SNES / SFC (Snes9x 2005 Plus) | 1,5M | `deb49d8` | plays |  |
@@ -148,7 +159,7 @@ falsify it - a C++ core that works, or a C core that does not.
 | `tyrquake` | Quake (TyrQuake) | 1,8M | `e57bb11` | untested | |
 | `uzem` | Uzebox (Uzem) | 756K | `d991ee9` | untested | |
 | `vba_next` | Nintendo - Game Boy Advance (VBA Next) | 1,6M | `2b96fd3` | plays |  |
-| `vbam` | Nintendo - Game Boy Advance (VBA-M) | 2,1M | `115defb` | crash | takes RetroArch down |
+| `vbam` | Nintendo - Game Boy Advance (VBA-M) | 2,1M | `115defb` | untested | was crash; relinked with ps4/orbis-module.ld |
 | `vemulator` | VeMUlator | 756K | `27a062f` | untested | |
 | `virtualjaguar` | Atari - Jaguar (Virtual Jaguar) | 3,6M | `8c758ff` | untested | |
 | `x1` | Sharp X1 (X Millennium) | 1,1M | `3106aa5` | untested | |
