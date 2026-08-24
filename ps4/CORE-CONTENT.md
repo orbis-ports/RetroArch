@@ -239,6 +239,14 @@ Three separate ways the `.info` files under-declare what a core needs, all found
 ⚠ **The lesson is not "read notes too".** It is that a core's own metadata is a hint, and the only
 reliable statement about what it needs is the core refusing to start and saying so.
 
+### Dinothawr ships its own game, in its own repository
+
+`notes` says it wants `Dinothawr.zip` and the file `dinothawr.game`. The data is not something to
+find anywhere: the core's repository carries it, in `dinothawr/` beside the source - 6.6 MB of
+levels, tiles and assets. The harness had already cloned it.
+
+On the console at `/data/retroarch/roms/dinothawr/`; load `dinothawr.game`.
+
 ## ⚠ Two things this list cannot tell you
 
 **A declared format is not a working format.** `supported_extensions` is what the core accepts on
