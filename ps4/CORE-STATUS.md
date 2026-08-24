@@ -98,8 +98,8 @@ Confirmed playing afterwards: bsnes_cplusplus98, mednafen_gba, mesen, mesen-s, m
 | `mednafen_pce` | NEC - PC Engine / SuperGrafx / CD (Beetle PCE) | 6,3M | `ae99235` | untested | |
 | `mednafen_pce_fast` | NEC - PC Engine / CD (Beetle PCE FAST) | 5,4M | `bebe2b1` | untested | |
 | `mednafen_pcfx` | NEC - PC-FX (Beetle PC-FX) | 2,8M | `0580dee` | untested | |
-| `mednafen_psx` | Sony - PlayStation (Beetle PSX) | 14M | `ef51860` | untested | |
-| `mednafen_psx_hw` | Sony - PlayStation (Beetle PSX HW) | 14M | `ef51860` | untested | |
+| `mednafen_psx` | Sony - PlayStation (Beetle PSX) | 14M | `ef51860` | plays |  |
+| `mednafen_psx_hw` | Sony - PlayStation (Beetle PSX HW) | 14M | `ef51860` | plays | ⚠ the harness build is UPSTREAM beetle and overwrote the fork's - restored; test the fork, not this |
 | `mednafen_saturn` | Sega - Saturn (Beetle Saturn) | 12M | `ed549bd` | untested | |
 | `mednafen_supergrafx` | NEC - PC Engine SuperGrafx (Beetle SuperGrafx) | 4,6M | `3c6fcd3` | untested | |
 | `mednafen_vb` | Nintendo - Virtual Boy (Beetle VB) | 844K | `83ed426` | untested | |

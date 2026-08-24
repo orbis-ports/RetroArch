@@ -293,7 +293,21 @@ for core in "${CORES[@]}"; do
     continue
   fi
 
+  # ⚠ NEVER OVERWRITE A HAND-PORTED CORE. The harness clones UPSTREAM, so its
+  # mednafen_psx_hw_libretro.prx is plain upstream Beetle - no orbis platform arm, no
+  # ps4/orbis_lightrec_mem.c, no ORBIS dynarec default - and it lands on the same filename as the
+  # fork in ~/src-ps4/beetle-psx-libretro. It did: Spyro went from the recompiler and the Vulkan
+  # renderer back to whatever platform=unix leaves you with, and it read as a mysterious
+  # slowdown rather than as a file being replaced.
+  #
+  # PS4_CORE_FORKS names the cores that have a fork of their own. The harness builds them and
+  # says so, but will not write over the result.
   name="${core}_libretro"
+  case " ${PS4_CORE_FORKS:-mednafen_psx_hw} " in
+    *" $core "*)
+      report "$core" FORK "${#objs[@]}o" "$commit" "built, NOT written - $core has a port of its own"
+      continue ;;
+  esac
   ( cd "$WORK" && OO_PS4_TOOLCHAIN="$TOOLCHAIN" "$TOOLCHAIN/bin/linux/create-fself" \
       -in="$core.elf" -out="$core.oelf" --lib="$name.prx" --paid 0x3800000000000011 ) >"$WORK/$core.fself" 2>&1
   # ⚠ create-fself EXITS 0 WHEN IT REFUSES, so the file is the test, not the status. And it
