@@ -19,6 +19,36 @@ against the same tree. Rebuild one with:
     ps4/build-cores.sh --recipe <libretro-super>/recipes/linux/cores-linux-x64-generic <core>
 
 
+## ⚠ A prediction, from 17 results with no exception
+
+Every core tested so far that is dominated by C++ has crashed. Every one that is C, or C with a
+handful of C++ files, works.
+
+    plays / boots        fceumm 0   snes9x2002 0   snes9x2005 0   snes9x2005_plus 0
+                         snes9x2010 0   vba_next 0   cannonball 1   gpsp 2   2048 5
+    crash                mednafen_gba 31   quicknes 36   snes9x 37   mesen 86
+                         mesen-s 150   vbam 158   bsnes_cplusplus98 201   nestopia 291
+
+(the number is `.cpp`/`.cc` files in the core's tree)
+
+Seventeen for seventeen, and the boundary is sharp - nothing between 5 and 31 has been tested,
+but nothing above 30 has survived and nothing below 6 has failed.
+
+⚠ **AND THERE IS ONE COUNTEREXAMPLE THAT MATTERS: Beetle PSX HW.** It is heavily C++ - SPIRV-Cross
+and parallel-psx - and it runs fine. The difference is not the language, it is that Beetle was
+built through its own `orbis` platform arm while all hundred of these were built with
+`platform=unix`. So the hypothesis is not "C++ crashes here"; it is **"something `platform=unix`
+does to a C++ core is fatal, and the `orbis` arm did not do it."** Static initialisers,
+exceptions, `__cxa_atexit` and the threading model are all candidates and all testable.
+
+### The 24 untested cores this predicts will crash
+
+`bsnes_mercury` `fbalpha2012` `same_cdi` `nekop2` `ecwolf` `nxengine` `puae` `x1` `dice` `desmume2015` `gearsystem` `gearboy` `fbalpha2012_cps1` `gme` `frodo` `neocd` `doublecherrygb` `mednafen_pce` `mednafen_pcfx` `fbalpha2012_neogeo` `gambatte` `mednafen_supergrafx` `reminiscence` `numero`
+
+Testing them one by one confirms a pattern that is already 17 for 17. Two or three spot checks
+are worth more than twenty-four, and the time saved is better spent on the one core that would
+falsify it - a C++ core that works, or a C core that does not.
+
 ## Built and on the console — 100 cores
 
 | Core | Name | Size | Built from | Status | Notes |
