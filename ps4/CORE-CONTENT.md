@@ -190,6 +190,31 @@ Nothing in `/mnt/multimedia/Gry` carries Master System or Game Gear content, so 
 untestable until an `.sms` or `.gg` file exists. A black screen from the wrong system is not a
 result about the core and must not be recorded as one.
 
+### ⚠ Seven cores need a BIOS they do not declare, and my check could not see it
+
+The firmware audit above matched each core's `firmwareN_path` fields against the repository. That
+was complete with respect to what the cores DECLARE - and the arcade cores declare nothing. All
+seven say it in prose instead:
+
+    fbalpha2012  fbalpha2012_cps1  fbalpha2012_cps3  fbalpha2012_neogeo
+    mame2000     mame2003          mame2003_plus
+
+    notes = "(!) The BIOS files must be inside the ROM directory."
+
+So `fbalpha2012_neogeo` refused Metal Slug with `NeoGeo BIOS missing` and a list of files nothing
+had told us to fetch. The repository had `neogeo.zip` all along - sixteen variants of it - and the
+selection criterion was the thing at fault, not the source.
+
+⚠ **AND THE BIOS DOES NOT GO IN `system/`.** It goes beside the games, in the ROM directory,
+because an arcade BIOS is another ROM set rather than firmware. Now in
+`/data/retroarch/roms/arcade/`: `neogeo.zip`, `qsound.zip` (CPS2), `pgm.zip`, `skns.zip`,
+`decocass.zip` - 4.8 MB.
+
+CPS1 needs no BIOS, so `1941.zip` failing with `Cannot find driver` is a different problem: the
+set is from 2001 (`4143.bin`, `41_19.rom`, dated 1997-2001) and FBA 2012 wants far newer naming
+and CRCs. ⚠ Not confirmed - "cannot find driver" is about the set NAME, so something else may be
+going on - but the age of the contents is the first suspect.
+
 ## ⚠ Two things this list cannot tell you
 
 **A declared format is not a working format.** `supported_extensions` is what the core accepts on
