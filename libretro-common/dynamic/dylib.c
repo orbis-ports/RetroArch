@@ -115,9 +115,25 @@ static void set_dl_err(void)
 static void dylib_orbis_run_init_array(dylib_t lib, const char *path)
 {
    typedef void (*orbis_ctor_t)(void);
+   /* ⚠ ONCE PER MODULE, AND THE FIRST VERSION OF THIS GOT IT WRONG. sceKernelLoadStartModule on
+    * an already-loaded module hands back the SAME id without reloading it, and RetroArch loads a
+    * core several times over - to read its info, then to run it. Measured: the four constructors
+    * of mednafen_gba ran EIGHT times in one session, so every global was constructed over itself
+    * repeatedly. A leak at best; for anything holding a mutex or a buffer length, corruption.
+    *
+    * Sixteen slots because a session with more distinct cores loaded than that is not a case this
+    * needs to be clever about - past the end it simply stops running constructors, which is the
+    * behaviour every core had before this function existed. */
+   static int32_t done[16];
+   static unsigned n_done;
    orbis_ctor_t *first = NULL, *last = NULL;
    int32_t       mod   = (int32_t)(intptr_t)lib;
    unsigned      ran   = 0;
+   unsigned      i;
+
+   for (i = 0; i < n_done; i++)
+      if (done[i] == mod)
+         return;
 
    if (sceKernelDlsym(mod, "__init_array_start", (void**)&first) != 0 || !first)
       return;
@@ -134,6 +150,9 @@ static void dylib_orbis_run_init_array(dylib_t lib, const char *path)
          ran++;
       }
    }
+
+   if (n_done < sizeof(done) / sizeof(done[0]))
+      done[n_done++] = mod;
 
    if (ran)
       RARCH_LOG("[PS4] ran %u global constructor(s) for %s\n", ran, path);
