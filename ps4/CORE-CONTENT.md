@@ -141,6 +141,41 @@ if ever wanted: `SGB1.sfc, SGB2.sfc, bios7.bin, bios9.bin, bios_E.sms, bios_U.sm
 | bsnes_mercury | `bsnes_mercury` | — | boots with no content |
 | doublecherrygb | `doublecherrygb` | — | boots with no content |
 
+## A starter corpus is on the console
+
+From `/mnt/multimedia/Gry/`, into `/data/retroarch/roms/` (27 MB), chosen to cover the largest
+core families with the fewest files:
+
+    nes/     Legend of Zelda, Metroid            fceumm  mesen  nestopia  quicknes
+    snes/    Zelda LTTP, Super Mario World       snes9x  snes9x2002/2005/2005_plus/2010
+                                                 bsnes_cplusplus98  bsnes_mercury  mesen-s
+    gba/     Metroid Zero Mission                gpsp  mednafen_gba  vba_next  vbam
+    md/      Aladdin                             genesis_plus_gx  genesis_plus_gx_wide  clownmdemu
+    arcade/  mslug.zip, 1941.zip                 fbalpha2012_neogeo  fbalpha2012_cps1  mame200x
+
+That is **21 of the 100** testable right now without obtaining anything further.
+
+### ⚠ Extracted or zipped is a decision, not tidiness
+
+**The console ROMs are extracted.** Everything in that collection is `.zip`, and the archive path
+is one this port has never run - `libretro-common`'s zip reader has not been exercised here once.
+Testing a core through it would confuse "this core is broken" with "archives do not work yet",
+and the first is what we are trying to learn.
+
+**The arcade sets stay zipped, and must.** A MAME/FBA set IS the zip: many separate ROM chips
+addressed by name inside one archive. Unpacking `mslug.zip` does not produce a loadable file, it
+produces a directory the core cannot use. This is not the same kind of zip as the others.
+
+**`snes/Super Mario World.zip` sits beside `Super Mario World.smc` on purpose.** Same game, both
+forms, so the archive path can be tested against a known-good baseline - if the `.smc` plays and
+the `.zip` does not, that is a finding about this port's zip reader and not about snes9x.
+
+### Not taken, and why
+
+The Megadrive collection is a 50-part RAR and `unrar` lists only the volume it is given, so
+reaching past "A - F" means reading through the set. Aladdin came out of part 1 and is enough to
+prove three cores; anything later is a longer extraction whenever it is actually wanted.
+
 ## ⚠ Two things this list cannot tell you
 
 **A declared format is not a working format.** `supported_extensions` is what the core accepts on
