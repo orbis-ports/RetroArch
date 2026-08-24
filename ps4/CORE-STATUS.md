@@ -132,7 +132,7 @@ One core proving the path works is enough for now; the rest wait for matching co
 | `neocd` | SNK - Neo Geo CD (NeoCD) | 2,9M | `8f2d42c` | untested | |
 | `nestopia` | Nintendo - NES / Famicom (Nestopia) | 7,1M | `6c2d242` | broken | loads and runs, green screen, exits cleanly - renders wrong, not a crash |
 | `numero` | Texas Instruments TI-83 (Numero) | 1,5M | `c0b07a3` | untested | |
-| `nxengine` | Cave Story (NXEngine) | 1,7M | `fd1c068` | untested | said 'game files missing'; Cave Story freeware data now in roms/cavestory/, load Doukutsu.exe |
+| `nxengine` | Cave Story (NXEngine) | 1,7M | `fd1c068` | plays | Cave Story freeware data in roms/cavestory/, loaded via Doukutsu.exe |
 | `o2em` | Magnavox - Odyssey2 / Philips Videopac+ (O2EM) | 1,1M | `679d6fe` | untested | |
 | `oberon` | Oberon RISC Emulator | 636K | `5be71d8` | untested | |
 | `opera` | The 3DO Company - 3DO (Opera) | 1,3M | `a501a27` | untested | |
