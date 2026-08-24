@@ -176,6 +176,20 @@ The Megadrive collection is a 50-part RAR and `unrar` lists only the volume it i
 reaching past "A - F" means reading through the set. Aladdin came out of part 1 and is enough to
 prove three cores; anything later is a longer extraction whenever it is actually wanted.
 
+### ⚠ `.bin` is not a system, and matching on it produced a wrong test
+
+The starter corpus was matched to cores by file extension, and `.bin` belongs to half the
+industry. `smsplus` and `gearsystem` were listed under "Mega Drive" because both accept `.bin` -
+they are **Sega 8-bit** cores (Master System, Game Gear, SG-1000) and share no hardware with the
+Mega Drive at all. Fed `Aladdin (U) [!].bin` on the console, `smsplus` drew a black screen, which
+is correct behaviour toward data it cannot read.
+
+Of the three, only `clownmdemu` is a Mega Drive core.
+
+Nothing in `/mnt/multimedia/Gry` carries Master System or Game Gear content, so those cores stay
+untestable until an `.sms` or `.gg` file exists. A black screen from the wrong system is not a
+result about the core and must not be recorded as one.
+
 ## ⚠ Two things this list cannot tell you
 
 **A declared format is not a working format.** `supported_extensions` is what the core accepts on

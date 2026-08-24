@@ -145,7 +145,7 @@ have left seven cores condemned for somebody else's bug.
 | `retro8` | PICO-8 (Retro8) | 1,7M | `ddc06a1` | untested | |
 | `same_cdi` | Philips - CDi (SAME CDi) | 15M | `418be50` | untested | |
 | `sameboy` | Nintendo - Game Boy / Color (SameBoy) | 1,1M | `aa158a8` | untested | |
-| `smsplus` | Sega - MS/GG (SMS Plus GX) | 872K | `8a63f82` | untested | |
+| `smsplus` | Sega - MS/GG (SMS Plus GX) | 872K | `8a63f82` | untested | black screen when fed a Mega Drive .bin - it is a Sega 8-bit core; needs an SMS/GG rom, not retested yet |
 | `snes9x` | Nintendo - SNES / SFC (Snes9x) | 4,5M | `890b5d4` | untested | was crash; relinked with ps4/orbis-module.ld |
 | `snes9x2002` | Nintendo - SNES / SFC (Snes9x 2002) | 1,5M | `5bd8bd6` | plays |  |
 | `snes9x2005` | Nintendo - SNES / SFC (Snes9x 2005) | 1,5M | `deb49d8` | plays |  |
