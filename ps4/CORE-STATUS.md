@@ -107,7 +107,7 @@ have left seven cores condemned for somebody else's bug.
 | `mame2000` | Arcade (MAME 2000) | 20M | `f099ba4` | untested | |
 | `mame2003` | Arcade (MAME 2003) | 46M | `259339e` | untested | |
 | `mame2003_plus` | Arcade (MAME 2003-Plus) | 50M | `6c514a3` | untested | |
-| `mednafen_gba` | Nintendo - Game Boy Advance (Beetle GBA) | 1,1M | `bb9edd1` | untested | was crash; relinked with ps4/orbis-module.ld |
+| `mednafen_gba` | Nintendo - Game Boy Advance (Beetle GBA) | 1,1M | `bb9edd1` | plays | needed the constructors run once per module, not per load |
 | `mednafen_lynx` | Atari - Lynx (Beetle Lynx) | 852K | `fcdefcf` | untested | |
 | `mednafen_ngp` | SNK - Neo Geo Pocket / Color (Beetle NeoPop) | 1,1M | `a50d5ac` | untested | |
 | `mednafen_pce` | NEC - PC Engine / SuperGrafx / CD (Beetle PCE) | 6,3M | `ae99235` | untested | |
