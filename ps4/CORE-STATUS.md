@@ -139,7 +139,7 @@ have left seven cores condemned for somebody else's bug.
 | `puae` | Commodore - Amiga (PUAE) | 24M | `96ebfcf` | untested | |
 | `px68k` | Sharp - X68000 (PX68k) | 1,6M | `0ad84d7` | untested | |
 | `quasi88` | NEC - PC-8000 / PC-8800 series (QUASI88) | 3,1M | `b5a0e04` | untested | |
-| `quicknes` | Nintendo - NES / Famicom (QuickNES) | 2,3M | `26bb785` | untested | SIGSEGV at 0x20 was the loader reusing a module id and skipping this core's constructors; fixed, not retested |
+| `quicknes` | Nintendo - NES / Famicom (QuickNES) | 2,3M | `26bb785` | plays |  |
 | `race` | SNK - Neo Geo Pocket / Color (RACE) | 1,3M | `c7810dd` | untested | |
 | `reminiscence` | Flashback (REminiscence) | 1,2M | `e6c0b00` | untested | |
 | `retro8` | PICO-8 (Retro8) | 1,7M | `ddc06a1` | untested | |
