@@ -265,7 +265,7 @@ for core in "${CORES[@]}"; do
   fi
 
   if ! ld.lld "${objs[@]}" "$WEAK_STUBS" "${KEEP_SYMS[@]}" -o "$WORK/$core.elf" \
-        -m elf_x86_64 -pie --script "$TOOLCHAIN/link.x" --eh-frame-hdr --no-rosegment \
+        -m elf_x86_64 -pie --script "${ORBIS_LINK_SCRIPT:-$TOOLCHAIN/link.x}" --eh-frame-hdr --no-rosegment \
         -L"$TOOLCHAIN/lib" -L"$ORBIS_COMPAT_DIR/build" "$COMMON_LIB" \
         -lorbis-compat -lc -lkernel -lc++ -lSceNet -lSceUserService \
         "$TOOLCHAIN/lib/crtlib.o" >"$WORK/$core.link" 2>&1; then

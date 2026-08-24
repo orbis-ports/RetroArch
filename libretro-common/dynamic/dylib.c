@@ -30,6 +30,7 @@
 
 #if defined(ORBIS)
 #include <orbis/libkernel.h>
+#include "../../verbosity.h"
 #endif
 
 #ifdef NEED_DYNAMIC
@@ -77,6 +78,67 @@ static void set_dl_err(void)
  *
  * @return Library handle on success, otherwise NULL.
  **/
+/* ⚠ THE MODULE'S GLOBAL CONSTRUCTORS DO NOT RUN BY THEMSELVES ON THIS CONSOLE, AND THE FRONTEND
+ * HAS TO DO IT. Measured 2026-08-24, and it took a control run to see it.
+ *
+ * Every C++-dominant core crashed on load with
+ *
+ *     terminating with uncaught exception of type std::length_error:
+ *     allocator<T>::allocate(size_t n) 'n' exceeds maximum supported size
+ *
+ * which is what an unconstructed global container looks like the moment something asks it for a
+ * size. C-only cores were unaffected, so the split ran exactly along the language - seventeen for
+ * seventeen before the cause was known.
+ *
+ * The chain, each step measured rather than assumed:
+ *
+ *   1. crtlib.o's module_start does walk __init_array_start..__init_array_end and call every
+ *      entry. The code is correct.
+ *   2. Those two symbols are BSS VARIABLES IN crtlib.o - eight bytes apart, never filled - not
+ *      linker-provided section bounds, and OpenOrbis's link.x collects .init_array without
+ *      defining anything around it. Bracketing the section in our own script fixed the symbols
+ *      and changed nothing, which is how we learned the walk was not happening at all.
+ *   3. ⚠ module_start is GLOBAL HIDDEN in crtlib.o, so the linker correctly makes it LOCAL in
+ *      the output. create-fself builds a module's export table from the GLOBAL symbols in
+ *      .symtab - which is why retro_run is reachable while .dynsym holds neither - so a local
+ *      module_start can never be found by the loader. It is not called for any module.
+ *   4. A constructor placed first in .init_array, in a core that WORKS, never ran. That control
+ *      is what separated "this core dies early" from "no module ever runs constructors".
+ *
+ * So the frontend walks the array itself, after the module is loaded and before anything calls
+ * into it. The bounds are ordinary global symbols, so sceKernelDlsym finds them.
+ *
+ * ⚠ AND IT SKIPS NULL ENTRIES ON PURPOSE. A core linked WITHOUT the corrected script still
+ * exports crtlib.o's BSS pair: a one-entry array containing zero. Calling that would jump to
+ * address zero and take the process down - worse than the bug being fixed. Skipping nulls makes
+ * an old core a no-op instead. */
+static void dylib_orbis_run_init_array(dylib_t lib, const char *path)
+{
+   typedef void (*orbis_ctor_t)(void);
+   orbis_ctor_t *first = NULL, *last = NULL;
+   int32_t       mod   = (int32_t)(intptr_t)lib;
+   unsigned      ran   = 0;
+
+   if (sceKernelDlsym(mod, "__init_array_start", (void**)&first) != 0 || !first)
+      return;
+   if (sceKernelDlsym(mod, "__init_array_end", (void**)&last) != 0 || !last)
+      return;
+   if (last <= first || (size_t)(last - first) > 4096)
+      return;
+
+   for (; first < last; first++)
+   {
+      if (*first)
+      {
+         (*first)();
+         ran++;
+      }
+   }
+
+   if (ran)
+      RARCH_LOG("[PS4] ran %u global constructor(s) for %s\n", ran, path);
+}
+
 dylib_t dylib_load(const char *path)
 {
 #ifdef _WIN32
@@ -149,7 +211,10 @@ dylib_t dylib_load(const char *path)
       snprintf(last_dyn_err, sizeof(last_dyn_err),
             "sceKernelLoadStartModule(\"%s\") failed: 0x%08x", path, (unsigned)mod);
    else
+   {
       last_dyn_err[0] = '\0';
+      dylib_orbis_run_init_array(lib, path);
+   }
 #elif defined(IOS) || defined(OSX)
     dylib_t lib;
     static const char fw_suffix[] = ".framework";
