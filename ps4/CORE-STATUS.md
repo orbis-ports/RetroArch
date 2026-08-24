@@ -93,7 +93,7 @@ One core proving the path works is enough for now; the rest wait for matching co
 | `freechaf` | Fairchild - ChannelF (FreeChaF) | 756K | `76c7a84` | untested | |
 | `freeintv` | Mattel - Intellivision (FreeIntv) | 1,4M | `ef3e0fe` | untested | |
 | `frodo` | Commodore - C64 (Frodo) | 1,2M | `9fb971b` | untested | |
-| `fuse` | Sinclair - ZX Spectrum (Fuse) | 2,4M | `2a5f1d4` | untested | |
+| `fuse` | Sinclair - ZX Spectrum (Fuse) | 2,4M | `2a5f1d4` | plays |  |
 | `gambatte` | Nintendo - Game Boy / Color (Gambatte) | 6,3M | `d9d6cd0` | untested | |
 | `gearboy` | Nintendo - Game Boy / Color (Gearboy) | 1,7M | `58d7a8e` | untested | |
 | `gearsystem` | Sega - MS/GG/SG-1000 (Gearsystem) | 1,8M | `b9c2e96` | untested | |
@@ -127,7 +127,7 @@ One core proving the path works is enough for now; the rest wait for matching co
 | `mesen` | Nintendo - NES / Famicom (Mesen) | 5,2M | `0102910` | plays | was the crash that found the constructor bug |
 | `mesen-s` | Nintendo - SNES / SFC / Game Boy / Color (Mesen-S) | 4,2M | `9e4fdeb` | plays |  |
 | `mrboom` | Mr.Boom (Bomberman) | 9,2M | `40ac320` | plays |  |
-| `mu` | Palm OS (Mu) | 1,4M | `f9d34a0` | untested | |
+| `mu` | Palm OS (Mu) | 1,4M | `f9d34a0` | plays |  |
 | `nekop2` | NEC - PC-98 (Neko Project II) | 2,1M | `5fdbb21` | untested | |
 | `neocd` | SNK - Neo Geo CD (NeoCD) | 2,9M | `8f2d42c` | untested | |
 | `nestopia` | Nintendo - NES / Famicom (Nestopia) | 7,1M | `6c2d242` | broken | loads and runs, green screen, exits cleanly - renders wrong, not a crash |
