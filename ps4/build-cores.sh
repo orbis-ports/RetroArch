@@ -145,8 +145,42 @@ if [[ ! -f "$COMMON_LIB" ]]; then
   echo "== libretro-common fallback: ${#_common[@]} objects ($_built built here, $_failed would not)"
 fi
 
+# ⚠ A PLAIN OBJECT, NOT AN ARCHIVE MEMBER, AND THE DIFFERENCE IS THE WHOLE POINT. An UNDEFINED
+# WEAK symbol does not trigger archive extraction - that is what weak means, so putting these
+# stubs in liborbis-retro-common.a left every reference exactly as undefined as before and
+# create-fself went on refusing the module. Passed directly, the definitions are always present.
+# See ps4/orbis_weak_stubs.c for why create-fself cares when the linker does not.
+WEAK_STUBS="$WORK/orbis_weak_stubs.o"
+if [[ ! -f "$WEAK_STUBS" ]]; then
+  $CC_ORBIS -O2 -c -o "$WEAK_STUBS" "$HERE/orbis_weak_stubs.c" \
+    || { echo "build-cores: could not build the weak stubs" >&2; exit 1; }
+fi
+
 MANIFEST="$OUT/cores.manifest"
 : > "$MANIFEST.new"
+
+# ⚠ MERGE ON THE WAY OUT, NOT AT THE END OF THE LOOP. A sweep of 162 cores takes hours and the
+# first one was stopped partway through: 64 cores built, every one of them missing from the
+# manifest, because the merge was the last statement in the file. Work that is done but unrecorded
+# gets done again. A trap records it however the run ends.
+#
+# MERGE and not replace, too: building one core must not delete the record of the other hundred.
+merge_manifest() {
+  [[ -s "$MANIFEST.new" ]] || { rm -f "$MANIFEST.new"; return; }
+  if [[ -f "$MANIFEST" ]]; then
+    awk -F'\t' 'NR==FNR{seen[$1]=1; print; next} !($1 in seen)' "$MANIFEST.new" "$MANIFEST" \
+        | sort > "$MANIFEST.merged"
+    mv "$MANIFEST.merged" "$MANIFEST"
+  else
+    sort "$MANIFEST.new" > "$MANIFEST"
+  fi
+  rm -f "$MANIFEST.new"
+  # ⚠ THE COUNT IS PRINTED HERE AND NOWHERE ELSE. It used to be the last line of the file, which
+  # runs BEFORE an EXIT trap - so it read a manifest that had not been written yet and reported
+  # zero on a run that had just built a core.
+  echo "== manifest: $MANIFEST ($(wc -l < "$MANIFEST" 2>/dev/null || echo 0) cores recorded)"
+}
+trap merge_manifest EXIT INT TERM
 
 printf '%-24s %-9s %-9s %-8s %s\n' CORE RESULT SIZE COMMIT NOTE
 printf '%-24s %-9s %-9s %-8s %s\n' ------------------------ --------- --------- -------- ----
@@ -210,7 +244,17 @@ for core in "${CORES[@]}"; do
   # So the clone root is the search root, both for the clean and for the collection.
   [[ $KEEP -eq 0 ]] && find "$src" -name '*.o' -type f -delete 2>/dev/null
 
-  ( cd "$bdir" && make -f "${makefile:-Makefile}" platform=unix \
+  # ⚠ HAVE_CDROM=0, AND IT IS A CORRECTNESS ARGUMENT RATHER THAN A CONVENIENCE.
+  #
+  # It gates passthrough to a HOST CD device - a real drive the frontend opens by path. This
+  # console has none, so the feature could not work here whatever it linked. Left on, it also
+  # adds a `cdrom` member to libretro_vfs_implementation_file, so the flag decides a STRUCT
+  # LAYOUT shared between the core's objects and anything else handling that type. Seven cores
+  # so far fail with `undefined symbol: cdrom_lba_to_msf` - their vfs is built expecting the
+  # member while cdrom.c never joins the source list - and satisfying that from a shared archive
+  # would put two layouts of one struct in a single link. That is silent and much worse than a
+  # missing symbol. Turning it off makes both sides agree and loses nothing that exists here.
+  ( cd "$bdir" && make -f "${makefile:-Makefile}" platform=unix HAVE_CDROM=0 \
         CC="$CC_ORBIS" CXX="$CXX_ORBIS" AR=llvm-ar -k -j"$JOBS" ) >"$WORK/$core.log" 2>&1
 
   mapfile -t objs < <(find "$src" -name '*.o' -type f | sort)
@@ -220,7 +264,7 @@ for core in "${CORES[@]}"; do
     continue
   fi
 
-  if ! ld.lld "${objs[@]}" "${KEEP_SYMS[@]}" -o "$WORK/$core.elf" \
+  if ! ld.lld "${objs[@]}" "$WEAK_STUBS" "${KEEP_SYMS[@]}" -o "$WORK/$core.elf" \
         -m elf_x86_64 -pie --script "$TOOLCHAIN/link.x" --eh-frame-hdr --no-rosegment \
         -L"$TOOLCHAIN/lib" -L"$ORBIS_COMPAT_DIR/build" "$COMMON_LIB" \
         -lorbis-compat -lc -lkernel -lc++ -lSceNet -lSceUserService \
@@ -247,19 +291,20 @@ for core in "${CORES[@]}"; do
 
   name="${core}_libretro"
   ( cd "$WORK" && OO_PS4_TOOLCHAIN="$TOOLCHAIN" "$TOOLCHAIN/bin/linux/create-fself" \
-      -in="$core.elf" -out="$core.oelf" --lib="$name.prx" --paid 0x3800000000000011 ) >/dev/null 2>&1
-  [[ -f "$WORK/$name.prx" ]] || { report "$core" FSELF "${#objs[@]}o" "$commit" "create-fself refused it"; continue; }
+      -in="$core.elf" -out="$core.oelf" --lib="$name.prx" --paid 0x3800000000000011 ) >"$WORK/$core.fself" 2>&1
+  # ⚠ create-fself EXITS 0 WHEN IT REFUSES, so the file is the test, not the status. And it
+  # refuses over a single unresolvable symbol, which its own message names - repeating that name
+  # here is the difference between "it refused" and a verdict somebody can act on.
+  if [[ ! -f "$WORK/$name.prx" ]]; then
+    why="$(grep -m1 -oP 'missing library for symbol \(\K[^)]+' "$WORK/$core.fself" 2>/dev/null)"
+    if [[ -z "$why" ]]; then
+      why="$(llvm-nm -u "$WORK/$core.elf" 2>/dev/null | awk '$1=="w"{print $2; exit}')"
+      [[ -n "$why" ]] && why="undefined weak: $why"
+    fi
+    report "$core" FSELF "${#objs[@]}o" "$commit" "${why:-create-fself refused it}"
+    continue
+  fi
   mv "$WORK/$name.prx" "$OUT/$name.prx"
   report "$core" OK "$(du -h "$OUT/$name.prx" | cut -f1)" "$commit" ""
 done
 
-# ⚠ MERGE, DO NOT REPLACE. Building one core must not delete the record of the other hundred.
-if [[ -f "$MANIFEST" ]]; then
-  awk -F'\t' 'NR==FNR{seen[$1]=1; print; next} !($1 in seen)' "$MANIFEST.new" "$MANIFEST" \
-      | sort > "$MANIFEST.merged"
-  mv "$MANIFEST.merged" "$MANIFEST"
-else
-  sort "$MANIFEST.new" > "$MANIFEST"
-fi
-rm -f "$MANIFEST.new"
-echo "== manifest: $MANIFEST ($(wc -l < "$MANIFEST") cores recorded)"
