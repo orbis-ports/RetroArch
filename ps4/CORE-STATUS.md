@@ -95,7 +95,7 @@ have left seven cores condemned for somebody else's bug.
 | `genesis_plus_gx` | Sega - MS/GG/MD/CD (Genesis Plus GX) | 18M | `b7e79b3` | plays |  |
 | `genesis_plus_gx_wide` | Sega - MS/GG/MD/CD (Genesis Plus GX Wide) | 17M | `b7ad005` | plays | two images side by side - a widescreen variant that extends the H32/H40 area; unclear whether this is the port or the core's options, and not chased |
 | `gme` | Game Music Emu | 1,3M | `1562f62` | untested | |
-| `gong` | Gong | 524K | `69ef0b6` | untested | |
+| `gong` | Gong | 524K | `69ef0b6` | plays |  |
 | `gpsp` | Nintendo - Game Boy Advance (gpSP) | 1,4M | `6b12231` | plays |  |
 | `gw` | Handheld Electronic (GW) | 1,3M | `91d599b` | untested | |
 | `handy` | Atari - Lynx (Handy) | 1,6M | `bc55d46` | untested | |
@@ -121,7 +121,7 @@ have left seven cores condemned for somebody else's bug.
 | `mednafen_wswan` | Bandai - WonderSwan/Color (Beetle Wonderswan) | 1,9M | `4b01295` | untested | |
 | `mesen` | Nintendo - NES / Famicom (Mesen) | 5,2M | `0102910` | plays | was the crash that found the constructor bug |
 | `mesen-s` | Nintendo - SNES / SFC / Game Boy / Color (Mesen-S) | 4,2M | `9e4fdeb` | untested | was crash; relinked with ps4/orbis-module.ld |
-| `mrboom` | Mr.Boom (Bomberman) | 9,2M | `40ac320` | untested | |
+| `mrboom` | Mr.Boom (Bomberman) | 9,2M | `40ac320` | plays |  |
 | `mu` | Palm OS (Mu) | 1,4M | `f9d34a0` | untested | |
 | `nekop2` | NEC - PC-98 (Neko Project II) | 2,1M | `5fdbb21` | untested | |
 | `neocd` | SNK - Neo Geo CD (NeoCD) | 2,9M | `8f2d42c` | untested | |
