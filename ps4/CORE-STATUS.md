@@ -19,46 +19,31 @@ against the same tree. Rebuild one with:
     ps4/build-cores.sh --recipe <libretro-super>/recipes/linux/cores-linux-x64-generic <core>
 
 
-## ⚠ A prediction, from 17 results with no exception
+## The C++ class: closed
 
-Every core tested so far that is dominated by C++ has crashed. Every one that is C, or C with a
-handful of C++ files, works.
+Every core that was recorded as `crash` before 2026-08-24 was a C++-dominant one, and the split
+ran exactly along the language - seventeen results with no exception. It was never about C++.
 
-    plays / boots        fceumm 0   snes9x2002 0   snes9x2005 0   snes9x2005_plus 0
-                         snes9x2010 0   vba_next 0   cannonball 1   gpsp 2   2048 5
-    crash                mednafen_gba 31   quicknes 36   snes9x 37   mesen 86
-                         mesen-s 150   vbam 158   bsnes_cplusplus98 201   nestopia 291
+Three defects, each found only by running on hardware, and two of them mine:
 
-(the number is `.cpp`/`.cc` files in the core's tree)
+    module_start is GLOBAL HIDDEN in crtlib.o, so the linker makes it LOCAL and create-fself
+    cannot publish it. No .prx on this console had ever run a global constructor. C cores did
+    not care; every C++ core met an unconstructed global the first time it asked for a size.
 
-Seventeen for seventeen, and the boundary is sharp - nothing between 5 and 31 has been tested,
-but nothing above 30 has survived and nothing below 6 has failed.
+    the fix ran them on every dylib_load, and sceKernelLoadStartModule returns the same id for
+    an already-loaded module. mednafen_gba constructed its four globals EIGHT times, which
+    presented as "failed_to_start_audio_driver" and an assertion deep in Blip_Buffer.
 
-⚠ **AND THERE IS ONE COUNTEREXAMPLE THAT MATTERS: Beetle PSX HW.** It is heavily C++ - SPIRV-Cross
-and parallel-psx - and it runs fine. The difference is not the language, it is that Beetle was
-built through its own `orbis` platform arm while all hundred of these were built with
-`platform=unix`. So the hypothesis is not "C++ crashes here"; it is **"something `platform=unix`
-does to a C++ core is fatal, and the `orbis` arm did not do it."** Static initialisers,
-exceptions, `__cxa_atexit` and the threading model are all candidates and all testable.
+    the once-per-module guard then held ids across unload, and the kernel reuses them.
+    nestopia unloaded, quicknes took its id, its constructors were skipped, and it died on a
+    null read at 0x20 - a SIGSEGV that looks exactly like a broken core.
 
-### The 24 untested cores this predicts will crash
+⚠ **The second and third were introduced by the fix for the first.** Each one only showed up on
+the console, and each looked like a defect in whichever core happened to hit it. A verdict of
+`crash` against a core is worth very little until the loader underneath it is known to be sound.
 
-`bsnes_mercury` `fbalpha2012` `same_cdi` `nekop2` `ecwolf` `nxengine` `puae` `x1` `dice` `desmume2015` `gearsystem` `gearboy` `fbalpha2012_cps1` `gme` `frodo` `neocd` `doublecherrygb` `mednafen_pce` `mednafen_pcfx` `fbalpha2012_neogeo` `gambatte` `mednafen_supergrafx` `reminiscence` `numero`
-
-Testing them one by one confirms a pattern that is already 17 for 17. Two or three spot checks
-are worth more than twenty-four, and the time saved is better spent on the one core that would
-falsify it - a C++ core that works, or a C core that does not.
-
-### ⚠ The crash column was reset on 2026-08-24, and the reason matters
-
-Seven cores were recorded as `crash` before the cause was known. It was not in any of them: no
-`.prx` on this console had ever run a global constructor, so every C++-dominant core met an
-unconstructed global the first time it asked one for a size. `libretro-common/dynamic/dylib.c`
-carries the full measurement.
-
-All 100 have been relinked with `ps4/orbis-module.ld` and re-uploaded. Those seven are back to
-`untested` because their old verdict was about the frontend, not about them - keeping it would
-have left seven cores condemned for somebody else's bug.
+Confirmed playing afterwards: bsnes_cplusplus98, mednafen_gba, mesen, mesen-s, mrboom, nestopia
+(renders wrong, but loads), quicknes, snes9x, vbam.
 
 ## Built and on the console — 100 cores
 
@@ -68,7 +53,7 @@ have left seven cores condemned for somebody else's bug.
 | `a5200` | Atari - 5200 (a5200) | 1000K | `40c6f2f` | untested | |
 | `atari800` | Atari - 400/800/600XL/800XL/130XE/5200 (Atari800) | 1,8M | `cd72179` | untested | |
 | `bk` | Elektronika - BK-0010/BK-0011(M) | 864K | `fe64da4` | untested | |
-| `bsnes_cplusplus98` | Nintendo - SNES / SFC (bsnes C++98 (v085)) | 1,9M | `4b97b39` | untested | was crash; relinked with ps4/orbis-module.ld |
+| `bsnes_cplusplus98` | Nintendo - SNES / SFC (bsnes C++98 (v085)) | 1,9M | `4b97b39` | plays |  |
 | `bsnes_mercury` | bsnes_mercury | 3,2M | `ea22363` | untested | |
 | `cannonball` | Cannonball | 1,1M | `0d83575` | untested | OutRun set now on the console at `roms/outrun/` with a dummy `cannonball.game` - load that file |
 | `cap32` | Amstrad - CPC/GX4000 (Caprice32) | 2,1M | `4abfb8b` | untested | |
@@ -120,7 +105,7 @@ have left seven cores condemned for somebody else's bug.
 | `mednafen_vb` | Nintendo - Virtual Boy (Beetle VB) | 844K | `83ed426` | untested | |
 | `mednafen_wswan` | Bandai - WonderSwan/Color (Beetle Wonderswan) | 1,9M | `4b01295` | untested | |
 | `mesen` | Nintendo - NES / Famicom (Mesen) | 5,2M | `0102910` | plays | was the crash that found the constructor bug |
-| `mesen-s` | Nintendo - SNES / SFC / Game Boy / Color (Mesen-S) | 4,2M | `9e4fdeb` | untested | was crash; relinked with ps4/orbis-module.ld |
+| `mesen-s` | Nintendo - SNES / SFC / Game Boy / Color (Mesen-S) | 4,2M | `9e4fdeb` | plays |  |
 | `mrboom` | Mr.Boom (Bomberman) | 9,2M | `40ac320` | plays |  |
 | `mu` | Palm OS (Mu) | 1,4M | `f9d34a0` | untested | |
 | `nekop2` | NEC - PC-98 (Neko Project II) | 2,1M | `5fdbb21` | untested | |
@@ -146,7 +131,7 @@ have left seven cores condemned for somebody else's bug.
 | `same_cdi` | Philips - CDi (SAME CDi) | 15M | `418be50` | untested | |
 | `sameboy` | Nintendo - Game Boy / Color (SameBoy) | 1,1M | `aa158a8` | untested | |
 | `smsplus` | Sega - MS/GG (SMS Plus GX) | 872K | `8a63f82` | untested | black screen when fed a Mega Drive .bin - it is a Sega 8-bit core; needs an SMS/GG rom, not retested yet |
-| `snes9x` | Nintendo - SNES / SFC (Snes9x) | 4,5M | `890b5d4` | untested | was crash; relinked with ps4/orbis-module.ld |
+| `snes9x` | Nintendo - SNES / SFC (Snes9x) | 4,5M | `890b5d4` | plays |  |
 | `snes9x2002` | Nintendo - SNES / SFC (Snes9x 2002) | 1,5M | `5bd8bd6` | plays |  |
 | `snes9x2005` | Nintendo - SNES / SFC (Snes9x 2005) | 1,5M | `deb49d8` | plays |  |
 | `snes9x2005_plus` | Nintendo - SNES / SFC (Snes9x 2005 Plus) | 1,5M | `deb49d8` | plays |  |
@@ -159,7 +144,7 @@ have left seven cores condemned for somebody else's bug.
 | `tyrquake` | Quake (TyrQuake) | 1,8M | `e57bb11` | untested | |
 | `uzem` | Uzebox (Uzem) | 756K | `d991ee9` | untested | |
 | `vba_next` | Nintendo - Game Boy Advance (VBA Next) | 1,6M | `2b96fd3` | plays |  |
-| `vbam` | Nintendo - Game Boy Advance (VBA-M) | 2,1M | `115defb` | untested | was crash; relinked with ps4/orbis-module.ld |
+| `vbam` | Nintendo - Game Boy Advance (VBA-M) | 2,1M | `115defb` | plays |  |
 | `vemulator` | VeMUlator | 756K | `27a062f` | untested | |
 | `virtualjaguar` | Atari - Jaguar (Virtual Jaguar) | 3,6M | `8c758ff` | untested | |
 | `x1` | Sharp X1 (X Millennium) | 1,1M | `3106aa5` | untested | |
