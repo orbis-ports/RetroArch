@@ -70,12 +70,12 @@ One core proving the path works is enough for now; the rest wait for matching co
 | Core | Name | Size | Built from | Status | Notes |
 |------|------|------|-----------|--------|-------|
 | `2048` | 2048 | 732K | `39333f7` | plays | menu and game both fine |
-| `a5200` | Atari - 5200 (a5200) | 1000K | `40c6f2f` | untested | |
-| `atari800` | Atari - 400/800/600XL/800XL/130XE/5200 (Atari800) | 1,8M | `cd72179` | untested | |
+| `a5200` | Atari - 5200 (a5200) | 1000K | `40c6f2f` | untested | said 'missing bios'; 5200.rom is declared OPTIONAL in its .info and is not - now on the console |
+| `atari800` | Atari - 400/800/600XL/800XL/130XE/5200 (Atari800) | 1,8M | `cd72179` | plays |  |
 | `bk` | Elektronika - BK-0010/BK-0011(M) | 864K | `fe64da4` | untested | |
 | `bsnes_cplusplus98` | Nintendo - SNES / SFC (bsnes C++98 (v085)) | 1,9M | `4b97b39` | plays |  |
 | `bsnes_mercury` | bsnes_mercury | 3,2M | `ea22363` | untested | |
-| `cannonball` | Cannonball | 1,1M | `0d83575` | untested | OutRun set now on the console at `roms/outrun/` with a dummy `cannonball.game` - load that file |
+| `cannonball` | Cannonball | 1,1M | `0d83575` | plays | OutRun set in roms/outrun/, loaded via cannonball.game |
 | `cap32` | Amstrad - CPC/GX4000 (Caprice32) | 2,1M | `4abfb8b` | untested | |
 | `clownmdemu` | Sega - MD/CD (ClownMDEmu) | 1,6M | `935d6fc` | plays |  |
 | `crocods` | Amstrad - CPC (CrocoDS) | 1,3M | `a9c63b2` | untested | |
@@ -132,7 +132,7 @@ One core proving the path works is enough for now; the rest wait for matching co
 | `neocd` | SNK - Neo Geo CD (NeoCD) | 2,9M | `8f2d42c` | untested | |
 | `nestopia` | Nintendo - NES / Famicom (Nestopia) | 7,1M | `6c2d242` | broken | loads and runs, green screen, exits cleanly - renders wrong, not a crash |
 | `numero` | Texas Instruments TI-83 (Numero) | 1,5M | `c0b07a3` | untested | |
-| `nxengine` | Cave Story (NXEngine) | 1,7M | `fd1c068` | untested | |
+| `nxengine` | Cave Story (NXEngine) | 1,7M | `fd1c068` | untested | said 'game files missing'; Cave Story freeware data now in roms/cavestory/, load Doukutsu.exe |
 | `o2em` | Magnavox - Odyssey2 / Philips Videopac+ (O2EM) | 1,1M | `679d6fe` | untested | |
 | `oberon` | Oberon RISC Emulator | 636K | `5be71d8` | untested | |
 | `opera` | The 3DO Company - 3DO (Opera) | 1,3M | `a501a27` | untested | |

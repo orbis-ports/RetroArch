@@ -215,6 +215,30 @@ set is from 2001 (`4143.bin`, `41_19.rom`, dated 1997-2001) and FBA 2012 wants f
 and CRCs. ⚠ Not confirmed - "cannot find driver" is about the set NAME, so something else may be
 going on - but the age of the contents is the first suspect.
 
+### ⚠ "Optional" firmware is not optional, and that is the third time the .info under-declared
+
+`a5200` refused to start with "missing bios". Its `.info` says:
+
+    firmware0_path = "5200.rom"
+    firmware0_opt  = "true"
+
+The original selection fetched only files marked NOT optional, so it was skipped - and the core
+does not run without it. The md5 in the same file's `notes` matched the copy in the repository
+exactly (`281f20ea4320404ec820fb7ec0693b38`), so the source was right and the filter was wrong.
+
+All 131 optional firmware files the repository carries are now on the console (70.5 MB). Together
+with the arcade BIOS in the ROM directory and the required set fetched earlier, `system/` holds
+everything `Abdess/retrobios` has for these hundred cores.
+
+Three separate ways the `.info` files under-declare what a core needs, all found by running:
+
+    arcade cores    say it in `notes` prose, with no firmware fields at all
+    a5200           marks a mandatory BIOS `opt = "true"`
+    nxengine        needs a whole game data directory, described only in `notes`
+
+⚠ **The lesson is not "read notes too".** It is that a core's own metadata is a hint, and the only
+reliable statement about what it needs is the core refusing to start and saying so.
+
 ## ⚠ Two things this list cannot tell you
 
 **A declared format is not a working format.** `supported_extensions` is what the core accepts on
