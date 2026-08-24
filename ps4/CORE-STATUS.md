@@ -92,8 +92,8 @@ have left seven cores condemned for somebody else's bug.
 | `gambatte` | Nintendo - Game Boy / Color (Gambatte) | 6,3M | `d9d6cd0` | untested | |
 | `gearboy` | Nintendo - Game Boy / Color (Gearboy) | 1,7M | `58d7a8e` | untested | |
 | `gearsystem` | Sega - MS/GG/SG-1000 (Gearsystem) | 1,8M | `b9c2e96` | untested | |
-| `genesis_plus_gx` | Sega - MS/GG/MD/CD (Genesis Plus GX) | 18M | `b7e79b3` | untested | |
-| `genesis_plus_gx_wide` | Sega - MS/GG/MD/CD (Genesis Plus GX Wide) | 17M | `b7ad005` | untested | |
+| `genesis_plus_gx` | Sega - MS/GG/MD/CD (Genesis Plus GX) | 18M | `b7e79b3` | plays |  |
+| `genesis_plus_gx_wide` | Sega - MS/GG/MD/CD (Genesis Plus GX Wide) | 17M | `b7ad005` | plays | two images side by side - a widescreen variant that extends the H32/H40 area; unclear whether this is the port or the core's options, and not chased |
 | `gme` | Game Music Emu | 1,3M | `1562f62` | untested | |
 | `gong` | Gong | 524K | `69ef0b6` | untested | |
 | `gpsp` | Nintendo - Game Boy Advance (gpSP) | 1,4M | `6b12231` | plays |  |
