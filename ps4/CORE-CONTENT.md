@@ -38,6 +38,27 @@ BIOS/firmware goes in `/data/retroarch/system/` (mode 666). Content anywhere rea
 | `quasi88` | PC-8000 / PC-8800 series | `quasi88/n88.rom`, `quasi88/n88_0.rom` |
 | `same_cdi` | CD-i | `same_cdi/bios/cdimono1.zip` |
 
+## Firmware: solved, from a public pack
+
+`Abdess/retrobios` (release `v2026.08.06`) carries every firmware file the hundred built cores
+declare as REQUIRED - 34 distinct files, checked name by name against each core's own `.info`.
+
+⚠ **The release assets are the wrong thing to download.** The RetroArch/Lakka pack is 2.6 GB
+split across two parts, and almost none of it applies here. The repository keeps the same files
+individually under `bios/`, so the 34 that matter came to **11.3 MB** fetched by name. There is
+no reason to pull the packs.
+
+They are on the console now, in `/data/retroarch/system/`, modes 666 and directories 777,
+including the three that live in subdirectories (`keropi/`, `quasi88/`, `same_cdi/bios/`) - a
+core looks for those by relative path and will not find them flattened.
+
+Also present but not fetched: **129 optional** firmware files (70.5 MB) - alternate regions,
+optional boot ROMs, expansion BIOSes. Fetch them if a specific core misbehaves; none is needed to
+start.
+
+⚠ **Eight optional files are absent from that repository** and would have to come from elsewhere
+if ever wanted: `SGB1.sfc, SGB2.sfc, bios7.bin, bios9.bin, bios_E.sms, bios_U.sms, gb_bios.bin, gexpress.pce`. All eight are optional, so nothing in the table above is blocked.
+
 ## Everything, by system
 
 | System | Cores | Formats | Content to get |
