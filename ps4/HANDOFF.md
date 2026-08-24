@@ -1302,3 +1302,60 @@ reasoned, not measured.
 ⚠ **A core that builds is not a core that works.** This harness reports what compiled. Every one
 of the twenty is unrun; the console is the only thing that can tell a working core from a
 linking one.
+
+### The whole recipe, built: 100 of 162
+
+Every `GENERIC` core in `cores-linux-x64-generic`, one at a time. **453 MB of `.prx` in
+`~/.cache/ps4-cores/out`**, with `cores.manifest` recording core, verdict, size and the upstream
+commit each was built from.
+
+⚠ **NOT IN /tmp, AND THAT IS NOT A DETAIL.** The first sweep's output lived in the session
+scratchpad; a cold reboot cleared tmpfs and took 52 built cores, every clone and the manifest
+with it. `build-cores.sh` already defaulted to `~/.cache/ps4-cores` and the default was being
+overridden on every call.
+
+    100  OK
+     45  LINK       an undefined symbol, named in the manifest
+     10  COMPILE    no objects at all
+      6  NO-ABI     linked, but without retro_run
+      1  CLONE      submodule fetch failed
+
+### Two classes closed during the sweep, worth 7 cores
+
+**`HAVE_CDROM=0`.** It gates passthrough to a *host CD device* - a real drive opened by path -
+which this console does not have, so the feature could not work here whatever it linked. It also
+adds a member to `libretro_vfs_implementation_file`, so the flag decides a **struct layout shared
+between objects**. Satisfying the resulting `cdrom_lba_to_msf` from the shared archive would have
+put two layouts of one struct into a single link: silent, and far worse than a missing symbol.
+
+**`ZSTD_trace_*` are undefined WEAK.** ld.lld leaves them undefined, which is what weak means.
+create-fself will not: it maps every remaining undefined symbol to a library NID, finds none, and
+refuses the module - ⚠ **with exit status 0**, so a script trusting the exit code sees success and
+no file. Fixed with real no-op definitions (`ps4/orbis_weak_stubs.c`).
+
+⚠ **And the first attempt at that fix did nothing, instructively:** the stubs went into the
+fallback *archive*, and **an archive member is never extracted to satisfy a weak undefined
+symbol**. They have to be passed as a plain object.
+
+### What is left, by cause rather than by core
+
+     8  OpenGL / X11        ⚠ NOT FIXABLE HERE and should not be listed as work. boom3, boom3_xp,
+                            craft, desmume, kronos, vecx, vitaquake2, vitaquake3. Note desmume2015
+                            (same system, software renderer) builds fine - several of these have a
+                            sibling that already works.
+     8  no .o at all        blastem, higan_sfc, higan_sfc_balanced, mame2016, mgba, rustynes,
+                            scummvm, squirreljme. Their Makefiles go from sources to the shared
+                            object in ONE command and never write an object. STATIC_LINKING=1 does
+                            not change it. Each needs a real platform arm - a patch.
+     7  vice_*              562 objects each, then undefined `log_cb`, `pix_bytes`, `opt_vkbd_alpha`.
+                            One family, one TU failing, one patch away from seven cores.
+     6  NO-ABI              bsnes2014, freej2me, hbmame, mame, openlara, stella. Built something,
+                            not a libretro core.
+     2  FLAC                yabasanshiro, yabause - vendored libFLAC not in the source list.
+     2  hiro::              bsnes, bsnes_hd_beta - byuu's GUI toolkit pulled into a libretro build.
+    12  one-offs            SDL_GetTicks, unzOpen2, sk_num, JS_ToInt32, wasm_rt_trap, mp3dec_start,
+                            osd_malloc, BurnDrvCps1944j, BurnSampleReset, inet_htons, ace::ace,
+                            ARMJIT_Memory, AMeteor, cEmuSCV, GetKeyState, inflateInit2_.
+
+⚠ **NONE OF THE HUNDRED HAS BEEN RUN.** The harness reports what compiled. A core that links and
+draws nothing is a pass here and a failure on the console, and only the console knows.
