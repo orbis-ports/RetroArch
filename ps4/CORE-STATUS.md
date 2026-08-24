@@ -23,13 +23,13 @@ against the same tree. Rebuild one with:
 
 | Core | Name | Size | Built from | Status | Notes |
 |------|------|------|-----------|--------|-------|
-| `2048` | 2048 | 732K | `39333f7` | untested | |
+| `2048` | 2048 | 732K | `39333f7` | plays | menu and game both fine |
 | `a5200` | Atari - 5200 (a5200) | 1000K | `40c6f2f` | untested | |
 | `atari800` | Atari - 400/800/600XL/800XL/130XE/5200 (Atari800) | 1,8M | `cd72179` | untested | |
 | `bk` | Elektronika - BK-0010/BK-0011(M) | 864K | `fe64da4` | untested | |
 | `bsnes_cplusplus98` | Nintendo - SNES / SFC (bsnes C++98 (v085)) | 1,9M | `4b97b39` | untested | |
 | `bsnes_mercury` | bsnes_mercury | 3,2M | `ea22363` | untested | |
-| `cannonball` | Cannonball | 1,1M | `0d83575` | untested | |
+| `cannonball` | Cannonball | 1,1M | `0d83575` | boots | core loads; refuses content - needs the OutRun arcade set, as its .info says |
 | `cap32` | Amstrad - CPC/GX4000 (Caprice32) | 2,1M | `4abfb8b` | untested | |
 | `clownmdemu` | Sega - MD/CD (ClownMDEmu) | 1,6M | `935d6fc` | untested | |
 | `crocods` | Amstrad - CPC (CrocoDS) | 1,3M | `a9c63b2` | untested | |
@@ -55,7 +55,7 @@ against the same tree. Rebuild one with:
 | `genesis_plus_gx_wide` | Sega - MS/GG/MD/CD (Genesis Plus GX Wide) | 17M | `b7ad005` | untested | |
 | `gme` | Game Music Emu | 1,3M | `1562f62` | untested | |
 | `gong` | Gong | 524K | `69ef0b6` | untested | |
-| `gpsp` | Nintendo - Game Boy Advance (gpSP) | 1,4M | `6b12231` | untested | |
+| `gpsp` | Nintendo - Game Boy Advance (gpSP) | 1,4M | `6b12231` | plays |  |
 | `gw` | Handheld Electronic (GW) | 1,3M | `91d599b` | untested | |
 | `handy` | Atari - Lynx (Handy) | 1,6M | `bc55d46` | untested | |
 | `hatari` | Atari - ST/STE/TT/Falcon (Hatari) | 4,4M | `24e7bd7` | untested | |
@@ -66,7 +66,7 @@ against the same tree. Rebuild one with:
 | `mame2000` | Arcade (MAME 2000) | 20M | `f099ba4` | untested | |
 | `mame2003` | Arcade (MAME 2003) | 46M | `259339e` | untested | |
 | `mame2003_plus` | Arcade (MAME 2003-Plus) | 50M | `6c514a3` | untested | |
-| `mednafen_gba` | Nintendo - Game Boy Advance (Beetle GBA) | 1,1M | `bb9edd1` | untested | |
+| `mednafen_gba` | Nintendo - Game Boy Advance (Beetle GBA) | 1,1M | `bb9edd1` | crash | takes RetroArch down |
 | `mednafen_lynx` | Atari - Lynx (Beetle Lynx) | 852K | `fcdefcf` | untested | |
 | `mednafen_ngp` | SNK - Neo Geo Pocket / Color (Beetle NeoPop) | 1,1M | `a50d5ac` | untested | |
 | `mednafen_pce` | NEC - PC Engine / SuperGrafx / CD (Beetle PCE) | 6,3M | `ae99235` | untested | |
@@ -117,8 +117,8 @@ against the same tree. Rebuild one with:
 | `theodore` | Thomson - MO/TO (Theodore) | 2,9M | `4d469ce` | untested | |
 | `tyrquake` | Quake (TyrQuake) | 1,8M | `e57bb11` | untested | |
 | `uzem` | Uzebox (Uzem) | 756K | `d991ee9` | untested | |
-| `vba_next` | Nintendo - Game Boy Advance (VBA Next) | 1,6M | `2b96fd3` | untested | |
-| `vbam` | Nintendo - Game Boy Advance (VBA-M) | 2,1M | `115defb` | untested | |
+| `vba_next` | Nintendo - Game Boy Advance (VBA Next) | 1,6M | `2b96fd3` | plays |  |
+| `vbam` | Nintendo - Game Boy Advance (VBA-M) | 2,1M | `115defb` | crash | takes RetroArch down |
 | `vemulator` | VeMUlator | 756K | `27a062f` | untested | |
 | `virtualjaguar` | Atari - Jaguar (Virtual Jaguar) | 3,6M | `8c758ff` | untested | |
 | `x1` | Sharp X1 (X Millennium) | 1,1M | `3106aa5` | untested | |
