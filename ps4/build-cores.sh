@@ -1,22 +1,33 @@
 #!/usr/bin/env bash
-# Try to build many libretro cores for the PlayStation 4, and say honestly which ones worked.
+# Build libretro cores for the PlayStation 4 - one, some, or all of them.
 #
-#   ps4/build-cores.sh --work <dir> --out <dir> [--jobs N] [--recipe <file>] <core>...
+#   ps4/build-cores.sh --recipe <file> [options] [core]...
 #
-# ⚠ IT DOES NOT PATCH THE CORES' MAKEFILES, and that is the whole design. Beetle PSX HW needed a
-# hand-written `orbis` platform arm, and 99 candidate cores is 99 of those. Instead the toolchain
-# flags are pushed INSIDE $(CC) and $(CXX) - not into CFLAGS - because a libretro Makefile
-# routinely does `CFLAGS := ...` and throws away anything the caller passed, while almost none of
-# them rewrite CC. `platform=unix` then gives the core a sane arm to start from.
+#   --recipe <file>   a libretro-super recipe (recipes/linux/cores-linux-x64-generic)
+#   --work <dir>      clones, logs and intermediates      (default ~/.cache/ps4-cores)
+#   --out <dir>       .prx and .info go here              (default <work>/out)
+#   --patches <dir>   per-core patch tree                 (default ps4/core-patches)
+#   --all             every GENERIC core in the recipe
+#   --list            print what the recipe offers, and exit
+#   --update          fetch and reset to the recipe's branch before building
+#   --keep            incremental: do not reset, do not delete objects
+#   --jobs N          parallelism for each core's make
 #
-# ⚠ AND THE LINK IS EXPECTED TO FAIL. `platform=unix` links a shared object with the host's
-# compiler driver; there is no such thing here. The objects are what we want, so make runs with
-# -k and the .o files are collected afterwards and linked with ld.lld into a .prx - the same two
-# steps as beetle-psx-libretro/ps4/build.sh, which is where this shape comes from.
+# ⚠ ONE CORE IS THE NORMAL CASE, NOT THE SPECIAL ONE. `--all` exists for a sweep, but the thing
+# this is used for afterwards is "upstream moved, rebuild gambatte" and "I have a fix for
+# picodrive, try it". So a bare core name rebuilds exactly that core, in place, and the patch
+# tree is where a fix lives - in THIS repository, versioned, rather than in a clone under /tmp
+# that the next --update throws away.
 #
-# What this cannot do is make a core CORRECT. It reports what compiled. A core that builds and
-# then draws nothing is a pass here and a failure on the console, and only the console can tell
-# the difference.
+#   ps4/build-cores.sh --recipe <r> gambatte              rebuild one, patches reapplied
+#   ps4/build-cores.sh --recipe <r> --update gambatte      take upstream's newest first
+#   ps4/build-cores.sh --recipe <r> --keep gambatte        incremental, patches left alone
+#
+# ⚠ AND IT DOES NOT PATCH MAKEFILES BEHIND YOUR BACK. The toolchain flags go INSIDE $(CC) and
+# $(CXX) rather than into CFLAGS, because a libretro Makefile routinely does `CFLAGS := ...` and
+# discards what the caller passed, while almost none of them rewrite CC. `platform=unix` then
+# gives the core a sane arm to start from, its own link fails (host driver, -shared), and the
+# objects are collected and linked here. A core that needs more than that gets a patch.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,20 +40,39 @@ done
 . "$ORBIS_COMPAT_DIR/scripts/ps4/orbis-env.sh"
 TOOLCHAIN="$OO_PS4_TOOLCHAIN"
 
-WORK=""; OUT=""; JOBS="$(nproc)"; RECIPE=""
+WORK="${HOME}/.cache/ps4-cores"; OUT=""; RECIPE=""
+PATCHES="$HERE/core-patches"
+JOBS="$(nproc)"; ALL=0; LIST=0; UPDATE=0; KEEP=0
 CORES=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --work)   WORK="$2";   shift 2 ;;
-    --out)    OUT="$2";    shift 2 ;;
-    --jobs|-j) JOBS="$2";  shift 2 ;;
-    --recipe) RECIPE="$2"; shift 2 ;;
+    --recipe)  RECIPE="$2";  shift 2 ;;
+    --work)    WORK="$2";    shift 2 ;;
+    --out)     OUT="$2";     shift 2 ;;
+    --patches) PATCHES="$2"; shift 2 ;;
+    --jobs|-j) JOBS="$2";    shift 2 ;;
+    --all)     ALL=1;        shift ;;
+    --list)    LIST=1;       shift ;;
+    --update)  UPDATE=1;     shift ;;
+    --keep)    KEEP=1;       shift ;;
     -*) echo "build-cores: unknown argument: $1" >&2; exit 2 ;;
     *) CORES+=("$1"); shift ;;
   esac
 done
-[[ -n "$WORK" && -n "$OUT" ]] || { echo "build-cores: --work and --out are required" >&2; exit 2; }
-[[ -n "$RECIPE" ]] || { echo "build-cores: --recipe is required (libretro-super recipe file)" >&2; exit 2; }
+[[ -n "$RECIPE" && -f "$RECIPE" ]] || { echo "build-cores: --recipe <file> is required" >&2; exit 2; }
+OUT="${OUT:-$WORK/out}"
+
+recipe_line() { awk -v c="$1" '!/^[[:space:]]*(#|$)/ && $1==c {print; exit}' "$RECIPE"; }
+
+if [[ $LIST -eq 1 ]]; then
+  awk '!/^[[:space:]]*(#|$)/ {printf "%-26s %s\n", $1, $6}' "$RECIPE" | sort
+  exit 0
+fi
+if [[ $ALL -eq 1 ]]; then
+  mapfile -t CORES < <(awk '!/^[[:space:]]*(#|$)/ && $6=="GENERIC" {print $1}' "$RECIPE" | sort)
+fi
+[[ ${#CORES[@]} -gt 0 ]] || { echo "build-cores: name a core, or pass --all" >&2; exit 2; }
+
 mkdir -p "$WORK" "$OUT"
 
 ORBIS_ARCH=(--target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables
@@ -51,17 +81,14 @@ ORBIS_ARCH=(--target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables
 
 # ⚠ THE INCLUDE ORDER IS NOT A PREFERENCE, AND C++ NEEDS A DIFFERENT ONE FROM C.
 #
-# For C: the overlay ahead of the SDK, so its corrected constants win - MAP_ANON is 0x1002 here
-# and the SDK's musl header says 0x0020.
+# C: the overlay ahead of the SDK, so its corrected constants win - MAP_ANON is 0x1002 on this
+# kernel and the SDK's musl header says 0x0020.
 #
-# For C++: libc++ FIRST, then the overlay, then the SDK. Getting this wrong is not a link error,
-# it is `cmath:341: no member named 'abs' in the global namespace` - libc++'s <cmath> hoists the
-# C library's abs into std:: and needs the C headers to arrive underneath it. This harness had
-# c++/v1 appended LAST and three C++ cores compiled almost nothing because of it; the same
-# ordering, and the same symptom, is already recorded in Makefile.orbis and in ps4/HANDOFF.md.
-#
-# -include orbis_prefix.h for the same reason Makefile.orbis passes it: 26 of the SDK's 189
-# orbis/ headers name size_t and friends without including <stddef.h> themselves.
+# C++: libc++ FIRST, then the overlay, then the SDK. Getting this wrong is not a link error, it
+# is `cmath:341: no member named 'abs' in the global namespace` - libc++'s <cmath> hoists the C
+# library's abs into std:: and needs the C headers underneath it. This file had c++/v1 appended
+# LAST on its first draft, which is the trap Makefile.orbis and ps4/HANDOFF.md both already
+# describe. Writing a new tool next to a documented trap is not protection from it.
 C_INCLUDES=(-isystem "$ORBIS_COMPAT_DIR/include" -isystem "$TOOLCHAIN/include")
 CXX_INCLUDES=(-isystem "$TOOLCHAIN/include/c++/v1"
               -isystem "$ORBIS_COMPAT_DIR/include" -isystem "$TOOLCHAIN/include"
@@ -72,13 +99,10 @@ CXX_ORBIS="clang++ ${ORBIS_ARCH[*]} ${CXX_INCLUDES[*]}"
 # ⚠ THE libretro ABI HAS TO BE NAMED OR LTO THROWS IT AWAY, AND THE BUILD STILL SUCCEEDS.
 #
 # Several cores compile with -flto under platform=unix, so their .o files are LLVM bitcode -
-# llvm-nm prints dashes where the address would be. ld.lld links bitcode happily, runs LTO, and
+# llvm-nm prints dashes where the address would be. ld.lld links bitcode, runs LTO, and
 # internalises everything unreachable from an entry point. A module has no entry point, so
-# "everything" is everything: snes9x2010 linked to a 915 KiB ELF containing ZERO retro_* symbols
-# and ld.lld reported success.
-#
-# Naming them with -u makes them GC roots. This is the whole libretro API surface as of
-# libretro.h; a core missing one of these is not a core, so nothing here is optional.
+# "everything" is everything: snes9x2010 linked to a 915 KiB ELF with ZERO retro_* symbols and
+# ld.lld reported success. Naming them with -u makes them GC roots.
 LIBRETRO_ABI=(retro_init retro_deinit retro_api_version
               retro_get_system_info retro_get_system_av_info
               retro_set_environment retro_set_video_refresh
@@ -89,18 +113,16 @@ LIBRETRO_ABI=(retro_init retro_deinit retro_api_version
               retro_cheat_reset retro_cheat_set
               retro_load_game retro_load_game_special retro_unload_game
               retro_get_region retro_get_memory_data retro_get_memory_size)
-KEEP=()
-for _s in "${LIBRETRO_ABI[@]}"; do KEEP+=(-u "$_s"); done
+KEEP_SYMS=()
+for _s in "${LIBRETRO_ABI[@]}"; do KEEP_SYMS+=(-u "$_s"); done
 
-# ⚠ AND THE FRONTEND'S libretro-common, AS AN ARCHIVE, AFTER the core's own objects.
+# ⚠ THE FRONTEND'S libretro-common, AS AN ARCHIVE, AFTER the core's own objects.
 #
-# Three of the first five cores tried failed on retro_vfs_*_impl and cdrom_*: their Makefiles do
-# not build the parts of libretro-common they call, because on a normal platform the shared
-# object resolves them lazily against the frontend. A .prx cannot - it has its own symbol table.
-#
-# An ARCHIVE and not a list of objects, deliberately: archive members are pulled only for symbols
-# still undefined, so a core that DID build its own copy keeps it and there is no duplicate. And
-# the frontend's copy is the one fixed for this console - see ps4/build-core.sh on --common.
+# Cores call retro_vfs_*_impl and cdrom_* without building them, because on a normal platform the
+# shared object resolves them lazily against the frontend at load time. A .prx has its own symbol
+# table and cannot. An ARCHIVE and not a list of objects, deliberately: members are pulled only
+# for symbols still undefined, so a core that DID build its own copy keeps it and nothing is
+# duplicated. The frontend's copy is also the one fixed for this console.
 COMMON_LIB="$WORK/liborbis-retro-common.a"
 if [[ ! -f "$COMMON_LIB" ]]; then
   mapfile -t _common < <(find "$ROOT/libretro-common" -name '*.o' -type f | sort)
@@ -108,99 +130,136 @@ if [[ ! -f "$COMMON_LIB" ]]; then
     echo "build-cores: no libretro-common objects in $ROOT - build the frontend first" >&2
     exit 1
   fi
-  # ⚠ AND THE PARTS THE FRONTEND ITSELF DOES NOT BUILD, because a core may still call them.
-  # genesis_plus_gx wants cdrom_lba_to_msf; libretro-common/cdrom/cdrom.c is in the tree and the
-  # frontend has no reason to compile it, so it is in no object anywhere. Best-effort: try every
-  # .c that has no .o yet and archive the ones that build. The ones that do not are network and
-  # platform code this console has no business running, and a core that needs one of those will
-  # say so by name at link time - which is a better answer than a silently short archive.
-  _extra_dir="$WORK/common-extra"
-  mkdir -p "$_extra_dir"
+  _extra="$WORK/common-extra"; mkdir -p "$_extra"
   _built=0; _failed=0
   while IFS= read -r csrc; do
     [[ -f "${csrc%.c}.o" ]] && continue
-    _obj="$_extra_dir/$(echo "${csrc#$ROOT/libretro-common/}" | tr '/' '_')"
-    _obj="${_obj%.c}.o"
+    _obj="$_extra/$(echo "${csrc#$ROOT/libretro-common/}" | tr '/' '_')"; _obj="${_obj%.c}.o"
     if [[ ! -f "$_obj" ]]; then
-      if $CC_ORBIS -O2 -I"$ROOT/libretro-common/include" -c -o "$_obj" "$csrc" >/dev/null 2>&1; then
-        _built=$((_built + 1))
-      else
-        rm -f "$_obj"; _failed=$((_failed + 1)); continue
-      fi
+      if $CC_ORBIS -O2 -I"$ROOT/libretro-common/include" -c -o "$_obj" "$csrc" >/dev/null 2>&1
+      then _built=$((_built+1)); else rm -f "$_obj"; _failed=$((_failed+1)); continue; fi
     fi
     _common+=("$_obj")
   done < <(find "$ROOT/libretro-common" -name '*.c' -type f | sort)
-
   llvm-ar rcs "$COMMON_LIB" "${_common[@]}"
-  echo "== libretro-common fallback: ${#_common[@]} objects (${_built} compiled here, ${_failed} would not build)"
+  echo "== libretro-common fallback: ${#_common[@]} objects ($_built built here, $_failed would not)"
 fi
 
-printf '%-24s %-9s %-9s %s\n' CORE RESULT SIZE NOTE
-printf '%-24s %-9s %-9s %s\n' ------------------------ --------- --------- ----
+MANIFEST="$OUT/cores.manifest"
+: > "$MANIFEST.new"
+
+printf '%-24s %-9s %-9s %-8s %s\n' CORE RESULT SIZE COMMIT NOTE
+printf '%-24s %-9s %-9s %-8s %s\n' ------------------------ --------- --------- -------- ----
+
+report() { # core result size commit note
+  printf '%-24s %-9s %-9s %-8s %s\n' "$1" "$2" "$3" "$4" "$5"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" >> "$MANIFEST.new"
+}
 
 for core in "${CORES[@]}"; do
-  line="$(awk -v c="$core" '!/^\s*(#|$)/ && $1==c {print; exit}' "$RECIPE")"
-  if [[ -z "$line" ]]; then
-    printf '%-24s %-9s %-9s %s\n' "$core" SKIP - "not in the recipe"
-    continue
-  fi
+  line="$(recipe_line "$core")"
+  [[ -n "$line" ]] || { report "$core" SKIP - - "not in the recipe"; continue; }
   read -r _name dir url branch _fetch buildtype makefile subdir _rest <<<"$line"
 
-  if [[ "$buildtype" != GENERIC ]]; then
-    # GENERIC_GL wants an OpenGL context this port does not have; CMAKE wants a toolchain file.
-    printf '%-24s %-9s %-9s %s\n' "$core" SKIP - "build type $buildtype"
-    continue
-  fi
+  # GENERIC_GL wants an OpenGL context this port does not have; CMAKE wants a toolchain file.
+  [[ "$buildtype" == GENERIC ]] || { report "$core" SKIP - - "build type $buildtype"; continue; }
 
   src="$WORK/$dir"
-  if [[ ! -d "$src" ]]; then
+  if [[ ! -d "$src/.git" ]]; then
+    rm -rf "$src"
     if ! git clone -q --depth 1 --recursive -b "$branch" "$url" "$src" 2>"$WORK/$core.clone"; then
-      printf '%-24s %-9s %-9s %s\n' "$core" CLONE-ERR - "$(tail -1 "$WORK/$core.clone" | cut -c1-60)"
+      report "$core" CLONE - - "$(tail -1 "$WORK/$core.clone" | cut -c1-46)"
       continue
     fi
+  elif [[ $UPDATE -eq 1 ]]; then
+    git -C "$src" fetch -q --depth 1 origin "$branch" 2>>"$WORK/$core.clone" || true
   fi
 
-  bdir="$src/${subdir:-.}"
-  [[ -d "$bdir" ]] || bdir="$src"
+  # ⚠ RESET THEN PATCH, EVERY TIME, so a build is a function of (upstream ref, patch tree) and
+  # nothing else. --keep opts out for the edit-compile loop, where re-applying a patch that is
+  # already applied would fail and reverting local edits would be infuriating.
+  npatch=0
+  if [[ $KEEP -eq 0 ]]; then
+    git -C "$src" reset -q --hard "origin/$branch" 2>/dev/null \
+      || git -C "$src" reset -q --hard 2>/dev/null || true
+    git -C "$src" clean -qfd 2>/dev/null || true
+    if [[ -d "$PATCHES/$core" ]]; then
+      for p in "$PATCHES/$core"/*.patch; do
+        [[ -e "$p" ]] || continue
+        if git -C "$src" apply --whitespace=nowarn "$p" 2>>"$WORK/$core.patch"; then
+          npatch=$((npatch+1))
+        else
+          report "$core" PATCH - "$(git -C "$src" rev-parse --short HEAD)" "$(basename "$p") would not apply"
+          npatch=-1; break
+        fi
+      done
+    fi
+  fi
+  [[ $npatch -lt 0 ]] && continue
+  commit="$(git -C "$src" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  [[ $npatch -gt 0 ]] && commit="$commit+$npatch"
 
-  find "$bdir" -name '*.o' -type f -delete 2>/dev/null
+  bdir="$src/${subdir:-.}"; [[ -d "$bdir" ]] || bdir="$src"
+
+  # ⚠ THE OBJECTS ARE NOT NECESSARILY UNDER THE BUILD DIRECTORY, and assuming they were cost
+  # three cores a wrong verdict. gearboy builds from platforms/libretro with sources named
+  # ../../src/*.cpp, so `$(SOURCES_CXX:.cpp=.o)` puts every object in src/ - one level ABOVE the
+  # directory make ran in. Searching only there found one stray object, the link failed on the
+  # core's own classes, and it read as a core that will not compile. It compiles fine.
+  #
+  # So the clone root is the search root, both for the clean and for the collection.
+  [[ $KEEP -eq 0 ]] && find "$src" -name '*.o' -type f -delete 2>/dev/null
+
   ( cd "$bdir" && make -f "${makefile:-Makefile}" platform=unix \
-        CC="$CC_ORBIS" CXX="$CXX_ORBIS" AR=llvm-ar -k -j"$JOBS" ) \
-      >"$WORK/$core.log" 2>&1
+        CC="$CC_ORBIS" CXX="$CXX_ORBIS" AR=llvm-ar -k -j"$JOBS" ) >"$WORK/$core.log" 2>&1
 
-  mapfile -t objs < <(find "$bdir" -name '*.o' -type f | sort)
+  mapfile -t objs < <(find "$src" -name '*.o' -type f | sort)
   if [[ ${#objs[@]} -eq 0 ]]; then
-    err="$(grep -m1 -E 'error:|No such file' "$WORK/$core.log" | cut -c1-58)"
-    printf '%-24s %-9s %-9s %s\n' "$core" COMPILE - "${err:-no objects produced}"
+    err="$(grep -m1 -E 'error:|No such file|No rule' "$WORK/$core.log" | cut -c1-46)"
+    report "$core" COMPILE - "$commit" "${err:-no objects; single-shot link?}"
     continue
   fi
 
-  # ⚠ SOME OBJECTS DO NOT BELONG TO THE CORE. -k keeps going past a failure, so a partial build
-  # still leaves .o files behind and would link into a .prx missing its own entry points. The
-  # retro_* symbols are the test: a module without them is not a libretro core whatever it built.
-  if ! ld.lld "${objs[@]}" "${KEEP[@]}" -o "$WORK/$core.elf" \
+  if ! ld.lld "${objs[@]}" "${KEEP_SYMS[@]}" -o "$WORK/$core.elf" \
         -m elf_x86_64 -pie --script "$TOOLCHAIN/link.x" --eh-frame-hdr --no-rosegment \
-        -L"$TOOLCHAIN/lib" -L"$ORBIS_COMPAT_DIR/build" \
-        "$COMMON_LIB" \
-        -lorbis-compat -lc -lkernel -lc++ -lSceNet -lSceUserService "$TOOLCHAIN/lib/crtlib.o" \
-        >"$WORK/$core.link" 2>&1; then
-    err="$(grep -m1 -E 'undefined symbol|error' "$WORK/$core.link" | cut -c1-58)"
-    printf '%-24s %-9s %-9s %s\n' "$core" LINK "${#objs[@]}o" "${err:-link failed}"
+        -L"$TOOLCHAIN/lib" -L"$ORBIS_COMPAT_DIR/build" "$COMMON_LIB" \
+        -lorbis-compat -lc -lkernel -lc++ -lSceNet -lSceUserService \
+        "$TOOLCHAIN/lib/crtlib.o" >"$WORK/$core.link" 2>&1; then
+    err="$(grep -m1 -oP 'undefined symbol: \K.*' "$WORK/$core.link" | cut -c1-46)"
+    report "$core" LINK "${#objs[@]}o" "$commit" "${err:-link failed}"
     continue
   fi
 
-  if ! llvm-nm "$WORK/$core.elf" 2>/dev/null | grep -q ' T retro_run$'; then
-    printf '%-24s %-9s %-9s %s\n' "$core" NO-ABI "${#objs[@]}o" "linked without retro_run"
+  # ⚠ -k KEEPS GOING PAST A FAILURE, so a partial build still leaves objects and would link into
+  # a module missing its own entry points. retro_run is the test: without it this is not a core,
+  # whatever it built.
+  # ⚠ NO `grep -q` IN A PIPELINE UNDER pipefail. grep -q exits the moment it matches, which closes
+  # the pipe, which sends llvm-nm SIGPIPE, which makes the PIPELINE fail even though the symbol was
+  # found. Whether it happens depends on whether the symbol dump fits the pipe buffer, so it looked
+  # like a real verdict: gearboy and nestopia were reported as "linked without retro_run" while the
+  # ELF beside them contained it, and cores with smaller symbol tables passed. A false failure that
+  # scales with the size of the core is the worst kind - it condemns the big ones.
+  syms="$(llvm-nm "$WORK/$core.elf" 2>/dev/null)"
+  if [[ "$syms" != *" T retro_run"* ]]; then
+    report "$core" NO-ABI "${#objs[@]}o" "$commit" "linked without retro_run"
     continue
   fi
 
   name="${core}_libretro"
   ( cd "$WORK" && OO_PS4_TOOLCHAIN="$TOOLCHAIN" "$TOOLCHAIN/bin/linux/create-fself" \
       -in="$core.elf" -out="$core.oelf" --lib="$name.prx" --paid 0x3800000000000011 ) >/dev/null 2>&1
-  if [[ ! -f "$WORK/$name.prx" ]]; then
-    printf '%-24s %-9s %-9s %s\n' "$core" FSELF "${#objs[@]}o" "create-fself refused the ELF"
-    continue
-  fi
+  [[ -f "$WORK/$name.prx" ]] || { report "$core" FSELF "${#objs[@]}o" "$commit" "create-fself refused it"; continue; }
   mv "$WORK/$name.prx" "$OUT/$name.prx"
-  printf '%-24s %-9s %-9s %s\n' "$core" OK "$(du -h "$OUT/$name.prx" | cut -f1)" ""
+  report "$core" OK "$(du -h "$OUT/$name.prx" | cut -f1)" "$commit" ""
 done
+
+# ⚠ MERGE, DO NOT REPLACE. Building one core must not delete the record of the other hundred.
+if [[ -f "$MANIFEST" ]]; then
+  awk -F'\t' 'NR==FNR{seen[$1]=1; print; next} !($1 in seen)' "$MANIFEST.new" "$MANIFEST" \
+      | sort > "$MANIFEST.merged"
+  mv "$MANIFEST.merged" "$MANIFEST"
+else
+  sort "$MANIFEST.new" > "$MANIFEST"
+fi
+rm -f "$MANIFEST.new"
+echo "== manifest: $MANIFEST ($(wc -l < "$MANIFEST") cores recorded)"
