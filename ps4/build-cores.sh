@@ -150,6 +150,10 @@ fi
 # stubs in liborbis-retro-common.a left every reference exactly as undefined as before and
 # create-fself went on refusing the module. Passed directly, the definitions are always present.
 # See ps4/orbis_weak_stubs.c for why create-fself cares when the linker does not.
+# ⚠ THE LINKER SCRIPT IS OURS, NOT THE TOOLCHAIN'S, AND ps4/orbis-module.ld SAYS WHY IN FULL.
+# The short version: OpenOrbis's link.x collects .init_array and defines no symbols around it,
+# while crtlib.o carries __init_array_start/__init_array_end as BSS VARIABLES eight bytes apart.
+# A module linked with the stock script therefore reports an empty constructor list.
 WEAK_STUBS="$WORK/orbis_weak_stubs.o"
 if [[ ! -f "$WEAK_STUBS" ]]; then
   $CC_ORBIS -O2 -c -o "$WEAK_STUBS" "$HERE/orbis_weak_stubs.c" \
@@ -265,7 +269,7 @@ for core in "${CORES[@]}"; do
   fi
 
   if ! ld.lld "${objs[@]}" "$WEAK_STUBS" "${KEEP_SYMS[@]}" -o "$WORK/$core.elf" \
-        -m elf_x86_64 -pie --script "${ORBIS_LINK_SCRIPT:-$TOOLCHAIN/link.x}" --eh-frame-hdr --no-rosegment \
+        -m elf_x86_64 -pie --script "${ORBIS_LINK_SCRIPT:-$HERE/orbis-module.ld}" --eh-frame-hdr --no-rosegment \
         -L"$TOOLCHAIN/lib" -L"$ORBIS_COMPAT_DIR/build" "$COMMON_LIB" \
         -lorbis-compat -lc -lkernel -lc++ -lSceNet -lSceUserService \
         "$TOOLCHAIN/lib/crtlib.o" >"$WORK/$core.link" 2>&1; then

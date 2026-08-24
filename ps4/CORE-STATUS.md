@@ -108,7 +108,7 @@ falsify it - a C++ core that works, or a C core that does not.
 | `mednafen_supergrafx` | NEC - PC Engine SuperGrafx (Beetle SuperGrafx) | 4,6M | `3c6fcd3` | untested | |
 | `mednafen_vb` | Nintendo - Virtual Boy (Beetle VB) | 844K | `83ed426` | untested | |
 | `mednafen_wswan` | Bandai - WonderSwan/Color (Beetle Wonderswan) | 1,9M | `4b01295` | untested | |
-| `mesen` | Nintendo - NES / Famicom (Mesen) | 5,2M | `0102910` | crash |  |
+| `mesen` | Nintendo - NES / Famicom (Mesen) | 5,2M | `0102910` | plays | was the crash that found the constructor bug |
 | `mesen-s` | Nintendo - SNES / SFC / Game Boy / Color (Mesen-S) | 4,2M | `9e4fdeb` | crash |  |
 | `mrboom` | Mr.Boom (Bomberman) | 9,2M | `40ac320` | untested | |
 | `mu` | Palm OS (Mu) | 1,4M | `f9d34a0` | untested | |
