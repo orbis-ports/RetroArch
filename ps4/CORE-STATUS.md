@@ -128,7 +128,7 @@ One core proving the path works is enough for now; the rest wait for matching co
 | `mesen-s` | Nintendo - SNES / SFC / Game Boy / Color (Mesen-S) | 4,2M | `9e4fdeb` | plays |  |
 | `mrboom` | Mr.Boom (Bomberman) | 9,2M | `40ac320` | plays |  |
 | `mu` | Palm OS (Mu) | 1,4M | `f9d34a0` | plays |  |
-| `mupen64plus_next` | Nintendo - Nintendo 64 (Mupen64Plus-Next) | 8,4M | `f275caf+5` | slow | 22-25 fps in Shadows of the Empire, up from 15-19. Profiled on hardware: LLE RSP 62% of the frame, RDP command building 26%, R4300 dynarec 12%, GPU idle at 3%. Full speed needs the HLE RSP, which needs a GL context driver |
+| `mupen64plus_next` | Nintendo - Nintendo 64 (Mupen64Plus-Next) | 8,3M | `f275caf+5` | plays | two renderers. ParaLLEl-RDP (default) is 22-25 fps and cannot reach full speed - its LLE RSP alone is 24 ms against a 16.7 ms budget. GLideN64 over the new GL context driver runs 16-100 fps, unprofiled |
 | `nekop2` | NEC - PC-98 (Neko Project II) | 2,1M | `5fdbb21` | untested | |
 | `neocd` | SNK - Neo Geo CD (NeoCD) | 2,9M | `8f2d42c` | untested | |
 | `nestopia` | Nintendo - NES / Famicom (Nestopia) | 7,1M | `6c2d242` | broken | loads and runs, green screen, exits cleanly - renders wrong, not a crash |

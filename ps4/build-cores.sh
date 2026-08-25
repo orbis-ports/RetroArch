@@ -161,14 +161,14 @@ if [[ ! -f "$WEAK_STUBS" ]]; then
 fi
 
 # ⚠ AN ARCHIVE, AND FOR THE OPPOSITE REASON TO THE ONE ABOVE. The weak stubs must be present
-# unconditionally; these must NOT be. orbis_gl_stubs.c defines thirty-five glXxx entry points and
-# orbis_exec_mem.c defines two, and a core that references neither has no business carrying them -
-# they would sit in every module as dead symbols and, worse, would satisfy a real GL reference in
-# some future core that could actually have been given a real one. Archive members are pulled only
-# for symbols still undefined, so each core takes exactly what it asked for and nothing else.
+# unconditionally; these must NOT be. orbis_gl_forward.c defines a hundred and thirty-three GLES and EGL
+# entry points and orbis_exec_mem.c defines three, and a core that references neither has no
+# business carrying them. Archive members are pulled only for symbols still undefined, so each core
+# takes exactly what it asked for and nothing else.
 #
 # The extraction works here where it failed for the weak stubs because these references are STRONG:
-# GLideN64 calls glClear because it means to. See ps4/orbis_gl_stubs.c and ps4/orbis_exec_mem.c.
+# glsm calls glBindFramebuffer because it means to. See ps4/orbis_gl_forward.c, which forwards to
+# the frontend's context rather than answering itself, and ps4/orbis_exec_mem.c.
 #
 # ⚠ AND ITS POSITION ON THE LINK LINE IS LEAD, NOT DECORATION. orbis_abort_report.c does not add a
 # missing symbol - it REPLACES two the toolchain has, abort_message from libc++.a and __assert_fail
@@ -178,7 +178,7 @@ fi
 CORE_SUPPORT_LIB="$WORK/liborbis-core-support.a"
 if [[ ! -f "$CORE_SUPPORT_LIB" ]]; then
   _sup=()
-  for _s in orbis_gl_stubs.c orbis_exec_mem.c orbis_abort_report.c orbis_profile.c orbis_cv_fix.cpp; do
+  for _s in orbis_gl_forward.c orbis_exec_mem.c orbis_abort_report.c orbis_profile.c orbis_cv_fix.cpp; do
     # ⚠ orbis_cv_fix REPLACES A MEMBER OF libc++.a AND SO MUST BE COMPILED THE SAME WAY THE CORES
     # ARE - libc++'s own headers first. It defines std::condition_variable's members, so a
     # different <condition_variable> than the cores see would be a different class.
@@ -205,7 +205,7 @@ fi
 # that core, minus the ones platform=unix already sets.
 core_make_flags() {
   case "$1" in
-    mupen64plus_next) echo "HAVE_PARALLEL_RDP=1 HAVE_PARALLEL_RSP=1 HAVE_THR_AL=1 LLE=1 WITH_DYNAREC=x86_64" ;;
+    mupen64plus_next) echo "HAVE_PARALLEL_RDP=1 HAVE_PARALLEL_RSP=1 HAVE_THR_AL=1 LLE=1 WITH_DYNAREC=x86_64 FORCE_GLES3=1" ;;
     parallel_n64)     echo "HAVE_PARALLEL=1 HAVE_PARALLEL_RSP=1 HAVE_THR_AL=1 WITH_DYNAREC=x86_64" ;;
     *)                echo "" ;;
   esac

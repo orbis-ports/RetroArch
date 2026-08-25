@@ -1,19 +1,21 @@
 diff --git a/libretro/libretro.c b/libretro/libretro.c
-index 7665666..30c4c76 100644
+index 7665666..c9d9d5d 100644
 --- a/libretro/libretro.c
 +++ b/libretro/libretro.c
-@@ -222,6 +222,10 @@ uint32_t IgnoreTLBExceptions = 0;
+@@ -222,6 +222,12 @@ uint32_t IgnoreTLBExceptions = 0;
  
  extern struct device g_dev;
  extern unsigned int r4300_emumode;
 +#ifdef __ORBIS__
 +/* RetroArch/ps4/orbis_exec_mem.c - see the guard beside the cpucore option. */
 +int orbis_exec_mem_promote(void *addr, size_t len);
++/* RetroArch/ps4/orbis_gl_forward.c - fills the GLES thunk table. */
++int orbis_gl_resolve(void);
 +#endif
  extern struct cheat_ctx g_cheat_ctx;
  
  static bool emuThreadRunning = false;
-@@ -940,7 +944,14 @@ static void update_variables(bool startup)
+@@ -940,7 +946,14 @@ static void update_variables(bool startup)
         }
         else
         {
@@ -28,7 +30,7 @@ index 7665666..30c4c76 100644
         }
  
         var.key = CORE_NAME "-rsp-plugin";
-@@ -950,6 +961,23 @@ static void update_variables(bool startup)
+@@ -950,6 +963,23 @@ static void update_variables(bool startup)
            if (!strcmp(var.value, "hle"))
            {
               // If we use angrylion with hle, we will force parallel if available!
@@ -52,7 +54,7 @@ index 7665666..30c4c76 100644
               if(current_rdp_type != RDP_PLUGIN_ANGRYLION && current_rdp_type != RDP_PLUGIN_PARALLEL)
               {
                  plugin_connect_rsp_api(RSP_PLUGIN_HLE);
-@@ -997,7 +1025,21 @@ static void update_variables(bool startup)
+@@ -997,7 +1027,21 @@ static void update_variables(bool startup)
  #endif 
            }
         }
@@ -75,7 +77,7 @@ index 7665666..30c4c76 100644
  #ifdef IOS
         bool can_jit = false;
         if (!environ_cb(RETRO_ENVIRONMENT_GET_JIT_CAPABLE, &can_jit) || !can_jit)
-@@ -1400,6 +1442,23 @@ static void update_variables(bool startup)
+@@ -1400,6 +1444,23 @@ static void update_variables(bool startup)
               r4300_emumode = EMUMODE_DYNAREC;
         }
  
@@ -99,7 +101,24 @@ index 7665666..30c4c76 100644
         var.key = CORE_NAME "-aspect";
         var.value = NULL;
         if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-@@ -2020,7 +2079,7 @@ void retro_unload_game(void)
+@@ -1805,6 +1866,16 @@ void context_reset(void)
+     if(current_rdp_type == RDP_PLUGIN_GLIDEN64)
+     {
+        log_cb(RETRO_LOG_DEBUG, CORE_NAME ": context_reset()\n");
++#ifdef __ORBIS__
++       /* ⚠ BEFORE THE FIRST GL CALL OF THIS CONTEXT, AND THIS IS THE FIRST OPPORTUNITY. A .prx
++        * has no dynamic linker, so the GLES core entry points glsym deliberately leaves
++        * unmacroed - glBindFramebuffer and its hundred neighbours - are undefined symbols
++        * satisfied by thunks in RetroArch/ps4/orbis_gl_forward.c. They jump through a table that
++        * is empty until this runs, and it can only run once the frontend has a context to hand a
++        * proc-address function for. glsm_ctl(GLSM_CTL_STATE_CONTEXT_RESET) below is the first
++        * thing that would call GL, so the resolve goes immediately above it. */
++       orbis_gl_resolve();
++#endif
+        glsm_ctl(GLSM_CTL_STATE_CONTEXT_RESET, NULL);
+        if (!context_setup_first_init)
+        {
+@@ -2020,7 +2091,7 @@ void retro_unload_game(void)
         glsm_ctl(GLSM_CTL_STATE_BIND, NULL);
         while(!threaded_gl_safe_shutdown)
         {
@@ -108,7 +127,7 @@ index 7665666..30c4c76 100644
         }
         glsm_ctl(GLSM_CTL_STATE_UNBIND, NULL);
      
-@@ -2040,8 +2099,24 @@ void retro_unload_game(void)
+@@ -2040,8 +2111,24 @@ void retro_unload_game(void)
      retro_savestate_complete = false;
  }
  
@@ -133,7 +152,7 @@ index 7665666..30c4c76 100644
      libretro_swap_buffer = false;
      static bool updated = false;
  
-@@ -2062,7 +2137,17 @@ void retro_run (void)
+@@ -2062,7 +2149,17 @@ void retro_run (void)
         glsm_ctl(GLSM_CTL_STATE_BIND, NULL);
      }
  
@@ -151,7 +170,7 @@ index 7665666..30c4c76 100644
  
      if(current_rdp_type == RDP_PLUGIN_GLIDEN64)
      {
-@@ -2096,6 +2181,14 @@ void retro_run (void)
+@@ -2096,6 +2193,14 @@ void retro_run (void)
          // screen_pitch will be 0 for GLN
          video_cb(NULL, retro_screen_width, retro_screen_height, screen_pitch);
      }
@@ -167,22 +186,24 @@ index 7665666..30c4c76 100644
  
  void retro_reset (void)
 diff --git a/libretro/libretro_core_options.h b/libretro/libretro_core_options.h
-index fb39aa9..873dbda 100644
+index fb39aa9..393232c 100644
 --- a/libretro/libretro_core_options.h
 +++ b/libretro/libretro_core_options.h
-@@ -78,10 +78,22 @@ struct retro_core_option_v2_definition option_defs_us[] = {
+@@ -78,10 +78,24 @@ struct retro_core_option_v2_definition option_defs_us[] = {
  #ifdef HAVE_PARALLEL_RDP
              {"parallel", "ParaLLEl-RDP"},
  #endif
-+/* ⚠ NOT OFFERED ON THIS CONSOLE, BECAUSE IT CANNOT DRAW HERE. GLideN64 needs an OpenGL
-+ * context and the PlayStation 4 frontend has only orbis_vk_ctx.c - there is no
-+ * RETRO_HW_CONTEXT_OPENGL driver to give it one. Its ~200 translation units still compile and
-+ * link (their loose GL entry points are satisfied by RetroArch/ps4/orbis_gl_stubs.c), so
-+ * leaving it in the list would offer a renderer that draws into nothing and read as a broken
-+ * core rather than an absent feature. */
-+#ifndef __ORBIS__
++/* ⚠ OFFERED AGAIN ON THIS CONSOLE AS OF 2026-08-25, AND STILL NOT THE DEFAULT. It was absent
++ * while the PlayStation 4 frontend had only orbis_vk_ctx.c: a renderer with no context draws
++ * into nothing and reads as a broken core rather than an absent feature. There is now
++ * gfx/drivers_context/orbis_gl_ctx.c, so GLideN64 has a context - GLES 3 over Mesa's EGL and
++ * zink, which is to say OpenGL on top of the same Vulkan driver.
++ *
++ * It stays off by default because that is the unmeasured path and ParaLLEl-RDP is the measured
++ * one. What makes it worth having is arithmetic rather than preference: ParaLLEl-RDP forces the
++ * LLE RSP, and the LLE RSP alone costs 24 ms against a 16.7 ms budget, so full speed is not
++ * reachable that way at all. See ps4/HANDOFF.md. */
              {"gliden64", "GLideN64"},
-+#endif
              { NULL, NULL },
          },
 +#ifdef __ORBIS__
@@ -193,7 +214,7 @@ index fb39aa9..873dbda 100644
      },
      {
          CORE_NAME "-43screensize",
-@@ -1034,7 +1046,23 @@ struct retro_core_option_v2_definition option_defs_us[] = {
+@@ -1034,7 +1048,23 @@ struct retro_core_option_v2_definition option_defs_us[] = {
              { "True", "Enabled" },
              { "False", "Disabled" },
              { NULL, NULL },
