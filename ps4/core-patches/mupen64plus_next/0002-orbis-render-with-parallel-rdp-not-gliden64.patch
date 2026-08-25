@@ -1,0 +1,81 @@
+diff --git a/libretro/libretro.c b/libretro/libretro.c
+index 7665666..a8029f3 100644
+--- a/libretro/libretro.c
++++ b/libretro/libretro.c
+@@ -222,6 +222,10 @@ uint32_t IgnoreTLBExceptions = 0;
+ 
+ extern struct device g_dev;
+ extern unsigned int r4300_emumode;
++#ifdef __ORBIS__
++/* RetroArch/ps4/orbis_exec_mem.c - see the guard beside the cpucore option. */
++int orbis_exec_mem_promote(void *addr, size_t len);
++#endif
+ extern struct cheat_ctx g_cheat_ctx;
+ 
+ static bool emuThreadRunning = false;
+@@ -940,7 +944,14 @@ static void update_variables(bool startup)
+        }
+        else
+        {
++          /* The frontend answers with the option's default when the user has never touched it,
++           * so this is the "no option system at all" path - and on a console whose frontend has
++           * no OpenGL context driver, GLideN64 is not a usable last resort. */
++#if defined(__ORBIS__) && defined(HAVE_PARALLEL_RDP)
++          plugin_connect_rdp_api(RDP_PLUGIN_PARALLEL);
++#else
+           plugin_connect_rdp_api(RDP_PLUGIN_GLIDEN64);
++#endif
+        }
+ 
+        var.key = CORE_NAME "-rsp-plugin";
+@@ -1400,6 +1411,23 @@ static void update_variables(bool startup)
+              r4300_emumode = EMUMODE_DYNAREC;
+        }
+ 
++#if defined(__ORBIS__) && defined(DYNAREC)
++       /* ⚠ ASK BEFORE THE RECOMPILER DOES, NOT AFTER. new_dynarec_init promotes this same
++        * buffer, but it runs when a ROM is loaded - long after the CPU core has been chosen
++        * and committed to. If the kernel will not make g_dev.r4300.extra_memory executable
++        * the choice has to change here, while it still can: the alternative is a recompiler
++        * writing correct code into pages it cannot jump to, which does not fail, it crashes.
++        * The call is idempotent and caches its answer, so the later one costs nothing. */
++       if (r4300_emumode == EMUMODE_DYNAREC &&
++           !orbis_exec_mem_promote(g_dev.r4300.extra_memory, 33554432))
++       {
++          r4300_emumode = EMUMODE_INTERPRETER;
++          if (log_cb)
++             log_cb(RETRO_LOG_WARN, "[orbis] no executable memory - falling back to the "
++                                    "cached interpreter. Expect it to be slow.\n");
++       }
++#endif
++
+        var.key = CORE_NAME "-aspect";
+        var.value = NULL;
+        if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+diff --git a/libretro/libretro_core_options.h b/libretro/libretro_core_options.h
+index fb39aa9..6a95069 100644
+--- a/libretro/libretro_core_options.h
++++ b/libretro/libretro_core_options.h
+@@ -78,10 +78,22 @@ struct retro_core_option_v2_definition option_defs_us[] = {
+ #ifdef HAVE_PARALLEL_RDP
+             {"parallel", "ParaLLEl-RDP"},
+ #endif
++/* ⚠ NOT OFFERED ON THIS CONSOLE, BECAUSE IT CANNOT DRAW HERE. GLideN64 needs an OpenGL
++ * context and the PlayStation 4 frontend has only orbis_vk_ctx.c - there is no
++ * RETRO_HW_CONTEXT_OPENGL driver to give it one. Its ~200 translation units still compile and
++ * link (their loose GL entry points are satisfied by RetroArch/ps4/orbis_gl_stubs.c), so
++ * leaving it in the list would offer a renderer that draws into nothing and read as a broken
++ * core rather than an absent feature. */
++#ifndef __ORBIS__
+             {"gliden64", "GLideN64"},
++#endif
+             { NULL, NULL },
+         },
++#ifdef __ORBIS__
++        "parallel"
++#else
+         "gliden64"
++#endif
+     },
+     {
+         CORE_NAME "-43screensize",

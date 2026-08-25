@@ -107,6 +107,7 @@ if ever wanted: `SGB1.sfc, SGB2.sfc, bios7.bin, bios9.bin, bios_E.sms, bios_U.sm
 | Outrun Game Engine | `cannonball` | `.game`, `.88` | **OutRun** arcade ROM set (`outrun` MAME set) + `config.xml` - commercial |
 | PC Engine SuperGrafx | `mednafen_supergrafx` | `.pce`, `.sgx`, `.cue`, `.ccd`, `.chd` | any dump you own |
 | PC Engine/PCE-CD | `mednafen_pce_fast` | `.pce`, `.cue`, `.ccd`, `.chd`, `.toc`, `.m3u` | any dump you own |
+| Nintendo 64 | `mupen64plus_next` | `.n64`, `.v64`, `.z64`, `.ndd`, `.bin`, `.u1` | any dump you own - `IPL.n64` only for 64DD, and optional |
 | PC Engine/SuperGrafx/CD | `mednafen_pce` | `.pce`, `.sgx`, `.cue`, `.ccd`, `.chd`, `.toc`, `.m3u` | any dump you own |
 | PC-8000 / PC-8800 series | `quasi88` | `.d88`, `.u88`, `.m3u` | any dump you own |
 | PC-98 | `nekop2` | `.d98`, `.zip`, `.98d`, `.fdi`, `.fdd`, `.2hd`, `.tfd`, `.d88` | any dump you own |
@@ -152,6 +153,7 @@ core families with the fewest files:
     gba/     Metroid Zero Mission                gpsp  mednafen_gba  vba_next  vbam
     md/      Aladdin                             genesis_plus_gx  genesis_plus_gx_wide  clownmdemu
     arcade/  mslug.zip, 1941.zip                 fbalpha2012_neogeo  fbalpha2012_cps1  mame200x
+    n64/     Shadows of the Empire (USA, Rev 2)  mupen64plus_next
 
 That is **21 of the 100** testable right now without obtaining anything further.
 

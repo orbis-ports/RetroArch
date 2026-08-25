@@ -1,0 +1,38 @@
+diff --git a/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c b/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c
+index 8b0df16..82f1a83 100644
+--- a/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c
++++ b/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c
+@@ -53,6 +53,14 @@
+ #endif // HAVE_LIBNX
+ #endif
+ 
++#ifdef __ORBIS__
++/* Defined in RetroArch/ps4/orbis_exec_mem.c, which the port's build harness links into every
++ * module. Declared rather than included because that file belongs to the frontend's tree and
++ * this one is upstream's - the patch stays a patch. */
++int orbis_exec_mem_promote(void *addr, size_t len);
++int orbis_exec_mem_state(void);
++#endif
++
+ #if defined(RECOMPILER_DEBUG) && !defined(RECOMP_DBG)
+ void recomp_dbg_init(void);
+ void recomp_dbg_cleanup(void);
+@@ -8705,6 +8713,18 @@ void new_dynarec_init(void)
+   BOOL res=VirtualProtect((void*)g_dev.r4300.extra_memory, 33554432, PAGE_EXECUTE_READWRITE, &dummy);
+   assert(res!=0);
+   base_addr = base_addr_rx = (void*)g_dev.r4300.extra_memory;
++#elif defined(__ORBIS__)
++  /* ⚠ THE PROMOTION GOES THROUGH THE PLATFORM CALL AND IS THEN PROVED BY RUNNING SOMETHING.
++   * This console's mprotect is a thin and occasionally wrong layer over sceKernelMprotect, and
++   * sceKernelQueryMemoryProtection reports what a range was MAPPED with rather than what
++   * mprotect has since made it - so neither the return code nor a read-back is evidence. See
++   * RetroArch/ps4/orbis_exec_mem.c, which promotes and then calls six bytes it wrote here.
++   * A refusal is picked up in libretro.c, which clamps the CPU core to the interpreter rather
++   * than let the recompiler write into pages it cannot run. */
++  if (!orbis_exec_mem_promote(g_dev.r4300.extra_memory, 1<<TARGET_SIZE_2))
++    DebugMessage(M64MSG_ERROR, "no executable memory for the recompiler");
++  base_addr = g_dev.r4300.extra_memory;
++  base_addr_rx = base_addr;
+ #else
+   mprotect ((u_char *)g_dev.r4300.extra_memory, 1<<TARGET_SIZE_2,
+             PROT_READ | PROT_WRITE | PROT_EXEC);

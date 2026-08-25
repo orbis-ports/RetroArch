@@ -160,6 +160,44 @@ if [[ ! -f "$WEAK_STUBS" ]]; then
     || { echo "build-cores: could not build the weak stubs" >&2; exit 1; }
 fi
 
+# ⚠ AN ARCHIVE, AND FOR THE OPPOSITE REASON TO THE ONE ABOVE. The weak stubs must be present
+# unconditionally; these must NOT be. orbis_gl_stubs.c defines thirty-five glXxx entry points and
+# orbis_exec_mem.c defines two, and a core that references neither has no business carrying them -
+# they would sit in every module as dead symbols and, worse, would satisfy a real GL reference in
+# some future core that could actually have been given a real one. Archive members are pulled only
+# for symbols still undefined, so each core takes exactly what it asked for and nothing else.
+#
+# The extraction works here where it failed for the weak stubs because these references are STRONG:
+# GLideN64 calls glClear because it means to. See ps4/orbis_gl_stubs.c and ps4/orbis_exec_mem.c.
+CORE_SUPPORT_LIB="$WORK/liborbis-core-support.a"
+if [[ ! -f "$CORE_SUPPORT_LIB" ]]; then
+  _sup=()
+  for _s in orbis_gl_stubs orbis_exec_mem; do
+    $CC_ORBIS -O2 -c -o "$WORK/$_s.o" "$HERE/$_s.c" \
+      || { echo "build-cores: could not build $_s.c" >&2; exit 1; }
+    _sup+=("$WORK/$_s.o")
+  done
+  llvm-ar rcs "$CORE_SUPPORT_LIB" "${_sup[@]}"
+fi
+
+# ⚠ SOME CORES NEED FLAGS THE RECIPE DOES NOT CARRY, and one needs its build type overruled.
+#
+# The recipe's build type is about the machine libretro-super was written for, not about this one.
+# mupen64plus_next is GENERIC_GL there because GLideN64 is its default renderer - but it also ships
+# paraLLEl-RDP over Vulkan, which is the renderer this console can actually run, and the core's
+# patch tree makes that the only one it offers. Skipping it on the recipe's say-so would have
+# skipped a Vulkan core for being an OpenGL one.
+#
+# Anything listed here is built whatever its build type says. The flags are the recipe's own for
+# that core, minus the ones platform=unix already sets.
+core_make_flags() {
+  case "$1" in
+    mupen64plus_next) echo "HAVE_PARALLEL_RDP=1 HAVE_PARALLEL_RSP=1 HAVE_THR_AL=1 LLE=1 WITH_DYNAREC=x86_64" ;;
+    parallel_n64)     echo "HAVE_PARALLEL=1 HAVE_PARALLEL_RSP=1 HAVE_THR_AL=1 WITH_DYNAREC=x86_64" ;;
+    *)                echo "" ;;
+  esac
+}
+
 MANIFEST="$OUT/cores.manifest"
 : > "$MANIFEST.new"
 
@@ -200,7 +238,11 @@ for core in "${CORES[@]}"; do
   read -r _name dir url branch _fetch buildtype makefile subdir _rest <<<"$line"
 
   # GENERIC_GL wants an OpenGL context this port does not have; CMAKE wants a toolchain file.
-  [[ "$buildtype" == GENERIC ]] || { report "$core" SKIP - - "build type $buildtype"; continue; }
+  # Unless core_make_flags names the core - see the comment there for why the recipe's build type
+  # is not the last word on whether a core can render here.
+  makeflags="$(core_make_flags "$core")"
+  [[ "$buildtype" == GENERIC || -n "$makeflags" ]] \
+    || { report "$core" SKIP - - "build type $buildtype"; continue; }
 
   src="$WORK/$dir"
   if [[ ! -d "$src/.git" ]]; then
@@ -258,7 +300,8 @@ for core in "${CORES[@]}"; do
   # member while cdrom.c never joins the source list - and satisfying that from a shared archive
   # would put two layouts of one struct in a single link. That is silent and much worse than a
   # missing symbol. Turning it off makes both sides agree and loses nothing that exists here.
-  ( cd "$bdir" && make -f "${makefile:-Makefile}" platform=unix HAVE_CDROM=0 \
+  # shellcheck disable=SC2086 - $makeflags is a list of make variables and must word-split.
+  ( cd "$bdir" && make -f "${makefile:-Makefile}" platform=unix HAVE_CDROM=0 $makeflags \
         CC="$CC_ORBIS" CXX="$CXX_ORBIS" AR=llvm-ar -k -j"$JOBS" ) >"$WORK/$core.log" 2>&1
 
   mapfile -t objs < <(find "$src" -name '*.o' -type f | sort)
@@ -268,9 +311,14 @@ for core in "${CORES[@]}"; do
     continue
   fi
 
-  if ! ld.lld "${objs[@]}" "$WEAK_STUBS" "${KEEP_SYMS[@]}" -o "$WORK/$core.elf" \
+  # ⚠ --error-limit=0, AND IT CHANGES WHAT THE VERDICT MEANS. ld.lld stops REPORTING after twenty
+  # errors and says so in a line easy to miss. mupen64plus_next's first link here printed twenty
+  # undefined glXxx symbols and not one of the twenty-two its recompiler was missing, which reads
+  # as "a GL core, otherwise complete" - the opposite of the truth. The note below quotes the first
+  # symbol either way, but the log has to hold all of them for anyone to work from.
+  if ! ld.lld "${objs[@]}" "$WEAK_STUBS" "${KEEP_SYMS[@]}" --error-limit=0 -o "$WORK/$core.elf" \
         -m elf_x86_64 -pie --script "${ORBIS_LINK_SCRIPT:-$HERE/orbis-module.ld}" --eh-frame-hdr --no-rosegment \
-        -L"$TOOLCHAIN/lib" -L"$ORBIS_COMPAT_DIR/build" "$COMMON_LIB" \
+        -L"$TOOLCHAIN/lib" -L"$ORBIS_COMPAT_DIR/build" "$COMMON_LIB" "$CORE_SUPPORT_LIB" \
         -lorbis-compat -lc -lkernel -lc++ -lSceNet -lSceUserService \
         "$TOOLCHAIN/lib/crtlib.o" >"$WORK/$core.link" 2>&1; then
     err="$(grep -m1 -oP 'undefined symbol: \K.*' "$WORK/$core.link" | cut -c1-46)"
