@@ -1499,3 +1499,75 @@ mostly have working software siblings (`desmume` against `desmume2015`). The rea
 would be asked to run, on a port where Beetle PSX already spends a saturated core on the
 interpreter. Worth starting now that the driver renders; worth expecting the frame rate to be the
 next problem rather than the last one.
+
+## Nintendo 64: what the frame is actually spent on
+
+`mupen64plus_next` runs Shadows of the Empire at 22-25 fps. Everything below was measured on
+hardware on 2026-08-25 with `ps4/orbis_profile.c`, which is linked into every core the harness
+builds and turns itself on when `/data/retroarch-profile` exists. It reports every five seconds:
+
+    129 frames in 5043 ms = 25.57 fps
+      retro_run total  38.65 ms/f  98% of wall
+      guest            37.44 ms/f  95%
+      rsp-lle          33.94 ms/f  86%     <- rdp-submit is NESTED inside this
+      rdp-submit       10.13 ms/f  25%
+      rdp-enqueue       5.18 ms/f  13%
+      rdram-h2g         0.48 ms/f   1%
+      present           1.20 ms/f   3%
+
+Unnested, per frame: **LLE RSP 24 ms, RDP command building 10 ms, R4300 dynarec 4.7 ms, scanout
+1.2 ms.** The recompiler this port spent a day giving executable memory to is 12% of the frame.
+
+⚠ **THE GPU IS NOT THE BOTTLENECK AND NEVER WAS.** `present` is one millisecond. A core sold as
+"ParaLLEl-RDP on Vulkan" puts only the RASTERISER on the GPU; the RSP is a programmable vector DSP
+running the game's own microcode, recompiled by GNU lightning onto the CPU, and it is the largest
+single cost by a factor of two. Anyone reading "Vulkan" as "the graphics are free" will optimise
+the wrong half.
+
+### The thirteen milliseconds that were handshake
+
+ParaLLEl-RDP processes its command stream on a worker thread, and `CommandRing::enqueue_command`
+takes a mutex and signals a condition variable **once per RDP command** - thousands of round trips
+a frame. Measured before the change:
+
+    rdp-enqueue   17.08 ms/f    emulation thread blocked in the ring
+    rdp-worker     7.09 ms/f    what the worker actually did
+
+The consumer was busy for seven milliseconds and the producer waited seventeen. Setting
+`single_threaded_processing` took the frame from 51.9 ms to 38.7 ms - **19 fps to 25.6** - and
+`rdp-enqueue` from 17.08 to 5.18.
+
+⚠ **THIS IS A FACT ABOUT THIS MACHINE, NOT ABOUT THE DESIGN.** The ring is right where a spare core
+is cheap to reach; here the cores are 1.6 GHz Jaguars and **nothing in this port sets thread
+affinity**, so a handoff can be a context switch on the same core. If affinity is ever set up,
+re-enable the ring and measure again before believing this entry.
+
+### A direction that was measured and abandoned
+
+parallel-RDP warns at startup:
+
+    VK_EXT_external_memory_host is not supported by this device. Application might run slower
+    ... falling back to a slower path.
+
+That message reads like the explanation for everything above, and it is not. The fallback path is
+`Renderer::resolve_coherency_host_to_gpu`, page-granular memcpy of dirty RDRAM into a GPU-visible
+buffer, and it costs **0.5 ms a frame**. Importing RDRAM as host memory - whether by re-enabling
+`has_userptr` in mesa-ps4 or by allocating RDRAM from `vkAllocateMemory` - would buy half a
+millisecond out of thirty-nine. Both were planned in detail before anyone measured them.
+
+⚠ The driver's own comment (`ac_gpu_info.c`, "nothing on this console can use it either way") is
+still correct in outcome, for a reason it does not give: something does want the extension, and
+would gain almost nothing from it.
+
+### What is left, and what it is worth
+
+    LLE RSP           24 ms    only HLE removes this, and HLE needs a graphics plugin that
+                               accepts display lists - GLideN64, which needs RETRO_HW_CONTEXT_OPENGL
+    RDP commands      10 ms    CPU-side command building; the ring may return here with affinity
+    R4300              4.7 ms  the recompiler, working as intended
+    scanout            1.2 ms  the GPU
+
+ParaLLEl-RDP implements `ProcessRDPList` and leaves `ProcessDList` empty, so the HLE RSP draws
+nothing with it - tried on hardware, the log said `Plugins in use: RDP=ParaLLEl RSP=HLE` and the
+screen stayed black. **N64 at full speed on this console is a GL context driver away, not a
+tuning exercise away.**

@@ -27,7 +27,7 @@
 
 #include "orbis_report.h"
 
-#define ORBIS_PROFILE_SLOTS   8
+#define ORBIS_PROFILE_SLOTS   10
 #define ORBIS_PROFILE_WINDOW  5000000ull   /* microseconds between reports */
 
 static const char *orbis_profile_name[ORBIS_PROFILE_SLOTS];

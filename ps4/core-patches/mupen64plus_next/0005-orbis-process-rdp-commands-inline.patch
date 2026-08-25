@@ -1,0 +1,31 @@
+diff --git a/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/rdp_device.cpp b/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/rdp_device.cpp
+index 6e9c78b..ab38eb7 100644
+--- a/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/rdp_device.cpp
++++ b/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/rdp_device.cpp
+@@ -141,6 +141,26 @@ CommandProcessor::CommandProcessor(Vulkan::Device &device_, void *rdram_ptr,
+ 			LOGI("Will measure stall timings.\n");
+ 	}
+ 
++#ifdef __ORBIS__
++	/* ⚠ THE WORKER THREAD COSTS MORE THAN IT SAVES ON THIS CONSOLE, and the numbers are not close.
++	 * Measured on hardware 2026-08-25, Shadows of the Empire, per frame:
++	 *
++	 *     rdp-enqueue   17.08 ms   emulation thread blocked in CommandRing::enqueue_command
++	 *     rdp-worker     7.09 ms   what the worker thread actually did
++	 *
++	 * The consumer is busy for seven milliseconds and the producer waits seventeen. The ring takes
++	 * its mutex and signals its condition variable once per RDP COMMAND - thousands of round trips
++	 * a frame between two threads - so the difference is handshake, not work. Doing the same work
++	 * inline costs the seven and none of the ten.
++	 *
++	 * ⚠ AND THIS IS A STATEMENT ABOUT THIS MACHINE, NOT ABOUT THE DESIGN. The ring is the right
++	 * shape where a spare core is cheap to reach and a futex round trip is not; here the cores are
++	 * 1.6 GHz Jaguars and nothing in this port pins a thread to one, so a handoff can be a context
++	 * switch on the same core. If thread affinity is ever set up here, measure again before
++	 * trusting this. */
++	single_threaded_processing = true;
++#endif
++
+ 	if (const char *env = getenv("PARALLEL_RDP_SINGLE_THREADED_COMMAND"))
+ 	{
+ 		single_threaded_processing = strtol(env, nullptr, 0) > 0;
