@@ -1571,3 +1571,53 @@ ParaLLEl-RDP implements `ProcessRDPList` and leaves `ProcessDList` empty, so the
 nothing with it - tried on hardware, the log said `Plugins in use: RDP=ParaLLEl RSP=HLE` and the
 screen stayed black. **N64 at full speed on this console is a GL context driver away, not a
 tuning exercise away.**
+
+## OpenGL, and Nintendo 64 at full speed
+
+`gfx/drivers_context/orbis_gl_ctx.c` gives this frontend a `RETRO_HW_CONTEXT_OPENGL` context.
+Built with `make -f Makefile.orbis HAVE_VULKAN=1 HAVE_OPENGLES=1 ...`; the Vulkan flag is not
+optional, because there is no GL hardware path here at all:
+
+    eglSwapBuffers -> kopper -> vkQueuePresentKHR -> VK_EXT_headless_surface -> wsi_orbis -> flip
+
+On hardware, 2026-08-25: `OpenGL ES 3.1 Mesa 26.3.0-devel`, renderer `zink Vulkan 1.3 (RADV
+ORBIS)`. mupen64plus-next with GLideN64 and the HLE RSP, Shadows of the Empire:
+
+    303 frames in 5015 ms = 60.41 fps
+      retro_run total  16.88 ms/f
+      guest             5.18 ms/f  31%    <- all of the emulation
+      present          11.68 ms/f  70%    <- idle, waiting for the flip
+
+Five milliseconds of work in a 16.7 ms frame, against 43 ms on ParaLLEl-RDP. The arithmetic in
+the section above said full speed was unreachable without this, and it was right about both
+halves.
+
+### Three things that each cost a round, and all three were the same mistake
+
+⚠ **A statically linked Mesa does not make `__rglgen_` pointers into direct calls.** gl2.c guards
+`rglgen_resolve_symbols()` with `#if !defined(RARCH_CONSOLE)`, on the reasoning that a console
+links GL statically. This one does, and it changes nothing: the entry points glsym turns into
+POINTERS stay pointers. Unresolved they are null, and the symptom was "Couldn't find any
+supported shader backend" followed by SIGSEGV with `rip = 0`. Neither line says "unresolved".
+
+⚠ **A context driver that reports no shader flags is not neutral.** `gl2_get_fallback_shader_type`
+asks the CONTEXT driver which shader languages exist - "for gl2, shader support is completely
+defined by the context driver shader flags" - and `gl2_shader_init` then logs an error and
+returns TRUE. The driver comes up fully initialised with `gl->shader` NULL and presents empty
+frames: black screen, no menu, and GoldHEN's counter reading a steady 60 fps.
+
+⚠ **A core's GLES entry points must be THUNKS into the frontend's context, never a second copy of
+Mesa's dispatch.** libGLESv2.a is the mapi dispatch table; the context is current in the
+frontend's copy, so a copy inside the module would be empty. `ps4/orbis_gl_forward.c` forwards
+133 entry points, resolved once from `context_reset` through the frontend's proc address. The
+thunks are assembly because a C forwarder needs the exact prototype of all 133 and a wrong one
+is not a compile error - it is arguments in the wrong registers, silently.
+
+### Open: framebuffer emulation and depth
+
+With `Framebuffer Emulation` ON the depth is wrong - geometry behind the camera draws in front.
+Turning it off fixes it and is the current recommendation. That localises the fault to GLideN64's
+own FBOs on this driver rather than to the context, and leaves `EnableFragmentDepthWrite` and
+`EnableCopyDepthToRDRAM` as the next two things to bisect. Untested, and it is the first time
+GLideN64 has run over zink on this GPU - the fault could be in any of GLideN64, zink, RADV or
+these thunks.

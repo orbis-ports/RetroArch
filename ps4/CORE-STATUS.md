@@ -128,7 +128,7 @@ One core proving the path works is enough for now; the rest wait for matching co
 | `mesen-s` | Nintendo - SNES / SFC / Game Boy / Color (Mesen-S) | 4,2M | `9e4fdeb` | plays |  |
 | `mrboom` | Mr.Boom (Bomberman) | 9,2M | `40ac320` | plays |  |
 | `mu` | Palm OS (Mu) | 1,4M | `f9d34a0` | plays |  |
-| `mupen64plus_next` | Nintendo - Nintendo 64 (Mupen64Plus-Next) | 8,3M | `f275caf+5` | plays | two renderers. ParaLLEl-RDP (default) is 22-25 fps and cannot reach full speed - its LLE RSP alone is 24 ms against a 16.7 ms budget. GLideN64 over the new GL context driver runs 16-100 fps, unprofiled |
+| `mupen64plus_next` | Nintendo - Nintendo 64 (Mupen64Plus-Next) | 8,3M | `f275caf+5` | plays | **60 fps** with GLideN64 + HLE RSP over the GL context driver - 5.2 ms of work in a 16.7 ms frame. ⚠ Set `Framebuffer Emulation` to False: with it on, depth is wrong. ParaLLEl-RDP still selectable and still capped near 25 fps by its LLE RSP |
 | `nekop2` | NEC - PC-98 (Neko Project II) | 2,1M | `5fdbb21` | untested | |
 | `neocd` | SNK - Neo Geo CD (NeoCD) | 2,9M | `8f2d42c` | untested | |
 | `nestopia` | Nintendo - NES / Famicom (Nestopia) | 7,1M | `6c2d242` | broken | loads and runs, green screen, exits cleanly - renders wrong, not a crash |
