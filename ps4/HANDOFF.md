@@ -1454,17 +1454,48 @@ Content staged on the console: NES, SNES, GBA, Mega Drive, Neo Geo (with `neogeo
 OutRun, Cave Story, Dinothawr, xrick, and Freedoom + `prboom.wad` for PrBoom. Of the untested,
 about eight need no content at all; the rest want systems nothing on this machine has.
 
-### The GL arm exists in mesa-ps4 and does not run
+### ⚠ CORRECTION, 2026-08-25: the GL arm runs, and it is no longer an arm
 
-`--gl` builds gallium + EGL + GLES2 through **zink over RADV** - the route that needs no new
-kernel work. Its own comment is the status: *"THIS IS A GATE, NOT A PRODUCT. It builds and it
-LINKS; it does not run."* Open on the driver side: zink's `util_dl_open("libvulkan.so.1")` on a
-console with no dlopen, kopper's per-platform surface arms, and an EGL platform that is not
-`surfaceless`.
+This entry first recorded GL as *"a gate, not a product - it builds and it LINKS; it does not
+run"*, quoting `build-support/orbis/build.sh`. **That comment was false when it was written**, and
+mesa-ps4 has since deleted it (`62902e9a229`). GL runs on hardware: a frame, a triangle with
+shaders, and Vulkan alive beside it in the same process.
 
-⚠ **And the other half is ours.** This frontend has `orbis_vk_ctx.c` and nothing for
-`RETRO_HW_CONTEXT_OPENGL`. A GL core asks the frontend for a context through that mechanism, so
-even a working zink would draw nothing here until that driver exists. Worth starting when the
-driver renders something, not before - the eight GL-blocked cores mostly have working software
-siblings, and the real prize (`parallel_n64`, `mupen64plus_next`, `ppsspp`) is the heaviest thing
-this console would be asked to do.
+The `--gl` flag is gone with it. `COMMON_OPTS` now carries zink, EGL and GLES2 beside RADV,
+everything lands in one `build-orbis`, and the GL link probe runs on every build and fails it if
+`libEGL.a` is missing. Two halves compiled separately are two halves that were never compiled
+against each other, and this port needs both in one eboot with the core chosen at run time.
+
+    build-orbis/src/amd/vulkan/libvulkan_radeon.a   36 MB
+    build-orbis/src/egl/libEGL.a                     5.7 MB
+    build-orbis/src/mesa/glapi/es2api/libGLESv2.a
+    build-orbis/src/gallium/drivers/zink/libzink.a
+    build-orbis/src/gallium/targets/dri/libgallium-*.a
+
+⚠ **Vulkan-only consumers pay nothing** - they link `libvulkan_radeon.a` and the gallium archives
+go unreferenced. So this frontend's current link line keeps working untouched.
+
+Two things the GL link probe learned that any consumer will meet, both found on binaries an
+earlier probe had passed:
+
+    Mesa's dispatch tables reference their entry points WEAKLY, and a weak undefined reference
+    does not extract an archive member - it resolves to zero. Without --whole-archive on the ICD
+    the executable linked with vk_common_GetPhysicalDeviceProperties2 still undefined and jumped
+    to address 0 on the first dispatch. (Same shape as the ZSTD_trace_* stubs in build-cores.sh:
+    a weak undefined symbol never pulls an archive member.)
+
+    .tdata.* is an orphan section under the SDK's own link.x, which cost the RW segment its page
+    alignment and made the console refuse the file outright.
+
+### What is still ours to do for GL
+
+⚠ **This frontend has `orbis_vk_ctx.c` and nothing for `RETRO_HW_CONTEXT_OPENGL`.** A GL core asks
+the frontend for a context through that mechanism; a working zink underneath changes nothing
+until that driver exists. That half was always ours and still is.
+
+What it would unblock, and what it would not: the eight cores the sweep listed as OpenGL-blocked
+mostly have working software siblings (`desmume` against `desmume2015`). The real prize is
+`parallel_n64`, `mupen64plus_next` and `ppsspp` - which are also the heaviest things this console
+would be asked to run, on a port where Beetle PSX already spends a saturated core on the
+interpreter. Worth starting now that the driver renders; worth expecting the frame rate to be the
+next problem rather than the last one.
