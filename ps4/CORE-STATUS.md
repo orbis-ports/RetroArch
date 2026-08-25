@@ -139,7 +139,7 @@ One core proving the path works is enough for now; the rest wait for matching co
 | `pocketcdg` | PocketCDG | 852K | `c6fc08d` | untested | |
 | `pokemini` | Nintendo - Pokemon Mini (PokeMini) | 1,1M | `132111b` | untested | |
 | `potator` | Watara - Supervision (Potator) | 556K | `227c5f6` | untested | |
-| `prboom` | Doom (PrBoom) | 4,6M | `861959f` | untested | |
+| `prboom` | Doom (PrBoom) | 4,6M | `861959f` | untested | Freedoom + prboom.wad in roms/doom/ - load freedoom1.wad |
 | `prosystem` | Atari - 7800 (ProSystem) | 876K | `8a88014` | untested | |
 | `puae` | Commodore - Amiga (PUAE) | 24M | `96ebfcf` | untested | |
 | `px68k` | Sharp - X68000 (PX68k) | 1,6M | `0ad84d7` | untested | |

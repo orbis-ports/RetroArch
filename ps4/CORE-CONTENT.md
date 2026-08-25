@@ -247,6 +247,22 @@ levels, tiles and assets. The harness had already cloned it.
 
 On the console at `/data/retroarch/roms/dinothawr/`; load `dinothawr.game`.
 
+### The Onion Ports collection: one useful file, and a gap it does not fill
+
+`OnionUI/Ports-Collection` is a set of standalone ports for the Miyoo Mini - native ARM binaries,
+not libretro cores - so almost none of it applies here. Of 6839 files, exactly one matters:
+`BIOS/prboom.wad`, PrBoom's own helper lump, which the core needs alongside a game.
+
+⚠ **It ships PWADs and no IWAD.** `blood.wad`, `goldeneye.wad`, `counterstrike.wad` and the rest
+are Doom *mods*: each needs a base game to load on top of, and the collection carries none. A
+PWAD alone will not start PrBoom.
+
+So the base came from **Freedoom 0.13.0**, which is free and drop-in - `freedoom1.wad` and
+`freedoom2.wad`, 55 MB together, in `roms/doom/` beside `prboom.wad`. Load `freedoom1.wad`.
+
+Nothing in the collection serves `tyrquake`, `ecwolf` or `reminiscence`: no `pak0.pak`, no
+`ecwolf.pk3`, no Wolfenstein or Flashback data.
+
 ## ⚠ Two things this list cannot tell you
 
 **A declared format is not a working format** - though `.zip` now is. That warning stood until
