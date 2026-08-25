@@ -1359,3 +1359,112 @@ symbol**. They have to be passed as a plain object.
 
 ⚠ **NONE OF THE HUNDRED HAS BEEN RUN.** The harness reports what compiled. A core that links and
 draws nothing is a pass here and a failure on the console, and only the console knows.
+
+---
+
+## 2026-08-24/25 — running the hundred, and three loader defects underneath them
+
+The sweep of the previous entry produced binaries. This one is about what happened when they
+were run, and the answer is that **the first seventeen results were about the frontend, not the
+cores**. `ps4/CORE-STATUS.md` carries the per-core table; this is what it cost to get there.
+
+### ⚠ No .prx on this console had ever run a global constructor
+
+Every C++-dominant core crashed on load with
+
+    terminating with uncaught exception of type std::length_error:
+    allocator<T>::allocate(size_t n) 'n' exceeds maximum supported size
+
+and every C core was fine - seventeen results, the split exactly along the language. It was
+never about C++. Three defects, each found only by running, and **two of them introduced by the
+fix for the first**:
+
+    1  crtlib.o marks module_start GLOBAL HIDDEN, so the linker correctly makes it LOCAL, and
+       create-fself builds a module's export table from GLOBAL symbols in .symtab. The loader
+       can never find it. Constructors never ran, so every C++ global stayed unconstructed and
+       the first request for a size returned garbage.
+
+    2  the frontend then ran them from dylib_load - on EVERY load. sceKernelLoadStartModule
+       returns the SAME id for an already-loaded module and RetroArch loads a core several
+       times, so mednafen_gba constructed its four globals EIGHT times. That presented as
+       `failed_to_start_audio_driver` and an assertion deep inside Blip_Buffer.
+
+    3  the once-per-module guard then held ids across unload, and the kernel REUSES them.
+       nestopia unloaded, quicknes took its id, its constructors were skipped, and it died on a
+       null read at 0x20 - a SIGSEGV that looks exactly like a broken core.
+
+`libretro-common/dynamic/dylib.c` holds the whole chain in a comment; `ps4/orbis-module.ld`
+brackets `.init_array` because OpenOrbis's `link.x` collects it and defines nothing around it
+while `crtlib.o` carries the bounds as BSS variables eight bytes apart.
+
+⚠ **THE METHOD LESSON IS THE ONE TO KEEP.** Four rounds were spent reading meaning into silence:
+a probe that logged through klog printed nothing, which could equally mean "the constructor did
+not run" or "klog from a .prx does not reach the host"; then a probe without a priority sat at
+the END of the array, so it could say nothing about a module that dies earlier. What settled it
+was a **control**: the same probe in `fceumm`, a core known to work. That should have been the
+first experiment, not the fourth. And a verdict of `crash` against a core is worth very little
+until the loader underneath it is known to be sound - seven cores sat condemned for this.
+
+### The `.info` files under-declare, in three different ways
+
+Every attempt to build a content list from core metadata came out short, and only the console
+showed it:
+
+    arcade cores   say their BIOS requirement in `notes` prose, with no firmware fields at all.
+                   fbalpha2012_neogeo refused Metal Slug with `NeoGeo BIOS missing` and a list of
+                   files nothing had asked for. neogeo.zip was in the repository all along.
+    a5200          marks a mandatory BIOS `firmware0_opt = "true"`. It does not start without it.
+    nxengine       needs a whole game data directory, described only in `notes`.
+
+⚠ **A core's own metadata is a hint. The only reliable statement about what it needs is the core
+refusing to start and saying so.** All 131 optional firmware files the repository carries are now
+on the console alongside the required 34; arcade BIOS goes in the ROM directory, not `system/`.
+
+### Two things that are now known and were not
+
+**The archive path works.** `xrick` declares `zip` as its only extension and played straight out
+of `data.zip`. The earlier warning that compressed formats were unexercised is answered for
+`.zip`; `.chd` and `.7z` still are not. The corpus stays extracted anyway, and
+`snes/Super Mario World.zip` still sits beside the `.smc` as a control.
+
+**Arcade is blocked on romset vintage, not on the port.** Checked by CRC against FBA's own DAT
+over all 231 sets to hand: 129 match FBA 2012, 98 are the wrong revision, 4 are unknown to it.
+⚠ The first run of that check said "1 match" - a merged DAT lists the BIOS chips inside every Neo
+Geo game while they live in `neogeo.zip`, so counting them as missing condemned a library that
+had just been observed playing. The observation was right and the script was wrong.
+
+### ⚠ The harness will overwrite a hand-ported core, and did
+
+`build-cores.sh` clones UPSTREAM. Its `mednafen_psx_hw_libretro.prx` is plain Beetle - no orbis
+arm, no `ps4/orbis_lightrec_mem.c`, no dynarec default - and it lands on the same filename as the
+fork in `~/src-ps4/beetle-psx-libretro`. It did, and Spyro got slower for no visible reason. Only
+the console copy was affected; the fork's source was never touched.
+
+`PS4_CORE_FORKS` now names such cores. The harness builds them and reports `FORK - built, NOT
+written`.
+
+### Where testing stands
+
+    31  plays        including every core that had been recorded as crash
+     7  blocked      arcade, waiting on romsets of the right vintage
+     1  broken       nestopia - loads, runs, exits cleanly, renders a green screen
+    63  untested
+
+Content staged on the console: NES, SNES, GBA, Mega Drive, Neo Geo (with `neogeo.zip`), PSX,
+OutRun, Cave Story, Dinothawr, xrick, and Freedoom + `prboom.wad` for PrBoom. Of the untested,
+about eight need no content at all; the rest want systems nothing on this machine has.
+
+### The GL arm exists in mesa-ps4 and does not run
+
+`--gl` builds gallium + EGL + GLES2 through **zink over RADV** - the route that needs no new
+kernel work. Its own comment is the status: *"THIS IS A GATE, NOT A PRODUCT. It builds and it
+LINKS; it does not run."* Open on the driver side: zink's `util_dl_open("libvulkan.so.1")` on a
+console with no dlopen, kopper's per-platform surface arms, and an EGL platform that is not
+`surfaceless`.
+
+⚠ **And the other half is ours.** This frontend has `orbis_vk_ctx.c` and nothing for
+`RETRO_HW_CONTEXT_OPENGL`. A GL core asks the frontend for a context through that mechanism, so
+even a working zink would draw nothing here until that driver exists. Worth starting when the
+driver renders something, not before - the eight GL-blocked cores mostly have working software
+siblings, and the real prize (`parallel_n64`, `mupen64plus_next`, `ppsspp`) is the heaviest thing
+this console would be asked to do.
