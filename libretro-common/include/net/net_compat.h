@@ -176,6 +176,38 @@
 #include <signal.h>
 #endif
 
+/* ⚠ ORBIS (PlayStation 4) TAKES THE PLAIN POSIX BRANCH, AND THAT IS NOT AN OVERSIGHT.
+ *
+ * Every other console here has an arm because its SDK renames the socket API. This one does
+ * not need one, and the reason was measured rather than assumed - see ps4/HANDOFF.md:
+ *
+ *   - libkernel.sprx exports socket, connect, bind, listen, accept, send, recv, sendto,
+ *     recvfrom, shutdown, setsockopt, getsockopt, getpeername, getsockname, select, poll,
+ *     close and fcntl under their POSIX names. The OpenOrbis stub libkernel.so carries all
+ *     of them, so -lkernel resolves the lot. (An inventory that looks only in the SDK's
+ *     STATIC archives - libc.a and friends - concludes the opposite and is wrong: there is
+ *     no libkernel.a, the socket calls arrive through the dynamic stub.)
+ *   - musl's own getaddrinfo in libc.a calls socket(), connect() and close() internally, and
+ *     its resolver reads the console's DNS servers through sceNetGetDnsInfo (resolvconf.lo).
+ *     The SDK's libc is already built on this layer; there is one descriptor namespace, not
+ *     two, and replacing socket() with sceNetSocket() would be what creates the second one.
+ *   - errno is shared: musl's __errno_location is a tail jump to libkernel's __error, and
+ *     bits/errno.h is FreeBSD's table, which is what those syscalls set. So isagain() and
+ *     isinprogress() above read the right values with no translation.
+ *
+ * What this platform DOES need is the network stack brought up before the first call, which
+ * is sceNetInit() - see the ORBIS arm of network_init() in net_compat.c. That is the only
+ * reason this header pulls in an SDK header at all.
+ *
+ * NETWORK_HAVE_POLL comes from the branch below, so socket_wait() - and with it the connect
+ * timeout that keeps an unreachable host from wedging the task queue - is built on poll(),
+ * exactly as on desktop. There is no sceNetSelect and the sceNetEpoll* family is declared in
+ * this SDK without signatures; neither is needed.
+ */
+#if defined(ORBIS)
+#include <orbis/Net.h>
+#endif
+
 #if defined(__PSL1GHT__)
 #include <net/poll.h>
 

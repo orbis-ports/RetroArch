@@ -1,0 +1,330 @@
+# The four things every PS4 job needs on disk, resolved once.
+#
+# Written as a composite action rather than copied YAML so the frontend job, each core
+# shard and anything added later agree BY CONSTRUCTION. The three paths it exports are
+# exactly the three Makefile.orbis reads from the environment - see the note on
+# ORBIS_MESA_SRC below, which is the one the plan got wrong.
+#
+#   - uses: ./.github/actions/orbis-toolchain
+#     with:
+#       sdk-tag:          v0.5.2
+#       orbis-compat-ref: <commit sha>
+#       mesa-release:     orbis-mesa-<sha>
+#
+# WHAT IT DOES NOT DO: build Mesa. Mesa is a download - one tarball from orbis-ports/mesa-ps4,
+# archives and headers together, because a mismatched vulkan_core.h is a struct-layout bug
+# that compiles cleanly and fails at run time. Makefile.orbis carries that warning in full.
+name: orbis-toolchain
+description: OpenOrbis SDK + orbis-compat + the Mesa bundle, on disk and in the environment.
+
+inputs:
+  sdk-tag:
+    description: OpenOrbis-PS4-Toolchain release tag to install.
+    required: false
+    default: v0.5.2
+  sdk-repo:
+    description: Repository the SDK release comes from.
+    required: false
+    default: OpenOrbis/OpenOrbis-PS4-Toolchain
+  sdk-asset:
+    # TODO(verify): the exact asset name has NOT been established. What IS established:
+    #   * the SDK on the development machine lives at ~/.local/opt/openorbis and its
+    #     CHANGELOG.md tops out at "v0.5.2 - December 21st, 2021", which is upstream's
+    #     last tagged release;
+    #   * but bin/linux/create-fself is dated 2026-01-04 and link.x 2025-02-18, BOTH
+    #     newer than that release - so the working copy is NOT the v0.5.2 asset. It is
+    #     either a build of the repo's own toolchain.yml workflow or a hand-updated tree.
+    #   * there is no install record anywhere in RetroArch/ps4, orbis-compat or mesa-ps4,
+    #     and no flake.nix in either overlay repo that fetches it.
+    # So: confirm the asset name against the releases page (or publish a known-good copy
+    # under orbis-ports) BEFORE trusting a green run here. A wrong tag installs a 2021 SDK
+    # against 2026 headers and the failure will not name itself.
+    description: Glob for the release asset holding the toolchain tree.
+    required: false
+    default: PS4Toolchain.tar.gz
+  orbis-compat-repo:
+    description: Repository holding the platform overlay.
+    required: false
+    default: orbis-ports/orbis-compat
+  orbis-compat-ref:
+    # ⚠ A COMMIT SHA, NEVER A BRANCH NAME. The cache key is this value verbatim; a key that
+    # can mean two different trees serves yesterday's overlay against today's headers, and
+    # that failure mode has already cost this project a day once.
+    description: orbis-compat commit to build against.
+    required: true
+  mesa-repo:
+    description: Repository publishing the Mesa bundle.
+    required: false
+    default: orbis-ports/mesa-ps4
+  mesa-release:
+    description: Release tag in mesa-repo whose orbis-mesa-<sha>.tar.gz to consume.
+    required: true
+  token:
+    # gh needs this for BOTH downloads. github.token is scoped to the repository running the
+    # workflow, so it can read orbis-ports/mesa-ps4 only while that repository is public;
+    # pass a PAT here if it is not.
+    description: Token used for the two `gh release download` calls.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  OO_PS4_TOOLCHAIN:
+    description: The OpenOrbis SDK root.
+    value: ${{ steps.export.outputs.OO_PS4_TOOLCHAIN }}
+  ORBIS_COMPAT_DIR:
+    description: The orbis-compat checkout, with build/liborbis-compat.a present.
+    value: ${{ steps.export.outputs.ORBIS_COMPAT_DIR }}
+  ORBIS_MESA_SRC:
+    description: The unpacked Mesa bundle root; its include/ is what the driver was built against.
+    value: ${{ steps.export.outputs.ORBIS_MESA_SRC }}
+  ORBIS_MESA_BUILD:
+    description: The archives, laid out as build-orbis/src/... under ORBIS_MESA_SRC.
+    value: ${{ steps.export.outputs.ORBIS_MESA_BUILD }}
+
+runs:
+  using: composite
+  steps:
+    # -----------------------------------------------------------------------------------
+    # 0. The host tools the cross build needs. clang and lld do the compiling; llvm-ar
+    #    builds liborbis-compat.a and llvm-nm is what the import-list assertion is made of.
+    - name: Host tools
+      shell: bash
+      run: |
+        set -euo pipefail
+        missing=()
+        for t in clang clang++ ld.lld llvm-ar llvm-nm; do
+          command -v "$t" >/dev/null || missing+=("$t")
+        done
+        if [ ${#missing[@]} -ne 0 ]; then
+          echo "== installing: ${missing[*]}"
+          sudo apt-get update -y -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 clang lld llvm
+        fi
+        clang --version | head -1
+
+    # -----------------------------------------------------------------------------------
+    # 1. The SDK. Cached by tag, because it is 289 MB and it is already a release upstream -
+    #    which is the whole reason it is not built here.
+    - name: Restore OpenOrbis SDK
+      id: sdk-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.local/opt/openorbis
+        key: openorbis-${{ inputs.sdk-tag }}
+
+    - name: Fetch OpenOrbis SDK
+      if: steps.sdk-cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        SDK_REPO: ${{ inputs.sdk-repo }}
+        SDK_TAG: ${{ inputs.sdk-tag }}
+        SDK_ASSET: ${{ inputs.sdk-asset }}
+      run: |
+        set -euo pipefail
+        tmp="$(mktemp -d)"
+        gh release download "$SDK_TAG" --repo "$SDK_REPO" --pattern "$SDK_ASSET" --dir "$tmp"
+        asset="$(find "$tmp" -maxdepth 1 -type f | head -1)"
+        [ -n "$asset" ] || { echo "!! no asset matching '$SDK_ASSET' in $SDK_REPO@$SDK_TAG" >&2; exit 1; }
+        echo "== $asset ($(stat -c%s "$asset") bytes)"
+
+        dest="$HOME/.local/opt/openorbis"
+        rm -rf "$dest"; mkdir -p "$dest"
+        case "$asset" in
+          *.zip)          unzip -q "$asset" -d "$tmp/x" ;;
+          *.tar.gz|*.tgz) mkdir -p "$tmp/x"; tar -xzf "$asset" -C "$tmp/x" ;;
+          *) echo "!! don't know how to unpack $asset" >&2; exit 1 ;;
+        esac
+        # The archive may or may not carry a top-level directory; normalise either shape so
+        # link.x lands at the root, which is what orbis-env.sh probes for.
+        root="$(dirname "$(find "$tmp/x" -name link.x -print -quit)")"
+        [ -n "$root" ] && [ "$root" != "." ] || { echo "!! no link.x anywhere in the asset" >&2; exit 1; }
+        cp -a "$root"/. "$dest"/
+        chmod +x "$dest"/bin/linux/* 2>/dev/null || true
+
+    - name: Assert the SDK is usable
+      shell: bash
+      run: |
+        set -euo pipefail
+        # link.x rather than the directory, and rather than the compiler: a toolchain that is
+        # present but missing its linker script fails hundreds of files later, in the link,
+        # with an error that names nothing useful. Same check orbis-env.sh makes.
+        tc="$HOME/.local/opt/openorbis"
+        for f in link.x include/stdlib.h lib/crt1.o bin/linux/create-fself bin/linux/create-gp4 bin/linux/PkgTool.Core; do
+          [ -e "$tc/$f" ] || { echo "!! SDK at $tc is missing $f" >&2; exit 1; }
+        done
+        echo "== SDK ok at $tc"
+
+    # -----------------------------------------------------------------------------------
+    # 2. The overlay. The CHECKOUT is needed as well as the archive: Makefile.orbis compiles
+    #    optional/ps4_app.cpp, optional/orbis_netlog.cpp, vkloader/vkloader.c and
+    #    vkloader/vkthunks.c out of it by name, includes its include/ AHEAD of the SDK's,
+    #    and with HAVE_OPENGLES=1 links against cmake/orbis-tls.ld. Only build/ is cached.
+    - name: Checkout orbis-compat
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.orbis-compat-repo }}
+        ref: ${{ inputs.orbis-compat-ref }}
+        path: .orbis/orbis-compat
+        token: ${{ inputs.token }}
+
+    - name: Restore liborbis-compat.a
+      id: compat-cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ github.workspace }}/.orbis/orbis-compat/build
+        key: orbis-compat-${{ inputs.orbis-compat-ref }}
+
+    - name: Build orbis-compat
+      if: steps.compat-cache.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: ${{ github.workspace }}/.orbis/orbis-compat
+      run: |
+        set -euo pipefail
+        # ./build.sh is the whole build AND its own checks - including two that must FAIL
+        # without the overlay, and one host binary it compiles and runs. Do not pass
+        # --no-check here: a silently wrong overlay is what this action exists to prevent.
+        OO_PS4_TOOLCHAIN="$HOME/.local/opt/openorbis" ./build.sh
+
+    - name: Assert liborbis-compat.a is present
+      shell: bash
+      run: |
+        set -euo pipefail
+        lib="${GITHUB_WORKSPACE}/.orbis/orbis-compat/build/liborbis-compat.a"
+        [ -f "$lib" ] || { echo "!! no $lib - the cache restored an empty directory?" >&2; exit 1; }
+        echo "== $lib ($(stat -c%s "$lib") bytes, $(llvm-nm --defined-only "$lib" | grep -cE ' [TWDB] ') defined symbols)"
+
+    # -----------------------------------------------------------------------------------
+    # 3. The Mesa bundle. One asset, archives and headers together, with a manifest naming
+    #    its parents. Not cached: it is ~15 MB gzipped and pinned by tag, so a fetch is
+    #    cheaper than a cache round-trip and cannot go stale.
+    - name: Fetch the Mesa bundle
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        MESA_REPO: ${{ inputs.mesa-repo }}
+        MESA_RELEASE: ${{ inputs.mesa-release }}
+      run: |
+        set -euo pipefail
+        dest="${GITHUB_WORKSPACE}/.orbis/mesa"
+        rm -rf "$dest"; mkdir -p "$dest"
+        tmp="$(mktemp -d)"
+        gh release download "$MESA_RELEASE" --repo "$MESA_REPO" --pattern 'orbis-mesa-*.tar.gz' --dir "$tmp"
+        tarball="$(find "$tmp" -maxdepth 1 -name 'orbis-mesa-*.tar.gz' | head -1)"
+        [ -n "$tarball" ] || { echo "!! no orbis-mesa-*.tar.gz in $MESA_REPO@$MESA_RELEASE" >&2; exit 1; }
+        # ⚠ ONE ASSET, NEVER TWO. If a release ever grows a second tarball, stop rather than
+        # picking one: two assets are exactly the pairing the headers warning is about.
+        n="$(find "$tmp" -maxdepth 1 -name 'orbis-mesa-*.tar.gz' | wc -l)"
+        [ "$n" -eq 1 ] || { echo "!! $n orbis-mesa tarballs in that release; expected exactly one" >&2; exit 1; }
+        tar -xzf "$tarball" -C "$dest"
+        root="$(find "$dest" -maxdepth 2 -name manifest.txt -print -quit)"
+        [ -n "$root" ] || { echo "!! the bundle has no manifest.txt - it cannot name its own parents" >&2; exit 1; }
+        root="$(dirname "$root")"
+        echo "ORBIS_MESA_SRC=$root" >> "$GITHUB_ENV"
+
+    - name: Assert the bundle's manifest
+      shell: bash
+      run: |
+        set -euo pipefail
+        src="${ORBIS_MESA_SRC}"
+        build="${src}/build-orbis"
+        man="${src}/manifest.txt"
+        echo "== manifest"
+        sed -n '/^\[orbis-compat-imports\]/q;p' "$man" | sed 's/^/   /'
+
+        # The layout is the one Makefile.orbis reads, not a layout of the bundle's own
+        # invention: ORBIS_MESA_SRC/include for the headers, ORBIS_MESA_BUILD/src/... for
+        # every archive, and the gallium archive is version-stamped so it is FOUND.
+        [ -d "${src}/include/vulkan" ] || { echo "!! bundle has no include/vulkan - the headers RADV was built against are missing" >&2; exit 1; }
+        gallium="$(echo "${build}"/src/gallium/targets/dri/libgallium-*.a)"
+        for a in "${build}/src/amd/vulkan/libvulkan_radeon.a" \
+                 "${build}/src/egl/libEGL.a" \
+                 "${build}/src/mesa/glapi/es2api/libGLESv2.a" \
+                 "${build}/src/mesa/glapi/es1api/libGLESv1_CM.a" \
+                 "$gallium"; do
+          [ -f "$a" ] || { echo "!! bundle is missing $a" >&2; exit 1; }
+        done
+        echo "== archives: $(du -sh "$build" | cut -f1), headers: $(du -sh "${src}/include" | cut -f1)"
+
+    # -----------------------------------------------------------------------------------
+    # 3b. THE IMPORT-LIST ASSERTION, which is the whole reason Mesa may be pinned by
+    #     release while orbis-compat floats.
+    #
+    #     ⚠ WHAT IS ASSERTED IS NOT "Mesa's undefined set minus orbis-compat's defined set
+    #     is empty". Mesa's archives import several hundred names from the SDK's own libc -
+    #     memcpy, snprintf, __stack_chk_fail - and orbis-compat defines none of them, so
+    #     that subtraction is never empty and the check would fail on every run. What the
+    #     bundle records in its manifest is the INTERSECTION measured at Mesa's build time
+    #     (Mesa's undefined ∩ orbis-compat's defined - 9 names today: clock_gettime, fstat,
+    #     open, orbis_sysconf, pthread_create, unlink, _Znam, _Znwm, _ZnwmRKSt9nothrow_t),
+    #     and what is asserted here is that every one of them is STILL defined by the
+    #     orbis-compat about to be linked. That is the interface, and it fails by name.
+    #
+    #     What it does not catch: presence, not meaning. If orbis_sysconf starts answering a
+    #     different number the symbol is still there. Constants inlined at Mesa's compile
+    #     time - MAP_ANON and its relatives - leave no symbol to check at all. That silent
+    #     class is what the manifest's commit and the canary build are for.
+    - name: Assert Mesa's imports are still defined by orbis-compat
+      shell: bash
+      run: |
+        set -euo pipefail
+        man="${ORBIS_MESA_SRC}/manifest.txt"
+        lib="${GITHUB_WORKSPACE}/.orbis/orbis-compat/build/liborbis-compat.a"
+        work="$(mktemp -d)"
+
+        sed -n '/^\[orbis-compat-imports\]/,$p' "$man" | tail -n +2 \
+          | sed '/^[[:space:]]*$/d' | LC_ALL=C sort -u > "$work/want"
+        [ -s "$work/want" ] || {
+          echo "!! the manifest records no orbis-compat imports at all." >&2
+          echo "   Mesa's archives are known to import at least orbis_sysconf; an empty list" >&2
+          echo "   means the release workflow measured nothing, not that the coupling is gone." >&2
+          exit 1; }
+
+        llvm-nm --defined-only "$lib" \
+          | awk '$2=="T"||$2=="W"||$2=="D"||$2=="B"{print $3}' | LC_ALL=C sort -u > "$work/have"
+
+        missing="$(LC_ALL=C comm -23 "$work/want" "$work/have")"
+        if [ -n "$missing" ]; then
+          echo "!! orbis-compat @ ${{ inputs.orbis-compat-ref }} no longer defines symbols the Mesa" >&2
+          echo "   bundle imports. The overlay dropped or renamed them; Mesa cannot link." >&2
+          echo "$missing" | sed 's/^/     /' >&2
+          exit 1
+        fi
+        echo "== all $(wc -l < "$work/want") Mesa imports satisfied by orbis-compat"
+        tr '\n' ' ' < "$work/want"; echo
+
+    # -----------------------------------------------------------------------------------
+    # 4. Export. These four names are read verbatim by Makefile.orbis.
+    #
+    # ⚠ ORBIS_MESA_SRC, NOT JUST ORBIS_MESA_BUILD, and the plan's output list omits it.
+    # Makefile.orbis derives ORBIS_MESA_BUILD from ORBIS_MESA_SRC by default, but it also
+    # does `INCDIRS += -I$(ORBIS_MESA_SRC)/include` under HAVE_VULKAN=1 - so exporting only
+    # the build directory compiles the frontend against the SDK's Vulkan headers instead of
+    # the ones the driver was built against. Both are exported, and they agree.
+    - name: Export the paths
+      id: export
+      shell: bash
+      run: |
+        set -euo pipefail
+        tc="$HOME/.local/opt/openorbis"
+        compat="${GITHUB_WORKSPACE}/.orbis/orbis-compat"
+        src="${ORBIS_MESA_SRC}"
+        build="${src}/build-orbis"
+
+        {
+          echo "OO_PS4_TOOLCHAIN=$tc"
+          echo "ORBIS_COMPAT_DIR=$compat"
+          echo "ORBIS_MESA_SRC=$src"
+          echo "ORBIS_MESA_BUILD=$build"
+        } >> "$GITHUB_ENV"
+        {
+          echo "OO_PS4_TOOLCHAIN=$tc"
+          echo "ORBIS_COMPAT_DIR=$compat"
+          echo "ORBIS_MESA_SRC=$src"
+          echo "ORBIS_MESA_BUILD=$build"
+        } >> "$GITHUB_OUTPUT"
+
+        echo "== OO_PS4_TOOLCHAIN $tc"
+        echo "== ORBIS_COMPAT_DIR $compat"
+        echo "== ORBIS_MESA_SRC   $src"
+        echo "== ORBIS_MESA_BUILD $build"

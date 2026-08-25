@@ -1,0 +1,204 @@
+# The PlayStation 4 frontend: eboot.bin, then the fake-signed .pkg a console can install.
+#
+# ⚠ THIS WORKFLOW IS FOR THE FORK AND MUST NOT FIRE UPSTREAM. Two guards, both deliberate:
+# the branch is ps4-support (upstream builds master), the tag prefix is retroarch-ps4-v
+# rather than v* (upstream's own releases are v1.x.y and would otherwise match), and the
+# job additionally refuses to run outside orbis-ports/RetroArch.
+#
+# ⚠ IT HAS A SECOND OUTPUT AND IT IS NOT OPTIONAL. ps4/build-cores.sh assembles
+# liborbis-retro-common.a from THIS build's libretro-common objects, because a .prx has its
+# own symbol table and cannot borrow the eboot's copies at load time. A cores job starting
+# from a clean checkout fails with "no libretro-common objects - build the frontend first".
+# That is why frontend-common-objects is uploaded, and why cores.yml downloads it.
+
+name: CI PS4 frontend
+
+on:
+  push:
+    branches:
+      - ps4-support
+    tags:
+      - 'retroarch-ps4-v*'
+  pull_request:
+    branches:
+      - ps4-support
+  workflow_dispatch:
+    inputs:
+      orbis-compat-ref:
+        description: orbis-compat commit to build against (a sha, never a branch).
+        required: false
+        default: 2460acbef8850fab0e525b58a6961d947c86fc3f
+      mesa-release:
+        description: mesa-ps4 release tag whose orbis-mesa-<sha>.tar.gz to consume.
+        required: false
+        default: orbis-mesa-88428bbb5e40
+
+permissions:
+  contents: read
+
+env:
+  # ⚠ PINNED BY SHA, NOT BY BRANCH, and the cache keys in the composite action are these
+  # values verbatim. Mesa's archives and orbis-compat's overlay decide struct layouts and
+  # constants inside the eboot; a cache that serves yesterday's Mesa against today's headers
+  # produces a binary that links cleanly and misbehaves at run time.
+  ORBIS_COMPAT_REF: ${{ github.event.inputs.orbis-compat-ref || '2460acbef8850fab0e525b58a6961d947c86fc3f' }}
+  MESA_RELEASE: ${{ github.event.inputs.mesa-release || 'orbis-mesa-88428bbb5e40' }}
+  OPENORBIS_SDK_TAG: v0.5.2
+
+jobs:
+  frontend:
+    if: github.repository == 'orbis-ports/RetroArch'
+    runs-on: ubuntu-latest
+    # Wider than the workflow default, and only here: the tag arm publishes a Release.
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Makefile.orbis stamps the binary with `git rev-parse --short HEAD` (PS4_APP_STAMP),
+          # and that stamp is the first line the console's log channel prints. A checkout with
+          # no git directory would stamp it empty and the log would not name its own build.
+          fetch-depth: 0
+
+      - name: Orbis toolchain
+        uses: ./.github/actions/orbis-toolchain
+        with:
+          sdk-tag: ${{ env.OPENORBIS_SDK_TAG }}
+          orbis-compat-ref: ${{ env.ORBIS_COMPAT_REF }}
+          mesa-release: ${{ env.MESA_RELEASE }}
+
+      # ⚠ PkgTool.Core NEEDS OpenSSL 1.1 AND THE RUNNER HAS OPENSSL 3. It is an old
+      # self-contained .NET build; .NET's crypto shim dlopen()s libssl.so.1.1 by soname and
+      # refuses OpenSSL 3, so pkg_build fails inside a script whose every other step worked.
+      # make-pkg.sh reads PS4_PKGTOOL_OPENSSL_LIB first and only then probes /nix/store -
+      # which does not exist on a GitHub runner, hence this step.
+      #
+      # TODO(verify): this has NOT been run on a runner. What is established on disk:
+      # `strings bin/linux/PkgTool.Core` contains libssl.so.1.1 among its candidate sonames,
+      # and make-pkg.sh's own header documents both quirks. The focal .deb below is the usual
+      # way to get that soname onto a noble image, but the exact filename floats with the
+      # security pool, so it is discovered rather than named.
+      - name: OpenSSL 1.1 for PkgTool.Core
+        run: |
+          set -euo pipefail
+          lib="${GITHUB_WORKSPACE}/.orbis/openssl11/lib"
+          if [ ! -e "$lib/libssl.so.1.1" ]; then
+            tmp="$(mktemp -d)"
+            base=http://security.ubuntu.com/ubuntu/pool/main/o/openssl
+            deb="$(curl -sSfL "$base/" \
+                   | grep -oE 'libssl1\.1_[^"]*_amd64\.deb' | sort -V | tail -1)"
+            [ -n "$deb" ] || { echo "!! no libssl1.1 .deb in $base" >&2; exit 1; }
+            echo "== $deb"
+            curl -sSfL -o "$tmp/libssl.deb" "$base/$deb"
+            dpkg-deb -x "$tmp/libssl.deb" "$tmp/x"
+            mkdir -p "$lib"
+            cp -a "$tmp"/x/usr/lib/x86_64-linux-gnu/lib{ssl,crypto}.so.1.1 "$lib"/
+          fi
+          echo "PS4_PKGTOOL_OPENSSL_LIB=$lib" >> "$GITHUB_ENV"
+          ls -l "$lib"
+
+      # The three switches below are ALL load-bearing and Makefile.orbis says so at length:
+      # HAVE_DYNAMIC=1 makes the frontend load .prx cores through sceKernelLoadStartModule,
+      # HAVE_STATIC_DUMMY=0 stops cores/dynamic_dummy.c being linked in their place, and
+      # HAVE_VULKAN=1 is what HAVE_OPENGLES=1 requires (zink is a Vulkan client, so the ICD
+      # has to be in the link whether or not Vulkan is the video driver that runs).
+      # Building with HAVE_VULKAN=1 alone shipped once with an EMPTY core list and wrote an
+      # empty core_info.cache to /data - measured 2026-08-23.
+      - name: Compile RA + package
+        run: |
+          set -euo pipefail
+          make -f Makefile.orbis \
+            HAVE_VULKAN=1 HAVE_OPENGLES=1 \
+            HAVE_STATIC_DUMMY=0 HAVE_DYNAMIC=1 \
+            -j"$(getconf _NPROCESSORS_ONLN)" pkg
+
+      # ⚠ ASSERT ON ARTEFACTS, NOT ON THE EXIT STATUS. The eboot rule has failed with status
+      # 255 while leaving the PREVIOUS run's eboot.bin and .pkg beside a freshly linked .elf,
+      # and PkgTool.Core has been seen to produce no package at all. A workflow that reports
+      # green while producing nothing usable is the failure mode this project has paid for.
+      - name: Assert the package exists
+        run: |
+          set -euo pipefail
+          pkg=IV0000-RTRA00001_00-RETROARCH0000000.pkg
+          for f in retroarch_orbis.elf eboot.bin "$pkg"; do
+            [ -f "$f" ] || { echo "!! make reported success but $f is missing" >&2; exit 1; }
+          done
+          # A truncated or empty package installs and then fails on the console with nothing
+          # in any log, so give the size a floor rather than only a presence check.
+          sz="$(stat -c%s "$pkg")"
+          [ "$sz" -gt 4000000 ] || { echo "!! $pkg is only $sz bytes - that is not a RetroArch build" >&2; exit 1; }
+          echo "== $pkg $sz bytes"
+          # The second output the cores job consumes. Say the count here, where an empty
+          # upload is still cheap to explain.
+          n="$(find libretro-common -name '*.o' -type f | wc -l)"
+          [ "$n" -gt 0 ] || { echo "!! no libretro-common objects - the cores job cannot link without them" >&2; exit 1; }
+          echo "== libretro-common objects: $n"
+
+      - name: Get short SHA
+        id: slug
+        run: echo "sha8=$(echo "${GITHUB_SHA}" | cut -c1-8)" >> "$GITHUB_OUTPUT"
+
+      - name: Name the package after the ref
+        id: rename
+        run: |
+          set -euo pipefail
+          # GITHUB_REF_NAME can contain a slash (a branch like foo/bar); the filename cannot.
+          ref="${GITHUB_REF_NAME//\//-}"
+          out="RetroArch-PS4-${ref}.pkg"
+          cp -f IV0000-RTRA00001_00-RETROARCH0000000.pkg "$out"
+          echo "pkg=$out" >> "$GITHUB_OUTPUT"
+          echo "== $out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-pkg-${{ steps.slug.outputs.sha8 }}
+          path: |
+            ${{ steps.rename.outputs.pkg }}
+            eboot.bin
+
+      # ⚠ THE EDGE THAT SURPRISES PEOPLE. Consumed by cores.yml, not by a human. Keep the
+      # directory structure: build-cores.sh finds these with `find libretro-common -name '*.o'`
+      # relative to the RetroArch root and archives them in that order.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-common-objects-${{ steps.slug.outputs.sha8 }}
+          path: libretro-common/**/*.o
+          if-no-files-found: error
+          retention-days: 30
+
+      # -------------------------------------------------------------------------------
+      # SHIPPING THE .info FILES INSIDE THE PACKAGE - NOT DONE HERE, AND NOT BECAUSE IT WAS
+      # FORGOTTEN. The plan asks for the core metadata to travel in the .pkg under
+      # /data/retroarch/info so a fresh install with no network shows core NAMES rather than
+      # .prx filenames. Checked against what is actually on disk, that needs two changes
+      # this workflow cannot make on its own:
+      #
+      #   1. NOTHING STAGES AN info DIRECTORY TODAY. orbis-compat/scripts/ps4/make-pkg.sh
+      #      stages exactly eboot.bin, sce_sys/param.sfo, sce_module/{libc,libSceFios2}.prx
+      #      and an optional icon0.png. It does have `--extra <src>:<targ_path>`, and its
+      #      gp4_patch_rootdir() exists precisely so an extra can land in a directory
+      #      create-gp4 does not declare - but Makefile.orbis's `pkg` target passes no
+      #      --extra at all, and its comment says so out loud ("Nothing but the executable
+      #      goes in"). Passing ~101 --extra arguments needs a new variable in Makefile.orbis.
+      #
+      #   2. THE TARGET PATH IN THE PLAN CANNOT WORK. A package's files are mounted at /app0,
+      #      which frontend/drivers/platform_orbis.c documents as READ-ONLY; that file sets
+      #      DEFAULT_DIR_CORE_INFO to /data/retroarch/info (CORE_INFO_PATH = USER_PATH), on
+      #      the writable side. So .info files shipped in the pkg arrive at /app0/... and
+      #      RetroArch will not look there. Either they ship at /app0/info and the frontend
+      #      copies them to /data on first boot, or CORE_INFO_PATH moves to EBOOT_PATH and
+      #      the updater loses its ability to refresh them. That is a source change, and it
+      #      belongs in the same commit as the packaging change.
+      #
+      # Until both land, a first launch shows .prx filenames. Leaving this as a comment
+      # rather than a step that quietly copies nothing.
+      # -------------------------------------------------------------------------------
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/retroarch-ps4-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.rename.outputs.pkg }}
+          fail_on_unmatched_files: true

@@ -11,6 +11,8 @@
 #   --list            print what the recipe offers, and exit
 #   --update          fetch and reset to the recipe's branch before building
 #   --keep            incremental: do not reset, do not delete objects
+#   --drop-clones     delete each core's clone once it is done with (default under CI)
+#   --keep-clones     keep every clone (default interactively)
 #   --jobs N          parallelism for each core's make
 #
 # ⚠ ONE CORE IS THE NORMAL CASE, NOT THE SPECIAL ONE. `--all` exists for a sweep, but the thing
@@ -28,6 +30,22 @@
 # discards what the caller passed, while almost none of them rewrite CC. `platform=unix` then
 # gives the core a sane arm to start from, its own link fails (host driver, -shared), and the
 # objects are collected and linked here. A core that needs more than that gets a patch.
+#
+# ⚠ AND THE CLONES ARE A DISK PROBLEM BEFORE THEY ARE A TIME ONE. This work directory reaches
+# 15 GB across the recipe and a GitHub-hosted runner has about 14 GB free, so a shard that keeps
+# every clone runs out of disk partway through and reports whatever a full disk looks like -
+# usually a compile error in an unrelated core. --drop-clones removes each clone once the harness
+# is finished with it, successful or not, so at most one is on disk at a time. Nothing worth
+# keeping lives in there: the logs, the .elf, the .prx and the manifest are all in $WORK itself.
+#
+# ⚠ THE DEFAULT IS DECIDED BY $CI, NOT CHOSEN. Dropping cannot be the unconditional default -
+# it would break the workflow this script is named after. `build-cores.sh --recipe <r> gambatte`
+# is the normal case, --update fetches into an existing clone, and the patch loop re-applies
+# against one; deleting it means every one-core rebuild re-clones, and the 15 GB that is a
+# liability on a runner is the thing that makes iteration here quick. Nor can it be an opt-in
+# flag alone, because the flag CI forgets is the flag CI does not have. GitHub Actions sets
+# CI=true in every job, so the environment that needs the sweep gets it and this machine does
+# not, and --drop-clones / --keep-clones override either way.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,6 +61,7 @@ TOOLCHAIN="$OO_PS4_TOOLCHAIN"
 WORK="${HOME}/.cache/ps4-cores"; OUT=""; RECIPE=""
 PATCHES="$HERE/core-patches"
 JOBS="$(nproc)"; ALL=0; LIST=0; UPDATE=0; KEEP=0
+DROP_CLONES=-1        # -1: decide from $CI below.  0: keep.  1: drop.
 CORES=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -55,12 +74,21 @@ while [[ $# -gt 0 ]]; do
     --list)    LIST=1;       shift ;;
     --update)  UPDATE=1;     shift ;;
     --keep)    KEEP=1;       shift ;;
+    --drop-clones) DROP_CLONES=1; shift ;;
+    --keep-clones) DROP_CLONES=0; shift ;;
     -*) echo "build-cores: unknown argument: $1" >&2; exit 2 ;;
     *) CORES+=("$1"); shift ;;
   esac
 done
 [[ -n "$RECIPE" && -f "$RECIPE" ]] || { echo "build-cores: --recipe <file> is required" >&2; exit 2; }
 OUT="${OUT:-$WORK/out}"
+
+if [[ $DROP_CLONES -eq -1 ]]; then
+  case "${CI:-}" in true|TRUE|1) DROP_CLONES=1 ;; *) DROP_CLONES=0 ;; esac
+fi
+# --keep is the incremental edit-compile loop; deleting the tree it is incremental against is
+# not a combination that means anything. It wins.
+[[ $KEEP -eq 1 ]] && DROP_CLONES=0
 
 recipe_line() { awk -v c="$1" '!/^[[:space:]]*(#|$)/ && $1==c {print; exit}' "$RECIPE"; }
 
@@ -235,7 +263,23 @@ merge_manifest() {
   # zero on a run that had just built a core.
   echo "== manifest: $MANIFEST ($(wc -l < "$MANIFEST" 2>/dev/null || echo 0) cores recorded)"
 }
-trap merge_manifest EXIT INT TERM
+# ⚠ THE GUARD IS NOT PARANOIA, IT IS THE COST OF BEING WRONG. This is an `rm -rf` whose path
+# comes from field two of a recipe file. A blank or `.` there would make $src the work directory
+# itself - the clones, the manifest, liborbis-retro-common.a, and $OUT with every .prx already
+# built in this run. So it deletes only a non-empty child of $WORK, never $WORK, never $OUT.
+CLONE_TO_DROP=""
+drop_clone() {
+  local victim="$CLONE_TO_DROP"
+  CLONE_TO_DROP=""
+  [[ -n "$victim" && -d "$victim" ]] || return 0
+  [[ "$victim" == "$WORK/"?* ]] || return 0
+  [[ "$victim" != *"/."* ]] || return 0
+  [[ "$victim" != "$OUT" && "$OUT" != "$victim/"* ]] || return 0
+  rm -rf "$victim"
+}
+
+on_exit() { drop_clone; merge_manifest; }
+trap on_exit EXIT INT TERM
 
 printf '%-24s %-9s %-9s %-8s %s\n' CORE RESULT SIZE COMMIT NOTE
 printf '%-24s %-9s %-9s %-8s %s\n' ------------------------ --------- --------- -------- ----
@@ -257,7 +301,11 @@ for core in "${CORES[@]}"; do
   [[ "$buildtype" == GENERIC || -n "$makeflags" ]] \
     || { report "$core" SKIP - - "build type $buildtype"; continue; }
 
+  # Whatever the previous core left behind goes now, before this one's clone lands beside it.
+  drop_clone
+
   src="$WORK/$dir"
+  [[ $DROP_CLONES -eq 1 ]] && CLONE_TO_DROP="$src"
   if [[ ! -d "$src/.git" ]]; then
     rm -rf "$src"
     if ! git clone -q --depth 1 --recursive -b "$branch" "$url" "$src" 2>"$WORK/$core.clone"; then
@@ -313,7 +361,8 @@ for core in "${CORES[@]}"; do
   # member while cdrom.c never joins the source list - and satisfying that from a shared archive
   # would put two layouts of one struct in a single link. That is silent and much worse than a
   # missing symbol. Turning it off makes both sides agree and loses nothing that exists here.
-  # shellcheck disable=SC2086 - $makeflags is a list of make variables and must word-split.
+  # $makeflags is a list of make variables and must word-split - hence the disable below.
+  # shellcheck disable=SC2086
   ( cd "$bdir" && make -f "${makefile:-Makefile}" platform=unix HAVE_CDROM=0 $makeflags \
         CC="$CC_ORBIS" CXX="$CXX_ORBIS" AR=llvm-ar -k -j"$JOBS" ) >"$WORK/$core.log" 2>&1
 

@@ -1698,36 +1698,91 @@ carries its own static musl and `setenv` in the frontend is invisible to a `.prx
 It exists because three performance stories in one day turned out to be wrong before it was written.
 The section above on the N64 frame is entirely its output.
 
-## Networking: what the SDK gives us and what it does not
+## Networking: the socket layer was never missing
 
-`HAVE_NETWORKING` is still 0. What follows was measured to size the work, not to do it.
+⚠ **THIS SECTION REPLACES AN EARLIER ONE THAT WAS WRONG, AND THE MISTAKE IS WORTH KEEPING.** The
+previous inventory checked `libc.a`, `libpthread.a` and "`libkernel.a`" at symbol level, found nine
+of the twenty-two POSIX socket calls, and sized a rewrite of the whole API over `sceNet*` as an
+archive-member override. **There is no `libkernel.a`.** The socket calls arrive through the DYNAMIC
+stub `lib/libkernel.so`, which the OpenOrbis stub generator built from retail libkernel's export
+list, and `-lkernel` has been on this port's link line since the first build.
 
-⚠ **`libretro-common/include/net/net_compat.h` HAS NO ORBIS ARM.** It has Vita, PS3, PSL1GHT and
-Windows; this platform falls through to the generic POSIX branch and calls `connect()`, `select()`,
-`setsockopt()` like any Unix. Checked at symbol level across `libc.a`, `libkernel.a`, `libpthread.a`:
+    present, from libkernel.so (dynamic)   socket connect bind listen accept send recv sendto
+                                           recvfrom shutdown setsockopt getsockopt getpeername
+                                           getsockname select poll close fcntl sendmsg recvmsg
+    present, from libc.a (static)          getaddrinfo freeaddrinfo getnameinfo gethostbyname
+                                           gethostbyname2 inet_pton inet_ntop inet_addr inet_aton
+                                           getifaddrs if_nametoindex in6addr_any accept4 signal
+    missing                                nothing
 
-    present   socket send recv getaddrinfo freeaddrinfo inet_pton inet_ntop
-              gethostbyname fcntl
+Proven, not inferred, three ways:
 
-    missing   connect bind listen accept sendto recvfrom shutdown
-              setsockopt getsockopt getpeername select poll close
+1. **A link probe.** A translation unit taking the address of all twenty-two calls, compiled with
+   this port's exact flags and linked with this port's exact `LIBS` line, links. The only symbol it
+   could not resolve on the first attempt was `sceNetGetDnsInfo`, and `-lSceNet` was already there.
+2. **The SDK's own libc is built on it.** `getaddrinfo.lo` in `libc.a` has undefined references to
+   `socket`, `connect` and `close`; `fcntl.lo` calls libkernel's `_fcntl`; `send.lo` is a tail call
+   to `sendto` and `recv.lo` to `recvfrom`; and musl's `socket()` is a wrapper over
+   `__sys_socketex(name, domain, type, protocol)` - the same name-taking syscall `sceNetSocket`
+   uses, passing `""`. There is ONE descriptor namespace here, and it is the kernel's.
+3. **The SDK ships a sample that uses it.** `samples/networking/` opens a TCP listener with plain
+   `socket`/`bind`/`listen`/`accept`/`close` over `<sys/socket.h>` and `<netinet/in.h>`.
 
-⚠ **DO NOT FILL THE GAPS ONE AT A TIME.** musl's `socket()` returns a file descriptor from a syscall;
-`sceNetSocket()` returns an `OrbisNetId`. Implementing the missing dozen over `sceNet*` while keeping
-musl's `socket()` puts two descriptor namespaces in one program, and handing one to a function
-expecting the other compiles cleanly. Take the whole set, `socket()` included, as an archive-member
-override in orbis-compat - the same technique `orbis_abort_report.c` and `orbis_cv_fix.cpp` use.
+⚠ **AND `errno` IS SHARED, WHICH IS THE PART THAT WOULD HAVE BEEN HARD TO GET RIGHT BY HAND.**
+`libc.a`'s `__errno_location` is a single `jmp` to libkernel's `__error`, and `bits/errno.h` is
+FreeBSD's table - the one those syscalls actually set. `EINPROGRESS` is 36, `EAGAIN` 35,
+`ECONNREFUSED` 61. So `isagain()` and `isinprogress()` in `net_compat.h` read the right values with
+no translation, and a `sceNet*` wrapper would have had to invent a mapping to replace something
+that was already correct.
 
-Three details the wrapper absorbs: `sceNetSocket` takes a NAME as its first argument that POSIX has no
-place for; there is **no `sceNetSelect`** and the epoll family is declared in this SDK as
-`void sceNetEpollWait();` - the symbol without a signature; and `sceNetInit()` already works, proven
-by the log channel, so TCP is the untested part rather than the stack coming up.
+⚠ **SO DO NOT OVERRIDE `socket()`.** The two-namespace hazard the old section warned about is real,
+but it is what the override would CREATE, not what it would fix: `sceNetSocket()` returning an
+`OrbisNetId` into musl's `getaddrinfo`, which then calls libkernel's `connect()` and `close()` on
+it. And `close()` cannot be overridden anyway - it is the file close as well as the socket close, so
+an override would have to dispatch on descriptor type. There is nothing to gain and a working layer
+to lose.
 
-For TLS: `time()`, `getrandom` and `getentropy` are all present in libc. BearSSL and mbedTLS are
-vendored under `deps/` and wired to `HAVE_SSL`. Sony's own `libSceSsl.so` and `libSceHttp.so` are
-present as stubs - `orbis/Ssl.h` exists but declares `void sceSslConnect();`, names without
-signatures. Using `libSceHttp` would make the whole socket layer above unnecessary and is the
-interesting fallback, at the price of establishing those signatures.
+**What this platform DID need**, all of it landed in phase 5a:
+
+* `network_init()` in `libretro-common/net/net_compat.c` had no ORBIS arm and fell through to the
+  generic one, which only ignores `SIGPIPE`. `sceNetInit()` has to run first: musl's resolver reads
+  the console's DNS servers through `sceNetGetDnsInfo` (`resolvconf.lo`), which answers with an
+  error until the stack is up. Name resolution failing on a console that is plainly online is what
+  that omission looks like. The return code is deliberately not fatal - it is negative when the
+  stack is ALREADY up, which is the normal case here because `optional/orbis_netlog.cpp` calls
+  `sceNetInit()` during early boot and then sends datagrams successfully on hardware.
+* `HAVE_SOCKET_LEGACY` had to go from 1 to 0. Inherited from the console Makefiles this port was
+  modelled on and inert while networking was off; with it set, the build stops on `redefinition of
+  'addrinfo'`, because `net_compat.h` declares its own for platforms that have no `getaddrinfo` and
+  this one has a real one in `netdb.h`.
+* `DEFAULT_BUILDBOT_SERVER_URL` had no ORBIS arm. ORBIS is not `__linux__` and not any other case in
+  that chain, so it fell to the final `""` - a Core Downloader that fetches nothing and explains
+  nothing, and an invitation to "fix" it by borrowing the Linux/x86_64 URL, which would fill the
+  list with x86-64 ELF objects that install and never load.
+
+⚠ **`-lSceNet` IS NOW LOAD-BEARING FOR libc, NOT JUST FOR THE LOG CHANNEL.** `sceNetGetDnsInfo` is
+the single symbol the whole socket API needs from libSceNet; `sceNetInit` is the second, from our
+own arm. Removing `-lSceNet` because logging is off in a release build fails at link time.
+
+⚠ **THERE IS NO `HAVE_NETPLAY` SWITCH IN THIS TREE.** `Makefile.common`'s `HAVE_NETWORKING` block
+adds `network/natt.o`, `network/netplay/netplay_frontend.o`, `netplay_room_parse.o`, the three
+`tasks/task_netplay_*.o` and `-DHAVE_NETWORK_CMD` unconditionally, and `runloop.c` defines
+`core_set_netplay_callbacks` behind `HAVE_NETWORKING` alone. All seven compile clean for this
+target and are dead code unless a session is started, so they are carried. Removing them means an
+ORBIS `#ifdef` in `retroarch.c`.
+
+**Timeouts need no work.** `socket_connect_with_timeout()` is non-blocking `connect` + `poll` +
+`getsockopt(SO_ERROR)`, and `NETWORK_HAVE_POLL` is set for this platform because it takes the
+generic POSIX branch. `poll` is a real libkernel export. There is no `sceNetSelect` and the
+`sceNetEpoll*` family is declared in this SDK as `void sceNetEpollWait();` - names without
+signatures - and neither fact matters, because nothing calls them.
+
+**For TLS (5b):** `time()`, `getrandom` and `getentropy` are all present in libc. BearSSL and
+mbedTLS are vendored under `deps/`; `HAVE_BUILTINBEARSSL := 1` in `Makefile.orbis` is the whole
+switch, and it sets `HAVE_SSL` itself. Sony's `libSceSsl.so` and `libSceHttp.so` are present as
+stubs and `orbis/Ssl.h` declares `void sceSslConnect();` - names without signatures - but
+`samples/net_http/` shows the working call sequence for `sceSslInit`/`sceHttpInit` and could be
+used to recover them if BearSSL's certificate story turns out worse than it looks.
 
 ## Distribution: mesa as a release, and where orbis-compat sits
 
@@ -1757,3 +1812,51 @@ layer that changes most often inside the artifact meant to change least.
 The proportionate check is the import list itself: assert that every symbol Mesa's archives import
 from orbis-compat is still defined by the orbis-compat about to be linked. ⚠ It catches presence, not
 meaning - a changed return value or a constant inlined at Mesa's compile time leaves nothing to check.
+
+## The release pipeline, and the three things the plan got wrong about it
+
+Phases 01-04 of the release plan are now in the tree: `.github/actions/orbis-toolchain/action.yml`,
+`.github/workflows/frontend.yml`, `.github/workflows/cores.yml`, `ps4/shard-cores.sh`,
+`ps4/make-index.sh`, disk hygiene in `ps4/build-cores.sh`, and a release workflow in mesa-ps4.
+Nothing has run on a runner. What follows is only the part that was measured rather than written.
+
+**The index CRC is of the `.prx`, not of the `.zip`.** The plan said to hash the archive that gets
+uploaded. `tasks/task_core_updater.c:832-853` hashes `download_handle->local_core_path` and compares
+it to `entry->crc`, and `local_core_path` is the *extracted* module -
+`core_updater_list.c:466-471` strips the archive extension. Publish the archive's CRC and the
+comparison never matches: nothing errors, and every core re-downloads on every visit to the
+downloader, forever. The plan's *reasoning* survives intact and is why the index is cut inside the
+shard that built the core - `create-fself` is not byte-reproducible, so a CRC computed from a later
+rebuild of identical objects is a different number.
+
+Two more parser facts worth not re-deriving. The CRC goes through `string_hex_to_unsigned`
+(`libretro-common/string/stdstring.c:624-646`), which returns **0 on any parse failure**, and
+`core_updater_list.c:367-379` treats 0 as a rejected line - a malformed CRC silently removes a core
+from the list rather than reporting anything. And the date is `strtoul`-walked and must end at NUL
+(`core_updater_list.c:331-362`), so a trailing space drops the line too.
+
+**The `.info` files cannot ship inside the package the way phase 02 wanted.** Package contents mount
+at `/app0`, which `frontend/drivers/platform_orbis.c:72-77` already documents as read-only, and the
+same file sets `DEFAULT_DIR_CORE_INFO` to `/data/retroarch/info`. RetroArch will not look in
+`/app0`. `make-pkg.sh` does have `--extra <src>:<targ>`, but `Makefile.orbis`'s `pkg` target passes
+none. Making a fresh install legible therefore needs a first-boot copy out of `/app0/info`, or
+`CORE_INFO_PATH` moved to `EBOOT_PATH` - not a packaging step. Left as a comment in `frontend.yml`
+rather than a step that silently copies nothing.
+
+**Two runner-environment dependencies nobody had written down.** `PkgTool.Core` dlopens
+`libssl.so.1.1` (confirmed in its `strings`) and a GitHub runner has OpenSSL 3, so the frontend
+workflow fetches the focal `libssl1.1` deb. And mesa-ps4's `build-support/orbis/build.sh` refuses to
+run without `nix` and wraps every meson/ninja call in `nix develop nixpkgs#mesa`; it also runs
+`ninja -k 0 ... || true`, so it exits 0 on a failed build and the release workflow has to assert the
+five archives itself rather than trust the exit status.
+
+**Still open, and both are cheap.** ⚠ Spike S1 - whether a Release asset keeps a leading dot - is
+unanswered, and it decides Releases against Pages as the host. `cores.yml` answers it on its first
+real run by re-fetching `.index-extended` from the release it just cut. ⚠ And the OpenOrbis SDK
+release asset name could not be established: the copy at `~/.local/opt/openorbis` has a changelog
+topping out at v0.5.2 (2021) but a `create-fself` dated 2026-01-04, so it is *not* that release
+asset, and pinning `v0.5.2` would build against a 2021 SDK. Publishing a known-good copy under
+`orbis-ports` is the honest fix.
+
+Measured: 101 cores, 461 MB, 109 MiB zipped; 101/101 modules carry `retro_run`; all 101 index CRCs
+cross-checked against `7z h` and Info-ZIP.

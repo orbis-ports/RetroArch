@@ -1,0 +1,537 @@
+# The 101 cores: a sharded matrix, the Beetle fork beside it, and the listing the console reads.
+#
+# ⚠ THIS JOB CANNOT START FROM A CLEAN CHECKOUT AND THAT IS THE EDGE PEOPLE MISS.
+# ps4/build-cores.sh assembles liborbis-retro-common.a from the FRONTEND's compiled
+# libretro-common objects, because a .prx has its own symbol table and cannot borrow the
+# eboot's copies at load time. Without them the harness stops with "no libretro-common objects
+# - build the frontend first". So every core job downloads frontend-common-objects from the
+# newest successful run of frontend.yml, and there is no arrangement in which cores build first.
+#
+# ⚠ SHARDED FOR DISK BEFORE TIME. The work directory reaches 15 GB across the recipe and a
+# GitHub-hosted runner has around 14 GB free on /. Eight shards plus --drop-clones keeps at most
+# one clone alive at a time; the wall clock is set by the widest shard (~10 min for
+# mame2003_plus at -j4), not by the total.
+#
+# ⚠ AND THE INDEX IS CUT WHERE THE BINARIES ARE, NEVER LATER. create-fself is not
+# byte-reproducible - two links from identical objects produced .prx files differing at byte 833
+# - so a publish job that rebuilt anything would describe files that are not the ones it
+# uploads. ps4/make-index.sh runs inside the shard, over the artefacts that shard produced, and
+# the publish job only concatenates fragments and re-verifies them against the zips themselves.
+
+name: CI PS4 cores
+
+on:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: How many parallel core shards.
+        required: false
+        default: "8"
+      frontend-run-id:
+        description: frontend.yml run to take libretro-common objects from (blank = newest success).
+        required: false
+        default: ""
+      libretro-super-ref:
+        description: libretro-super commit the recipe comes from (a sha, never a branch).
+        required: false
+        default: bc2b5463fe7e45a36295db54f74bc56b950dec4b
+      orbis-compat-ref:
+        description: orbis-compat commit to build against (a sha, never a branch).
+        required: false
+        default: 2460acbef8850fab0e525b58a6961d947c86fc3f
+      mesa-release:
+        description: mesa-ps4 release tag whose orbis-mesa-<sha>.tar.gz to consume.
+        required: false
+        default: orbis-mesa-88428bbb5e40
+      dry-run:
+        description: Build, zip and index, but cut no release.
+        required: false
+        default: "false"
+  push:
+    tags:
+      - 'cores-*'
+  schedule:
+    # Weekly, against upstream's tip. Nothing downstream waits on it; it exists so a core that
+    # upstream breaks is found here rather than by someone with a console.
+    - cron: '17 4 * * 0'
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never two publishes into one rolling tag. Not cancel-in-progress: a half-uploaded release
+  # is worse than a late one.
+  group: ps4-cores
+  cancel-in-progress: false
+
+env:
+  # ⚠ PINNED BY SHA, AND THE RECIPE PIN IS LOAD-BEARING IN A WAY THE OTHERS ARE NOT.
+  # ps4/shard-cores.sh deals the cores out of this exact file. If the shard jobs and a later
+  # rerun of one shard saw different recipes, the split would move under them and the publish
+  # job would assemble an index over a set nobody chose.
+  LIBRETRO_SUPER_REF: ${{ github.event.inputs.libretro-super-ref || 'bc2b5463fe7e45a36295db54f74bc56b950dec4b' }}
+  ORBIS_COMPAT_REF: ${{ github.event.inputs.orbis-compat-ref || '2460acbef8850fab0e525b58a6961d947c86fc3f' }}
+  MESA_RELEASE: ${{ github.event.inputs.mesa-release || 'orbis-mesa-88428bbb5e40' }}
+  OPENORBIS_SDK_TAG: v0.5.2
+  SHARDS: ${{ github.event.inputs.shards || '8' }}
+  RECIPE: .libretro-super/recipes/linux/cores-linux-x64-generic
+
+jobs:
+  # ---------------------------------------------------------------------------------------
+  # The matrix is an input, so it has to be computed rather than written. This job also prints
+  # the split into the run summary: a shard that built the wrong cores is otherwise invisible
+  # until the index comes out short.
+  plan:
+    if: github.repository == 'orbis-ports/RetroArch'
+    runs-on: ubuntu-latest
+    # `gh run list` reads another workflow's history, which contents:read does not cover.
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+      frontend-run-id: ${{ steps.frontend.outputs.run-id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout libretro-super
+        uses: actions/checkout@v4
+        with:
+          repository: libretro/libretro-super
+          ref: ${{ env.LIBRETRO_SUPER_REF }}
+          path: .libretro-super
+
+      - name: Deal the cores
+        id: plan
+        run: |
+          set -euo pipefail
+          n="${SHARDS}"
+          case "$n" in ''|*[!0-9]*) echo "!! shards must be a number, got '$n'" >&2; exit 1 ;; esac
+          [ "$n" -ge 1 ] || { echo "!! shards must be at least 1" >&2; exit 1; }
+
+          total="$(ps4/shard-cores.sh --recipe "$RECIPE" --all | wc -l)"
+          echo "== $total cores over $n shards"
+          {
+            echo "### PS4 core shards"
+            echo
+            echo '```'
+            ps4/shard-cores.sh --recipe "$RECIPE" --plan "$n"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Every core must land in exactly one shard. Cheap here; unrecoverable later.
+          seen=0
+          for i in $(seq 0 $((n - 1))); do
+            seen=$((seen + $(ps4/shard-cores.sh --recipe "$RECIPE" "$i" "$n" | wc -l)))
+          done
+          [ "$seen" -eq "$total" ] \
+            || { echo "!! the shards cover $seen cores, the recipe offers $total" >&2; exit 1; }
+
+          echo "shards=$(seq 0 $((n - 1)) | jq -Rrn '[inputs|tonumber]|tostring')" >> "$GITHUB_OUTPUT"
+
+      # ⚠ RESOLVED ONCE, HERE, AND PASSED DOWN. If each shard asked for "the newest successful
+      # frontend run" independently, a frontend build that lands mid-matrix would give some
+      # shards one set of libretro-common objects and the rest another - and the resulting
+      # cores would be linked against two different copies of the frontend's utility library
+      # with nothing anywhere saying so.
+      - name: Resolve the frontend run
+        id: frontend
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PINNED: ${{ github.event.inputs.frontend-run-id }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PINNED" ]; then
+            id="$PINNED"
+          else
+            id="$(gh run list --workflow frontend.yml --status success \
+                    --branch ps4-support --limit 1 --json databaseId \
+                    --jq '.[0].databaseId // empty')"
+          fi
+          [ -n "$id" ] || {
+            echo "!! no successful frontend.yml run to take libretro-common objects from." >&2
+            echo "   Cores cannot be built before the frontend - run frontend.yml first." >&2
+            exit 1; }
+          echo "== frontend run $id"
+          echo "run-id=$id" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------------------
+  shard:
+    needs: plan
+    runs-on: ubuntu-latest
+    # ⚠ actions:read IS WHAT MAKES THE CROSS-WORKFLOW DOWNLOAD POSSIBLE. download-artifact with
+    # a run-id from frontend.yml goes through the Actions API, not through this run's own
+    # artifact scope; without it the step fails with a 403 that reads like a missing artifact.
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout libretro-super
+        uses: actions/checkout@v4
+        with:
+          repository: libretro/libretro-super
+          ref: ${{ env.LIBRETRO_SUPER_REF }}
+          path: .libretro-super
+
+      # ⚠ THE WORK DIRECTORY GOES ON THE TEMP DISK IF THERE IS ONE. / has about 14 GB free on a
+      # GitHub-hosted runner and /mnt has tens of gigabytes of ephemeral storage. Running out of
+      # disk mid-sweep does not announce itself: it surfaces as a compile error in whichever
+      # core happened to be writing at the time, which reads as a broken core.
+      - name: Pick a work directory
+        id: work
+        run: |
+          set -euo pipefail
+          if sudo mkdir -p /mnt/ps4-cores 2>/dev/null && sudo chown "$(id -u):$(id -g)" /mnt/ps4-cores; then
+            work=/mnt/ps4-cores
+          else
+            work="${RUNNER_TEMP}/ps4-cores"; mkdir -p "$work"
+          fi
+          echo "work=$work" >> "$GITHUB_OUTPUT"
+          df -h "$work" /
+
+      - name: Orbis toolchain
+        uses: ./.github/actions/orbis-toolchain
+        with:
+          sdk-tag: ${{ env.OPENORBIS_SDK_TAG }}
+          orbis-compat-ref: ${{ env.ORBIS_COMPAT_REF }}
+          mesa-release: ${{ env.MESA_RELEASE }}
+
+      # The other half of the edge in this file's header. The artifact is named
+      # frontend-common-objects-<sha8>, so it is matched by pattern rather than by name, and
+      # upload-artifact rooted it at libretro-common/ - so it restores straight back into place.
+      - name: Frontend libretro-common objects
+        uses: actions/download-artifact@v4
+        with:
+          pattern: frontend-common-objects-*
+          merge-multiple: true
+          path: libretro-common
+          run-id: ${{ needs.plan.outputs.frontend-run-id }}
+          github-token: ${{ github.token }}
+
+      - name: Assert the objects arrived
+        run: |
+          set -euo pipefail
+          n="$(find libretro-common -name '*.o' -type f | wc -l)"
+          [ "$n" -gt 0 ] || {
+            echo "!! the frontend artifact restored no .o files into libretro-common/." >&2
+            echo "   Every core will fail to link against retro_vfs_*_impl and cdrom_*." >&2
+            exit 1; }
+          echo "== $n libretro-common objects"
+
+      - name: Build shard ${{ matrix.shard }}
+        env:
+          WORK: ${{ steps.work.outputs.work }}
+        run: |
+          set -euo pipefail
+          mapfile -t cores < <(ps4/shard-cores.sh --recipe "$RECIPE" "${{ matrix.shard }}" "$SHARDS")
+          [ "${#cores[@]}" -gt 0 ] || { echo "!! shard ${{ matrix.shard }} is empty" >&2; exit 1; }
+          echo "== ${#cores[@]} cores: ${cores[*]}"
+          # ⚠ --drop-clones EXPLICITLY, even though CI=true already selects it. The plan's rule
+          # is "never pass --keep in CI"; saying the positive out loud costs one word and
+          # survives someone changing what the default means.
+          ps4/build-cores.sh --recipe "$RECIPE" --work "$WORK" --out "$WORK/out" \
+            --drop-clones --jobs "$(getconf _NPROCESSORS_ONLN)" "${cores[@]}"
+          df -h "$WORK" /
+
+      # ⚠ ASSERT ON ARTEFACTS. A green run that produced nothing usable is the failure this
+      # project has already paid for, and for a core it has a specific shape: several cores
+      # compile with -flto, so their objects are LLVM bitcode; ld.lld runs LTO, finds no entry
+      # point in a module, internalises everything, and reports success. snes9x2010 once linked
+      # to a 915 KiB ELF with ZERO retro_* symbols that way.
+      #
+      # ⚠ AND THE CHECK IS ON THE .elf, NOT ON THE .prx, BECAUSE THE .prx CANNOT BE READ.
+      # create-fself emits a fake-signed SELF: `file` calls it "data", llvm-nm refuses it, and
+      # `strings` does not even contain the symbol names. The ELF beside it in the work
+      # directory is the same link, one step earlier, and is the last readable form.
+      - name: Assert every module has retro_run
+        env:
+          WORK: ${{ steps.work.outputs.work }}
+        run: |
+          set -euo pipefail
+          bad=0; n=0
+          for prx in "$WORK"/out/*.prx; do
+            [ -e "$prx" ] || { echo "!! shard ${{ matrix.shard }} built no cores at all" >&2; exit 1; }
+            name="$(basename "$prx" .prx)"; core="${name%_libretro}"
+            elf="$WORK/$core.elf"
+            if [ ! -f "$elf" ]; then
+              echo "!! $name.prx exists but $elf does not - cannot verify its ABI" >&2
+              bad=$((bad + 1)); continue
+            fi
+            # No `grep -q` in a pipeline under pipefail: it exits on the first match, SIGPIPEs
+            # llvm-nm, and fails the pipeline for cores whose symbol table outgrows the pipe
+            # buffer. That false verdict scales with the size of the core - it condemns the big
+            # ones. Capture first, test after.
+            syms="$(llvm-nm "$elf" 2>/dev/null || true)"
+            case "$syms" in
+              *" T retro_run"*) n=$((n + 1)) ;;
+              *) echo "!! $name has no retro_run - it is not a core, whatever it built" >&2
+                 bad=$((bad + 1)) ;;
+            esac
+          done
+          [ "$bad" -eq 0 ] || { echo "!! $bad module(s) failed the ABI check" >&2; exit 1; }
+          echo "== $n modules carry retro_run"
+
+      # Zips and the index fragment, computed from the exact bytes about to be uploaded.
+      # The fragment is named per shard: eight files called .index-extended would collide the
+      # moment the publish job merges them into one directory.
+      - name: Zip and index
+        env:
+          WORK: ${{ steps.work.outputs.work }}
+        run: |
+          set -euo pipefail
+          ps4/make-index.sh --in "$WORK/out" --out out \
+            --index "index-fragment-${{ matrix.shard }}.txt"
+          cat "out/index-fragment-${{ matrix.shard }}.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cores-shard-${{ matrix.shard }}
+          path: |
+            out/*.prx.zip
+            out/index-fragment-${{ matrix.shard }}.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Build report
+        if: always()
+        env:
+          WORK: ${{ steps.work.outputs.work }}
+        run: |
+          {
+            echo "### shard ${{ matrix.shard }}"
+            echo
+            echo '```'
+            cat "$WORK/out/cores.manifest" 2>/dev/null || echo "(no manifest)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------------------
+  # ⚠ OUTSIDE THE MATRIX, AND NOT AS A CONVENIENCE. mednafen_psx_hw is in the recipe, so the
+  # harness would happily clone UPSTREAM Beetle and write it to
+  # mednafen_psx_hw_libretro.prx - the same filename the hand-ported fork uses. That has
+  # already happened once: Spyro went from the recompiler and the Vulkan renderer back to
+  # whatever platform=unix leaves you with, and it read as a mysterious slowdown rather than as
+  # a file being replaced. PS4_CORE_FORKS stops the harness writing it and ps4/shard-cores.sh
+  # keeps it out of the matrix entirely; this job is where it actually comes from.
+  #
+  # It needs no frontend objects: the fork carries its own `platform=orbis` arm and links its
+  # own libretro-common, which is exactly why it is a fork.
+  fork:
+    if: github.repository == 'orbis-ports/RetroArch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout the Beetle PSX fork
+        uses: actions/checkout@v4
+        with:
+          repository: orbis-ports/beetle-psx-libretro
+          ref: ps4-support
+          path: .beetle
+          token: ${{ github.token }}
+
+      - name: Orbis toolchain
+        uses: ./.github/actions/orbis-toolchain
+        with:
+          sdk-tag: ${{ env.OPENORBIS_SDK_TAG }}
+          orbis-compat-ref: ${{ env.ORBIS_COMPAT_REF }}
+          mesa-release: ${{ env.MESA_RELEASE }}
+
+      - name: Build mednafen_psx_hw
+        working-directory: .beetle
+        run: |
+          set -euo pipefail
+          ps4/build.sh --out "${GITHUB_WORKSPACE}/fork-out" --jobs "$(getconf _NPROCESSORS_ONLN)"
+
+      # ⚠ THE ABI CHECK HERE IS ON THE OBJECTS, NOT ON AN .elf, AND THE ASYMMETRY IS REAL.
+      # The fork's build.sh links in a mktemp directory it deletes on exit, so there is no ELF
+      # left to read and the .prx is an unreadable SELF. The objects survive in the checkout,
+      # and retro_run being defined in one of them is a weaker statement than it surviving the
+      # link - it would not catch an LTO wipe. The fork does not build with -flto today, which
+      # is why this is acceptable and not merely convenient.
+      - name: Assert the fork module has retro_run
+        working-directory: .beetle
+        run: |
+          set -euo pipefail
+          prx="${GITHUB_WORKSPACE}/fork-out/mednafen_psx_hw_libretro.prx"
+          [ -f "$prx" ] || { echo "!! ps4/build.sh reported success but wrote no .prx" >&2; exit 1; }
+          syms="$(find . -name '*.o' -type f -print0 \
+                  | xargs -0 -r llvm-nm --defined-only 2>/dev/null || true)"
+          case "$syms" in
+            *" T retro_run"*) : ;;
+            *) echo "!! no object in the fork defines retro_run" >&2; exit 1 ;;
+          esac
+          echo "== $prx $(stat -c%s "$prx") bytes"
+
+      - name: Zip and index
+        run: |
+          set -euo pipefail
+          ps4/make-index.sh --in fork-out --out out --index index-fragment-fork.txt
+          cp -f fork-out/mednafen_psx_hw_libretro.info out/ 2>/dev/null || true
+          cat out/index-fragment-fork.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cores-shard-fork
+          path: |
+            out/*.prx.zip
+            out/*.info
+            out/index-fragment-fork.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------------------
+  publish:
+    needs: [plan, shard, fork]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect every shard
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cores-shard-*
+          merge-multiple: true
+          path: dist
+
+      # ⚠ CONCATENATE, NEVER REGENERATE. The CRCs in these fragments were computed from the
+      # exact archives sitting beside them; create-fself is not byte-reproducible, so an index
+      # rebuilt here from a fresh build of the same commit would describe different files.
+      # Nothing would error - every core would simply re-download on every visit to the Core
+      # Downloader, forever.
+      - name: Assemble .index-extended
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          frags=(dist/index-fragment-*.txt)
+          [ "${#frags[@]}" -gt 0 ] || { echo "!! no index fragments were uploaded" >&2; exit 1; }
+          echo "== ${#frags[@]} fragments"
+          LC_ALL=C sort -k3,3 "${frags[@]}" > dist/.index-extended
+          rm -f "${frags[@]}"
+
+          lines="$(wc -l < dist/.index-extended)"
+          zips="$(find dist -maxdepth 1 -name '*.prx.zip' -type f | wc -l)"
+          echo "== $lines index lines, $zips archives"
+          [ "$lines" -eq "$zips" ] || {
+            echo "!! the index describes $lines cores and the release would carry $zips." >&2
+            echo "   A shard produced archives it did not index, or the other way round." >&2
+            exit 1; }
+
+          # One filename twice would give the console two entries with two CRCs for one file,
+          # and which one it believes depends on parse order.
+          dupes="$(awk '{print $3}' dist/.index-extended | LC_ALL=C sort | uniq -d)"
+          [ -z "$dupes" ] || { echo "!! duplicate filenames in the index:" >&2; echo "$dupes" >&2; exit 1; }
+
+          # Every field, against the parser in core_updater_list.c:780-870: exactly three
+          # space-separated fields, a date its strtoul walk accepts, and eight hex digits that
+          # string_hex_to_unsigned will not turn into 0 (which that parser treats as a bad line).
+          # ⚠ THE FILENAME CHARACTER CLASS IS NOT [A-Za-z0-9_]. `mesen-s_libretro.prx.zip` is a
+          # real core in this recipe and the hyphen is the only one today - a stricter pattern
+          # rejects it and the index comes out one core short of the archives, which the count
+          # check above then reports as a shard that failed. What actually matters is that the
+          # name carries no SPACE: core_updater_list.c:812-848 splits the line on runs of
+          # spaces, so a space in field three silently truncates the filename.
+          bad="$(awk 'NF != 3 \
+                      || $1 !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/ \
+                      || $2 !~ /^[0-9a-f]{8}$/ || $2 == "00000000" \
+                      || $3 !~ /^[A-Za-z0-9][A-Za-z0-9._+-]*_libretro\.prx\.zip$/ {print FNR": "$0}' \
+                      dist/.index-extended)"
+          [ -z "$bad" ] || { echo "!! lines RetroArch would drop:" >&2; echo "$bad" >&2; exit 1; }
+
+      # ⚠ RE-VERIFY WITHOUT REBUILDING, which is the only kind of verification available here.
+      # The .prx files are gone; the zips are not. Every published CRC is checked against the
+      # module unpacked out of the archive that will carry it.
+      - name: Verify the index against the archives
+        run: ps4/make-index.sh --out dist --verify
+
+      - name: Summary
+        run: |
+          {
+            echo "### .index-extended"
+            echo
+            echo "\`$(wc -l < dist/.index-extended)\` cores, \`$(du -sh dist | cut -f1)\`"
+            echo
+            echo '```'
+            cat dist/.index-extended
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cores-index
+          path: dist/.index-extended
+          if-no-files-found: error
+
+      # ⚠ STALE ASSETS ARE DELETED BEFORE THE NEW ONES GO UP. This tag is rolling, and
+      # action-gh-release overwrites what it uploads but never removes what it does not. A core
+      # dropped from the recipe would otherwise sit in the release forever, unlisted in the
+      # index and downloadable by anyone who guessed the URL.
+      - name: Prune assets the new index does not name
+        if: github.event.inputs.dry-run != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view cores --json assets --jq '.assets[].name' 2>/dev/null > /tmp/have || : > /tmp/have
+          awk '{print $3}' dist/.index-extended > /tmp/want
+          echo ".index-extended" >> /tmp/want
+          while read -r a; do
+            [ -n "$a" ] || continue
+            case "$a" in *.info) continue ;; esac
+            if ! grep -Fxq -- "$a" /tmp/want; then
+              echo "== dropping stale asset $a"
+              gh release delete-asset cores "$a" --yes
+            fi
+          done < /tmp/have
+
+      # ⚠ THE LEADING DOT IS THE WHOLE DISTRIBUTION MODEL AND IT IS STILL UNPROVEN (spike S1).
+      # RetroArch builds every download URL as <buildbot_url>/<filename>, taking the filenames
+      # out of .index-extended in that same directory - there is no way to split the index from
+      # the payload across two hosts. If a Release asset cannot keep a leading dot, the whole
+      # thing moves to Pages. The verification step below answers that question on the first
+      # real run instead of leaving it to someone with a console.
+      - name: Release
+        if: github.event.inputs.dry-run != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: cores
+          name: Cores
+          body: |
+            Libretro cores for the PlayStation 4, built by `.github/workflows/cores.yml`.
+
+            Rolling tag: the assets are replaced on every publish. `.index-extended` is the
+            listing RetroArch's Core Downloader reads - point `network_buildbot_url` at the
+            directory these assets are served from.
+          files: |
+            dist/.index-extended
+            dist/*.prx.zip
+            dist/*.info
+          fail_on_unmatched_files: false
+
+      - name: Fetch the published index back (spike S1)
+        if: github.event.inputs.dry-run != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          url="$(gh release view cores --json assets \
+                 --jq '.assets[] | select(.name == ".index-extended") | .url')"
+          if [ -z "$url" ]; then
+            echo "!! the release has no asset named .index-extended." >&2
+            echo "   S1 is answered and the answer is no: Releases will not keep a leading" >&2
+            echo "   dot, and the index and the zips must share a directory. Move the" >&2
+            echo "   distribution to Pages, or rename the listing on both sides." >&2
+            exit 1
+          fi
+          curl -sSfL "$url" -o /tmp/roundtrip
+          diff dist/.index-extended /tmp/roundtrip \
+            || { echo "!! the published .index-extended is not the one that was uploaded" >&2; exit 1; }
+          echo "== S1: a Release asset does keep its leading dot, and round-trips byte for byte"

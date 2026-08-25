@@ -1905,6 +1905,38 @@
 
 #if defined(HAKCHI)
 #define DEFAULT_BUILDBOT_SERVER_URL "http://hakchicloud.com/Libretro_Cores/"
+#elif defined(ORBIS)
+/* ⚠ THIS MUST LAND IN THE SAME COMMIT AS HAVE_NETWORKING=1 IN Makefile.orbis, and the
+ * reason is what the user sees rather than what the code does.
+ *
+ * Without an arm here ORBIS falls through the whole chain - it is not __linux__, not
+ * _WIN32, not any of the consoles - to the final `#define DEFAULT_BUILDBOT_SERVER_URL ""`.
+ * An empty base URL does not disable the Core Downloader; it makes it fetch nothing and
+ * report nothing, which is a menu entry that looks broken. And the moment someone "fixes"
+ * that by borrowing the Linux/x86_64 URL - the same architecture, after all - the downloader
+ * fills with x86-64 ELF shared objects that download happily, land in the cores directory
+ * beside ours, appear in the core list and fail to load every time with no explanation.
+ * Both changes together, or neither.
+ *
+ * ⚠ AND IT IS A PLACEHOLDER UNTIL THE RELEASE HOST IS DECIDED. The index and the payloads
+ * must share one directory, because RetroArch joins each filename from .index-extended to
+ * this base URL - it never stores a URL per core. Whichever host wins that argument, this is
+ * the one place the answer goes.
+ *
+ * Override it for a bring-up test without editing this file:
+ *
+ *     make -f Makefile.orbis ORBIS_BUILDBOT_URL=http://192.168.100.1:8000/ ...
+ *
+ * ⚠ http, NOT https, ON PURPOSE. TLS is phase 5b (HAVE_SSL in Makefile.orbis) and no
+ * certificate path exists yet, so an https URL here would fail in the handshake and produce
+ * exactly the same silent empty list. GitHub redirects http to https on both Releases and
+ * Pages, so the real URL cannot be plain http either - which is why this stays a placeholder
+ * rather than a guess at the final address.
+ */
+#ifndef ORBIS_BUILDBOT_SERVER_URL
+#define ORBIS_BUILDBOT_SERVER_URL "http://cores.orbis-ports.invalid/PLACEHOLDER-see-config.def.h/"
+#endif
+#define DEFAULT_BUILDBOT_SERVER_URL ORBIS_BUILDBOT_SERVER_URL
 #elif defined(WEBOS)
 #if defined(__arm__)
 #define DEFAULT_BUILDBOT_SERVER_URL "http://buildbot.libretro.com/nightly/webos/armv7a/latest/"
