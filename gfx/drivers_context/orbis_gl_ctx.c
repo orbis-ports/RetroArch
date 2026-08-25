@@ -257,7 +257,19 @@ static void gfx_ctx_orbis_gl_set_flags(void *data, uint32_t flags) { }
 static uint32_t gfx_ctx_orbis_gl_get_flags(void *data)
 {
    uint32_t flags = 0;
-   BIT32_SET(flags, GFX_CTX_FLAGS_NONE);
+
+   /* ⚠ THIS IS WHERE gl2 LEARNS THAT SHADERS EXIST, AND SAYING NOTHING IS NOT NEUTRAL.
+    * gl2_get_fallback_shader_type() asks the CONTEXT driver which shader languages are
+    * available - "for gl2, shader support is completely defined by the context driver shader
+    * flags" - and returns RARCH_SHADER_NONE when the answer is empty. gl2_shader_init() then
+    * logs "Couldn't find any supported shader backend! Continuing without shaders" and returns
+    * TRUE, so the driver comes up fully initialised with gl->shader NULL and draws nothing.
+    *
+    * Observed on hardware 2026-08-25: EGL up, GLES 3.1 on zink, HW render initialised, FBO
+    * supported, 133 GL entry points resolved, GoldHEN's counter showing a steady 60 fps - and a
+    * black screen with no menu, because a frame was being presented with no program to draw it
+    * with. The one flag below is the whole difference. */
+   BIT32_SET(flags, GFX_CTX_FLAGS_SHADERS_GLSL);
    return flags;
 }
 
