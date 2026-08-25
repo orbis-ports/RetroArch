@@ -5076,7 +5076,18 @@ static void *gl2_init(const video_info_t *video,
       goto error;
 #endif
 
-#if !defined(RARCH_CONSOLE) || defined(HAVE_LIBNX)
+/* ⚠ ORBIS IS A CONSOLE THAT STILL HAS TO RESOLVE, and the assumption behind this guard is what
+ * hid that. A console is expected to link its GL statically, so every entry point is a direct
+ * call and there is nothing to look up. The PlayStation 4 does link Mesa statically - and it
+ * changes nothing here, because the functions glsym_es3.h turns into __rglgen_ POINTERS are
+ * pointers whoever provides them. Left unresolved they are null, and the first one called is a
+ * jump to address zero.
+ *
+ * Observed on hardware 2026-08-25, loading GLideN64: EGL up, "OpenGL ES 3.1 Mesa 26.3.0-devel",
+ * "Couldn't find any supported shader backend" - the GLSL backend fails because its very first
+ * call goes through one of those pointers - and then SIGSEGV with rip = 0 in
+ * gl2_load_texture_image. Nothing in that sequence says "unresolved symbols". */
+#if !defined(RARCH_CONSOLE) || defined(HAVE_LIBNX) || defined(ORBIS)
    rglgen_resolve_symbols(ctx_driver->get_proc_address);
 #endif
 
