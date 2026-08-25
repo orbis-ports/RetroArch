@@ -168,7 +168,7 @@ One core proving the path works is enough for now; the rest wait for matching co
 | `vemulator` | VeMUlator | 756K | `27a062f` | untested | |
 | `virtualjaguar` | Atari - Jaguar (Virtual Jaguar) | 3,6M | `8c758ff` | untested | |
 | `x1` | Sharp X1 (X Millennium) | 1,1M | `3106aa5` | untested | |
-| `xrick` | Rick Dangerous (XRick) | 1,1M | `fcfde36` | untested | data.zip in roms/xrick/ - load the zip itself |
+| `xrick` | Rick Dangerous (XRick) | 1,1M | `fcfde36` | plays | loaded from data.zip - the first proof the archive path works here |
 
 ## Did not build — 62 cores
 

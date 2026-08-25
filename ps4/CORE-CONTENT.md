@@ -249,10 +249,12 @@ On the console at `/data/retroarch/roms/dinothawr/`; load `dinothawr.game`.
 
 ## ⚠ Two things this list cannot tell you
 
-**A declared format is not a working format.** `supported_extensions` is what the core accepts on
-a working platform. Compressed formats (`.zip`, `.chd`, `.7z`) lean on code paths this port has
-never exercised, so if a core refuses a `.zip` try the bare file before concluding the core is
-broken.
+**A declared format is not a working format** - though `.zip` now is. That warning stood until
+`xrick` played straight out of `data.zip` on 2026-08-25: the core declares `zip` as its only
+extension and RetroArch read it, so libretro-common's archive reader works on this console. The
+starter corpus is still extracted, and `snes/Super Mario World.zip` still sits beside the `.smc`
+for the same reason - one proof is not the same as a tested path, and `.chd` and `.7z` remain
+unexercised.
 
 **Nothing here has been run.** Every core in this list built and linked and that is all that is
 known about it - see `ps4/CORE-STATUS.md`, where every row still says `untested`.
