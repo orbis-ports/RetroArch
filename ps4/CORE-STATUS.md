@@ -81,7 +81,7 @@ One core proving the path works is enough for now; the rest wait for matching co
 | `crocods` | Amstrad - CPC (CrocoDS) | 1,3M | `a9c63b2` | untested | |
 | `desmume2015` | Nintendo - DS (DeSmuME 2015) | 5,3M | `422b688` | untested | |
 | `dice` | Arcade (DICE) | 8,6M | `b11714f` | blocked | needs a romset of the version this core expects - not a port problem; see CORE-CONTENT.md |
-| `dinothawr` | Dinothawr | 1,9M | `601063d` | untested | |
+| `dinothawr` | Dinothawr | 1,9M | `601063d` | plays | data from the core's own repository, in roms/dinothawr/ |
 | `doublecherrygb` | doublecherrygb | 2,2M | `1587acd` | untested | |
 | `ecwolf` | Wolfenstein 3D (ECWolf) | 2,7M | `0cccd9a` | untested | |
 | `fbalpha2012` | Arcade (FB Alpha 2012) | 28M | `0ce3153` | blocked | needs a romset of the version this core expects - not a port problem; see CORE-CONTENT.md |
@@ -168,7 +168,7 @@ One core proving the path works is enough for now; the rest wait for matching co
 | `vemulator` | VeMUlator | 756K | `27a062f` | untested | |
 | `virtualjaguar` | Atari - Jaguar (Virtual Jaguar) | 3,6M | `8c758ff` | untested | |
 | `x1` | Sharp X1 (X Millennium) | 1,1M | `3106aa5` | untested | |
-| `xrick` | Rick Dangerous (XRick) | 1,1M | `fcfde36` | untested | |
+| `xrick` | Rick Dangerous (XRick) | 1,1M | `fcfde36` | untested | data.zip in roms/xrick/ - load the zip itself |
 
 ## Did not build — 62 cores
 
