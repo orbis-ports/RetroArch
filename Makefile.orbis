@@ -53,6 +53,24 @@ ORBIS_MESA_BUILD   ?= $(ORBIS_MESA_SRC)/build-orbis
 RADV_ARCHIVE       := $(ORBIS_MESA_BUILD)/src/amd/vulkan/libvulkan_radeon.a
 WHOLE_ARCHIVE_LINK ?= 0
 
+# ⚠ PHASE 8: OPENGL ES, AND IT IS OPENGL ON TOP OF THE SAME RADV. There is no GL hardware path
+# on this console. With HAVE_OPENGLES=1 the frontend links Mesa's EGL and GLES dispatch over
+# zink, which translates to Vulkan and presents through the same wsi_orbis flip the Vulkan
+# driver uses:
+#
+#     eglSwapBuffers -> kopper -> vkQueuePresentKHR -> VK_EXT_headless_surface -> wsi_orbis
+#
+#   make -f Makefile.orbis HAVE_VULKAN=1 HAVE_OPENGLES=1 ...
+#
+# ⚠ IT REQUIRES HAVE_VULKAN=1 AND NOT AS A CONVENIENCE: zink is a Vulkan client, so the ICD has
+# to be in the link whether or not the Vulkan VIDEO driver is the one running.
+#
+# ⚠ WHAT IT IS FOR. mupen64plus-next's fast renderer is GLideN64 with the HLE RSP, and without a
+# GL context the only pairing available is ParaLLEl-RDP with the LLE RSP - 22-25 fps measured, of
+# which the LLE RSP alone is 24 ms against a 16.7 ms budget. See ps4/HANDOFF.md; that measurement
+# is why this arm exists.
+HAVE_OPENGLES      ?= 0
+
 # TITLE_ID is AAAA00000 - four letters, five digits - because param.sfo and the content id
 # both embed it and make-pkg.sh rejects anything else. CONTENT_LABEL is <=16 chars.
 PS4_TITLE_ID       := RTRA00001
@@ -159,6 +177,18 @@ else
   HAVE_FILTERS_BUILTIN      := 1
   HAVE_STATIC_VIDEO_FILTERS := 1
   HAVE_STATIC_AUDIO_FILTERS := 1
+  ifeq ($(HAVE_OPENGLES),1)
+    ifneq ($(HAVE_VULKAN),1)
+      $(error HAVE_OPENGLES=1 needs HAVE_VULKAN=1 - zink is a Vulkan client and the ICD must be linked.)
+    endif
+    # gl2.c is the GLES driver; HAVE_OPENGL is what gates it, HAVE_OPENGLES is what makes it ES.
+    HAVE_OPENGL             := 1
+    HAVE_EGL                := 1
+    # ⚠ GLSL IS NOT OPTIONAL ONCE GL IS ON, for the same reason slang is not optional with
+    # Vulkan: gl2.c calls the shader backend unconditionally and gl_glsl.c is what answers.
+    HAVE_GLSL               := 1
+    HAVE_SHADERS_COMMON     := 1
+  endif
   ifeq ($(HAVE_VULKAN),1)
     HAVE_VULKAN             := 1
     # ⚠ SLANG IS NOT OPTIONAL ONCE VULKAN IS ON. gfx/drivers/vulkan.c calls
@@ -228,6 +258,30 @@ ifeq ($(HAVE_VULKAN),1)
   RADV_LINK := -Wl,--whole-archive $(RADV_ARCHIVE) -Wl,--no-whole-archive
 endif
 
+ifeq ($(HAVE_OPENGLES),1)
+  GALLIUM_ARCHIVE := $(wildcard $(ORBIS_MESA_BUILD)/src/gallium/targets/dri/libgallium-*.a)
+  ifeq ($(GALLIUM_ARCHIVE),)
+    $(error No gallium archive under $(ORBIS_MESA_BUILD)/src/gallium/targets/dri - build mesa-ps4 with the OpenGL arm.)
+  endif
+  # ⚠ ONE GROUP, AND RADV GOES INSIDE IT. zink calls into the ICD and the ICD's own runtime
+  # calls back out, so the archives are mutually recursive and a single pass does not resolve
+  # them. This is mesa-ps4's own link line (build-support/orbis/tools/gllinkprobe.sh), which
+  # exists precisely so a title does not have to rediscover it.
+  ORBIS_GL_LINK := -Wl,--start-group \
+                   $(ORBIS_MESA_BUILD)/src/egl/libEGL.a \
+                   $(ORBIS_MESA_BUILD)/src/mesa/glapi/es2api/libGLESv2.a \
+                   $(ORBIS_MESA_BUILD)/src/mesa/glapi/es1api/libGLESv1_CM.a \
+                   $(GALLIUM_ARCHIVE) \
+                   -Wl,--whole-archive $(RADV_ARCHIVE) -Wl,--no-whole-archive \
+                   -Wl,--end-group
+  # ⚠ libgallium CARRIES ITS OWN COPY OF PARTS OF THE VULKAN RUNTIME, because zink is a Vulkan
+  # client - vk_enum_to_str.c ends up in both archives. Without this the link fails on symbols
+  # that are genuinely defined twice and identically.
+  ORBIS_GL_LDFLAGS := -Wl,--allow-multiple-definition
+  # RADV is already inside the group above; adding it twice is a thousand duplicate symbols.
+  RADV_LINK :=
+endif
+
 # ⚠ THE LOG CHANNEL IS ADOPTED BY NAMING ITS SOURCE, which is how orbis-compat/optional
 # is meant to be used: it is POLICY, not correction, so it is deliberately NOT inside
 # liborbis-compat.a. ps4_app.cpp decides that a dying process idles rather than returns
@@ -242,6 +296,12 @@ ORBIS_COMPAT_OBJ := ps4/oc_ps4_app.o ps4/oc_netlog.o ps4/ps4_log.o ps4/ps4_mem.o
 # file was sitting right there, simply never compiled.
 ifeq ($(HAVE_VULKAN),1)
   ORBIS_COMPAT_OBJ += ps4/oc_vkloader.o ps4/oc_vkthunks.o
+endif
+
+# Makefile.common has no arm for this console, so the context driver is named here - the same
+# way gfx/drivers_context/orbis_vk_ctx.o is picked up by the ORBIS branch it does have.
+ifeq ($(HAVE_OPENGLES),1)
+  OBJ += gfx/drivers_context/orbis_gl_ctx.o
 endif
 OBJ += $(ORBIS_COMPAT_OBJ)
 
@@ -325,8 +385,21 @@ ifeq ($(HAVE_VULKAN),1)
   PS4_LIBS += -lSceGnmDriver
 endif
 
+# ⚠ THE LINKER SCRIPT CHANGES WHEN MESA'S GL COMES IN, AND GETTING IT WRONG PRODUCES A BINARY
+# THE CONSOLE REFUSES TO START WITH NOTHING IN ANY LOG. Mesa builds with -fdata-sections, so
+# .tdata.* arrives as an orphan section; under the SDK's own link.x lld places it ahead of
+# .data.rel.ro and the ALIGN(0x4000) that should start the RW segment stops starting anything.
+# The loader then says "segment #1 is not page aligned" and the user sees "Cannot start the
+# application". orbis-compat's script is the same one with that hole closed - see the note in
+# mesa-ps4's build-support/orbis/tools/gllinkprobe.sh, which paid for this discovery.
+ifeq ($(HAVE_OPENGLES),1)
+  ORBIS_LINK_SCRIPT := $(ORBIS_COMPAT_DIR)/cmake/orbis-tls.ld
+else
+  ORBIS_LINK_SCRIPT := $(TOOLCHAIN)/link.x
+endif
+
 LDFLAGS := -nostdlib -fuse-ld=lld -pie --target=x86_64-pc-freebsd12-elf \
-           -Wl,-m,elf_x86_64 -Wl,--script=$(TOOLCHAIN)/link.x \
+           -Wl,-m,elf_x86_64 -Wl,--script=$(ORBIS_LINK_SCRIPT) $(ORBIS_GL_LDFLAGS) \
            -Wl,--eh-frame-hdr -Wl,--no-rosegment \
            -L$(TOOLCHAIN)/lib -Lcores -Lbuild
 
@@ -335,7 +408,7 @@ ifeq ($(WHOLE_ARCHIVE_LINK),1)
   WHOLE_END   := -Wl,--no-whole-archive
 endif
 
-LIBS := $(CORE_LIB) $(RADV_LINK) $(PS4_LIBS) \
+LIBS := $(CORE_LIB) $(ORBIS_GL_LINK) $(RADV_LINK) $(PS4_LIBS) \
         -Wl,--whole-archive $(ORBIS_COMPAT_LIB) -Wl,--no-whole-archive \
         -lc -lkernel -lc++ -lc++abi -lunwind $(TOOLCHAIN)/lib/crt1.o
 
