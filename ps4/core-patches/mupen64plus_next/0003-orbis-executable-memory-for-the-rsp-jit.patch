@@ -1,0 +1,89 @@
+diff --git a/mupen64plus-rsp-paraLLEl/jit_allocator.cpp b/mupen64plus-rsp-paraLLEl/jit_allocator.cpp
+index 5100e60..60e50ca 100644
+--- a/mupen64plus-rsp-paraLLEl/jit_allocator.cpp
++++ b/mupen64plus-rsp-paraLLEl/jit_allocator.cpp
+@@ -22,10 +22,33 @@ static constexpr bool huge_va = std::numeric_limits<size_t>::max() > 0x100000000
+ // On 64-bit systems, we will never allocate more than one block, this is important since we must ensure that
+ // relative jumps are reachable in 32-bits.
+ // We won't actually allocate 1 GB on 64-bit, but just reserve VA space for it, which we have basically an infinite amount of.
++#if defined(__ORBIS__)
++// ⚠ THE RESERVE-AND-COMMIT SPLIT THIS FILE IS BUILT AROUND DOES NOT EXIST ON THIS CONSOLE.
++// Executable pages here come from direct memory, and direct memory hands out PHYSICAL pages at
++// allocation time - there is no PROT_NONE reservation to grow into later. So the number below is
++// not a ceiling to reserve, it is memory that is really taken, and on a console with no swap
++// asking for the gigabyte above would simply fail.
++//
++// 64 MiB, and the single-block invariant in the comment above is the reason it is one number
++// rather than a growth policy: the RSP's instruction memory is 4 KiB, so this is a very large
++// arena for what compiles into it, and staying inside one block keeps every relative jump the
++// JIT emits reachable by construction. If it is ever exhausted the abort in allocate_code below
++// fires and says so, which is a better failure than a second block two gigabytes away.
++static constexpr size_t block_size = 64 * 1024 * 1024;
++// RetroArch/ps4/orbis_exec_mem.c, linked in by the port's build harness.
++extern "C" void *orbis_exec_mem_alloc(size_t size);
++extern "C" void  orbis_exec_mem_free(void *addr, size_t size);
++#else
+ static constexpr size_t block_size = huge_va ? (1024 * 1024 * 1024) : (2 * 1024 * 1024);
++#endif
+ Allocator::~Allocator()
+ {
+-#ifdef _WIN32
++#if defined(__ORBIS__)
++	// munmap alone would leave the physical pages allocated: direct memory is released by the
++	// offset the allocator returned, which is a second handle this file never sees.
++	for (auto &block : blocks)
++		orbis_exec_mem_free(block.code, block.size);
++#elif defined(_WIN32)
+ 	for (auto &block : blocks)
+ 		VirtualFree(block.code, 0, MEM_RELEASE);
+ #else
+@@ -46,7 +69,12 @@ static size_t align_page(size_t offset)
+ 
+ static bool commit_read_write(void *ptr, size_t size)
+ {
+-#ifdef _WIN32
++#if defined(__ORBIS__)
++	// The whole arena was mapped read-write and promoted to read-write-execute once, and proved
++	// by running six bytes in it. There is nothing left to commit.
++	(void)ptr; (void)size;
++	return true;
++#elif defined(_WIN32)
+ 	return VirtualAlloc(ptr, size, MEM_COMMIT, PAGE_READWRITE) == ptr;
+ #else
+ 	return mprotect(ptr, size, PROT_READ | PROT_WRITE) == 0;
+@@ -55,7 +83,16 @@ static bool commit_read_write(void *ptr, size_t size)
+ 
+ static bool commit_execute(void *ptr, size_t size)
+ {
+-#ifdef _WIN32
++#if defined(__ORBIS__)
++	// ⚠ AND THIS ONE IS NOT MERELY REDUNDANT, IT WOULD BE HARMFUL. Upstream sets PROT_EXEC
++	// ALONE, dropping write from a range it will write to again the next time the RSP's
++	// instruction memory changes and a block is recompiled. That works where protections can be
++	// flipped back and forth freely; here the promotion to executable is granted once, at a
++	// moment chosen by policy (see orbis_exec_mem_alloc), and asking to narrow it invites a
++	// refusal we could not undo. The arena stays read-write-execute for its lifetime.
++	(void)ptr; (void)size;
++	return true;
++#elif defined(_WIN32)
+ 	DWORD old_protect;
+ 	return VirtualProtect(ptr, align_page(size), PAGE_EXECUTE, &old_protect) != 0;
+ #else
+@@ -104,7 +141,16 @@ void *Allocator::allocate_code(size_t size)
+ Allocator::Block Allocator::reserve_block(size_t size)
+ {
+ 	Block block;
+-#ifdef _WIN32
++#if defined(__ORBIS__)
++	// ⚠ AND THIS IS WHERE THE CORE USED TO DIE. mmap with MAP_ANONYMOUS returns failure on this
++	// kernel - MAP_ANON is 0x1002 here and the SDK's musl header says 0x0020 - so block.code came
++	// back as MAP_FAILED, allocate_code handed a null to init_jit_thunks, and the constructor of
++	// a global RSP::JIT::CPU called abort() while the MENU was reading the core's name. It read
++	// as "the core crashes on load" with no message at all.
++	block.code = static_cast<uint8_t *>(orbis_exec_mem_alloc(size));
++	block.size = block.code ? size : 0;
++	return block;
++#elif defined(_WIN32)
+ 	block.code = static_cast<uint8_t *>(VirtualAlloc(nullptr, size, MEM_RESERVE, PAGE_READWRITE));
+ 	block.size = size;
+ 	return block;

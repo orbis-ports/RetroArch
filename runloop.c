@@ -683,8 +683,19 @@ static dylib_t load_dynamic_core(const char *path, char *s,
 static dylib_t libretro_get_system_info_lib(const char *path,
       struct retro_system_info *sysinfo, bool *load_no_content)
 {
-   dylib_t lib = dylib_load(path);
+   dylib_t lib;
    void (*proc)(struct retro_system_info*);
+
+   /* ⚠ THIS PATH LOADS A CORE AND SAYS NOTHING, which is fine where dlopen cannot fail
+    * interestingly and misleading where it can. On the PlayStation 4 a module's global
+    * constructors run from dylib_load (libretro-common/dynamic/dylib.c), so a core can take
+    * the process down HERE - while the menu is merely reading its name - and the only line
+    * in the log about loading a core is the one runloop_init_libretro_symbols prints much
+    * later. mupen64plus-next crashed in exactly this spot and read as "no core was loaded".
+    * Kept at DBG so a menu that walks a hundred cores does not fill the log. */
+   RARCH_DBG("[Core] Reading system info from: \"%s\".\n", path);
+
+   lib = dylib_load(path);
 
    if (!lib)
       return NULL;

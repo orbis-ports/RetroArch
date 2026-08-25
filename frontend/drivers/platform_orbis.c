@@ -33,6 +33,8 @@
  * ps4/PLAN.md section 1 for why none of the old port survived. */
 #include <signal.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <pthread.h>
 
 #include <orbis/libkernel.h>
@@ -283,11 +285,68 @@ static void frontend_orbis_apply_env_file(const char *path)
    ps4_log("env: %d line(s) applied from %s", applied, path);
 }
 
+/* ⚠ WITHOUT THIS, A CORE THAT ABORTS DOES IT IN SILENCE - AND ABORTING IS HOW C++ CORES FAIL.
+ *
+ * assert(), libc++abi's abort_message() and the unwinder's own diagnostics all write to stderr
+ * and then call abort(). Every one of those messages says exactly what went wrong: "terminating
+ * with uncaught exception of type ...", the file and line of a failed assertion, "libc++abi:
+ * terminating". On this console fd 2 goes nowhere, so what reaches the log is a fatal signal
+ * with SIGABRT in %rsi and a backtrace that stops at abort() - a crash with the explanation
+ * thrown away.
+ *
+ * ⚠ AND IT HAS TO BE THE FILE DESCRIPTOR, NOT stderr. Every image here carries its own static
+ * musl, so a core's `stderr` is a different FILE from the frontend's and setvbuf or freopen on
+ * ours would not touch it - the same reason setenv() in the eboot is invisible to a .prx. File
+ * DESCRIPTORS are the process's, so dup2 onto 2 catches the module's writes as well as ours.
+ * musl leaves stderr unbuffered, which is what makes a message written moments before abort()
+ * survive it.
+ *
+ * Truncated on every run: this answers "what did the thing that just died say", and a file that
+ * grows across boots answers it worse.
+ */
+static void frontend_orbis_capture_stderr(void)
+{
+   static const char *path = "/data/retroarch-stderr.log";
+   int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+
+   if (fd < 0)
+   {
+      ps4_log("stderr: cannot open %s (errno %d) - a core that aborts will do it silently",
+            path, errno);
+      return;
+   }
+
+   /* stdout too. Nothing here is expected to use it, but a core that printf()s its way through
+    * a failure is a core telling us something, and the alternative destination is nowhere. */
+   if (dup2(fd, 2) < 0 || dup2(fd, 1) < 0)
+   {
+      /* ⚠ MEASURED 2026-08-25: errno 1, EPERM. The descriptor table is not ours to rearrange on
+       * this kernel, so this whole approach is unavailable and the file must not be left behind -
+       * an empty retroarch-stderr.log beside a crash reads as "the core said nothing", which is
+       * the opposite of what happened. What replaced it catches the message before it is ever
+       * written to a descriptor: ps4/orbis_abort_report.c, linked into every core, defines
+       * abort_message and __assert_fail itself. */
+      ps4_log("stderr: dup2 onto 1/2 refused (errno %d) - fd redirection is not available here; "
+            "a core's dying message comes from ps4/orbis_abort_report.c instead", errno);
+      close(fd);
+      remove(path);
+      return;
+   }
+
+   ps4_log("stderr: -> %s", path);
+
+   if (fd > 2)
+      close(fd);
+}
+
 static void frontend_orbis_init(void *data)
 {
    /* First thing the port does: bring up the log channel and read the run config.
     * ps4_log() and the termination policy both answer out of this call. */
    ps4_app_init("retroarch", PS4_APP_STAMP);
+
+   /* Before anything can abort - which on this port means before the first core is loaded. */
+   frontend_orbis_capture_stderr();
 
    /* The driver's configuration, before anything can ask the driver for anything. The
     * shared file first, so a per-title one can override it. */

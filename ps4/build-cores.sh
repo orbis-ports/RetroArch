@@ -169,13 +169,26 @@ fi
 #
 # The extraction works here where it failed for the weak stubs because these references are STRONG:
 # GLideN64 calls glClear because it means to. See ps4/orbis_gl_stubs.c and ps4/orbis_exec_mem.c.
+#
+# ⚠ AND ITS POSITION ON THE LINK LINE IS LEAD, NOT DECORATION. orbis_abort_report.c does not add a
+# missing symbol - it REPLACES two the toolchain has, abort_message from libc++.a and __assert_fail
+# from libc.a, so that a core's dying words reach a channel this console actually reads. That works
+# only while this archive is searched before -lc and -lc++, which is how the ld.lld line below is
+# ordered. Move it after them and the override silently stops happening.
 CORE_SUPPORT_LIB="$WORK/liborbis-core-support.a"
 if [[ ! -f "$CORE_SUPPORT_LIB" ]]; then
   _sup=()
-  for _s in orbis_gl_stubs orbis_exec_mem; do
-    $CC_ORBIS -O2 -c -o "$WORK/$_s.o" "$HERE/$_s.c" \
-      || { echo "build-cores: could not build $_s.c" >&2; exit 1; }
-    _sup+=("$WORK/$_s.o")
+  for _s in orbis_gl_stubs.c orbis_exec_mem.c orbis_abort_report.c orbis_cv_fix.cpp; do
+    # ⚠ orbis_cv_fix REPLACES A MEMBER OF libc++.a AND SO MUST BE COMPILED THE SAME WAY THE CORES
+    # ARE - libc++'s own headers first. It defines std::condition_variable's members, so a
+    # different <condition_variable> than the cores see would be a different class.
+    case "$_s" in
+      *.cpp) _cc="$CXX_ORBIS -std=gnu++11" ;;
+      *)     _cc="$CC_ORBIS" ;;
+    esac
+    $_cc -O2 -c -o "$WORK/${_s%.*}.o" "$HERE/$_s" \
+      || { echo "build-cores: could not build $_s" >&2; exit 1; }
+    _sup+=("$WORK/${_s%.*}.o")
   done
   llvm-ar rcs "$CORE_SUPPORT_LIB" "${_sup[@]}"
 fi

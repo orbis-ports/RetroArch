@@ -30,18 +30,39 @@
 
 #include <orbis/libkernel.h>
 
+#include "orbis_report.h"
+
 /* Direct memory granularity, and also what sceKernelMprotect rounds to. The array is declared
  * ALIGN(4096) upstream, which is not enough on its own - see orbis_exec_mem_promote. */
 #define ORBIS_GRANULE   0x4000ull
+#define ORBIS_PROT_RW   (ORBIS_KERNEL_PROT_CPU_RW)                              /* 0x03 */
 #define ORBIS_PROT_RWX  (ORBIS_KERNEL_PROT_CPU_RW | ORBIS_KERNEL_PROT_CPU_EXEC) /* 0x07 */
+
+/* Sony returns 0x8002xxxx where the low half is an errno, and two of them mean opposite things:
+ * EACCES says the kernel understood the request and declined it, EINVAL says the request was
+ * malformed and no policy was ever consulted. Telling them apart is the difference between "this
+ * console will not do that" and "we asked wrong". */
+static const char *orbis_exec_err(int32_t rc)
+{
+   switch ((uint32_t)rc)
+   {
+      case 0x80020001u: return "EPERM - not permitted";
+      case 0x8002000Cu: return "ENOMEM - out of memory or address space";
+      case 0x8002000Du: return "EACCES - understood and refused on policy";
+      case 0x8002000Eu: return "EFAULT - bad address argument";
+      case 0x80020016u: return "EINVAL - malformed request, policy never reached";
+      default:          return "not in this file's table";
+   }
+}
 
 /* -1 not asked, 0 refused, 1 granted and executed. "Not asked" and "refused" lead to opposite
  * decisions about the recompiler, so they are not allowed to share a value. */
 static int orbis_exec_state = -1;
 
-/* ⚠ EVERY REPORT GOES TO stderr AND NOT THROUGH log_cb. This file is linked into cores that
- * have not set a libretro logger yet at the point the probe runs, and a refusal that nobody
- * can read is the same as no probe at all. The frontend's log capture takes stderr. */
+/* ⚠ EVERY REPORT GOES THROUGH orbis_report AND NOT THROUGH log_cb. This file is linked into cores
+ * that have not been given a libretro logger yet at the point the probe runs - the first caller
+ * is a global constructor - and a refusal nobody can read is the same as no probe at all. It is
+ * not stderr either; ps4/orbis_report.h says why neither is available. */
 
 /* ⚠ A GRANTED PROTECTION IS NOT AN HONOURED ONE, AND THE WAY TO TELL IS TO RUN SOMETHING.
  *
@@ -67,12 +88,12 @@ static int orbis_exec_verify(void *at)
    memcpy(at, stub, sizeof(stub));
    memcpy(&fn, &at, sizeof(fn));
 
-   fprintf(stderr, "[orbis] exec_mem: calling a stub at %p to prove the promotion\n", at);
+   orbis_report("exec_mem", "calling a stub at %p to prove the promotion", at);
    got = fn();
 
    if (got != 0x00c0ffeeu)
    {
-      fprintf(stderr, "[orbis] exec_mem: stub ran and returned 0x%08x, not 0x00c0ffee\n",
+      orbis_report("exec_mem", "stub ran and returned 0x%08x, not 0x00c0ffee",
               (unsigned)got);
       return 0;
    }
@@ -102,16 +123,16 @@ int orbis_exec_mem_promote(void *addr, size_t len)
    rc = sceKernelMprotect((void*)base, (size_t)(end - base), ORBIS_PROT_RWX);
    if (rc != 0)
    {
-      fprintf(stderr, "[orbis] exec_mem: %p (%lu KiB) would not take execute - "
+      orbis_report("exec_mem", "%p (%lu KiB) would not take execute - "
                       "sceKernelMprotect returned 0x%08x. The recompiler has nowhere to write "
-                      "and must not be used.\n",
+                      "and must not be used.",
               (void*)base, (unsigned long)((end - base) / 1024), (unsigned)rc);
       orbis_exec_state = 0;
       return 0;
    }
 
    orbis_exec_state = orbis_exec_verify(addr) ? 1 : 0;
-   fprintf(stderr, "[orbis] exec_mem: %lu KiB at %p is %s\n",
+   orbis_report("exec_mem", "%lu KiB at %p is %s",
            (unsigned long)(len / 1024), addr,
            orbis_exec_state ? "writable and executable" : "NOT executable");
    return orbis_exec_state;
@@ -123,4 +144,120 @@ int orbis_exec_mem_promote(void *addr, size_t len)
 int orbis_exec_mem_state(void)
 {
    return orbis_exec_state;
+}
+
+/* ⚠ THE OTHER HALF OF THE PROBLEM, AND IT IS A DIFFERENT ONE. orbis_exec_mem_promote takes pages
+ * that already exist. A recompiler that brings no buffer of its own - paraLLEl-RSP's JIT, GNU
+ * lightning underneath it - asks the operating system for one, and what it asks with is
+ *
+ *     mmap(nullptr, size, PROT_NONE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0)
+ *
+ * which cannot work here for two independent reasons. MAP_ANON is 0x1002 on this kernel and the
+ * SDK's musl header says 0x0020, so the flags word is wrong before the size is even considered;
+ * and anonymous memory is not where executable pages come from on this console. Direct memory is.
+ * That is the same conclusion beetle-psx-libretro/ps4/orbis_lightrec_mem.c reached for Lightrec,
+ * and this is the smaller version of it: no fixed address, no mirrors, one range.
+ *
+ * ⚠ AND IT IS REALLY ALLOCATED, NOT RESERVED. The caller's design reserves a gigabyte of address
+ * space and commits pages as it fills - a distinction direct memory does not offer, because
+ * physical pages are handed out at allocation time. So the caller has to ask for what it will
+ * actually use rather than for room to grow, and the patch that calls this says what it picked
+ * and why. Asking for the reservation size here would fail outright on a console with no swap.
+ */
+/* ⚠ THE PHYSICAL PAGES HAVE TO BE REMEMBERED SEPARATELY FROM THE MAPPING, because releasing them
+ * takes the offset the allocator returned and unmapping takes the address - two different handles
+ * for one allocation, and a caller who only kept the address cannot give the memory back. Four
+ * slots: an arena per JIT, and this port has two. */
+#define ORBIS_EXEC_MAX_OWNED 4
+static struct { void *addr; size_t size; off_t phys; } orbis_exec_owned[ORBIS_EXEC_MAX_OWNED];
+
+void *orbis_exec_mem_alloc(size_t size)
+{
+   const size_t len = (size + (ORBIS_GRANULE - 1)) & ~(size_t)(ORBIS_GRANULE - 1);
+   off_t        phys = 0;
+   void        *at   = NULL;
+   int32_t      rc;
+   unsigned     i;
+
+   rc = sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), len,
+                                      ORBIS_GRANULE, ORBIS_KERNEL_WB_ONION, &phys);
+   if (rc != 0)
+   {
+      orbis_report("exec_mem", "no direct memory for %lu KiB -> 0x%08x (%s)",
+              (unsigned long)(len / 1024), (unsigned)rc, orbis_exec_err(rc));
+      return NULL;
+   }
+
+   /* ⚠ READ-WRITE AT MAP TIME, EXECUTE ONLY AFTERWARDS. Asking sceKernelMapDirectMemory for
+    * READ|EXECUTE up front returns EACCES - understood and declined. The policy lives at map
+    * time, not at protect time, and mapping read-write and then promoting is granted. Anyone who
+    * tries the direct form first concludes a recompiler is impossible on this console. */
+   rc = sceKernelMapDirectMemory(&at, len, ORBIS_PROT_RW, 0, phys, ORBIS_GRANULE);
+   if (rc != 0 || !at)
+   {
+      orbis_report("exec_mem", "could not map %lu KiB -> 0x%08x (%s)",
+              (unsigned long)(len / 1024), (unsigned)rc, orbis_exec_err(rc));
+      sceKernelReleaseDirectMemory(phys, len);
+      return NULL;
+   }
+
+   rc = sceKernelMprotect(at, len, ORBIS_PROT_RWX);
+   if (rc != 0)
+   {
+      orbis_report("exec_mem", "%lu KiB at %p would not take execute -> 0x%08x (%s)",
+              (unsigned long)(len / 1024), at, (unsigned)rc, orbis_exec_err(rc));
+      sceKernelMunmap(at, len);
+      sceKernelReleaseDirectMemory(phys, len);
+      return NULL;
+   }
+
+   /* Same argument as orbis_exec_mem_promote: a granted protection is not an honoured one, and
+    * the only way to tell on this console is to run something. Six bytes at the start of an
+    * arena the caller has not written to yet. */
+   if (!orbis_exec_verify(at))
+   {
+      sceKernelMunmap(at, len);
+      sceKernelReleaseDirectMemory(phys, len);
+      return NULL;
+   }
+
+   for (i = 0; i < ORBIS_EXEC_MAX_OWNED; i++)
+   {
+      if (!orbis_exec_owned[i].addr)
+      {
+         orbis_exec_owned[i].addr = at;
+         orbis_exec_owned[i].size = len;
+         orbis_exec_owned[i].phys = phys;
+         break;
+      }
+   }
+   if (i == ORBIS_EXEC_MAX_OWNED)
+      orbis_report("exec_mem", "no slot to record %p - %lu KiB of direct memory will not be "
+                   "released", at, (unsigned long)(len / 1024));
+
+   orbis_report("exec_mem", "%lu KiB of executable direct memory at %p",
+           (unsigned long)(len / 1024), at);
+   return at;
+}
+
+/* Give an arena back. Quiet about an address it never handed out: a destructor that runs for a
+ * failed construction is a normal thing, and there is nothing to say about it. */
+void orbis_exec_mem_free(void *addr, size_t size)
+{
+   unsigned i;
+
+   if (!addr)
+      return;
+
+   for (i = 0; i < ORBIS_EXEC_MAX_OWNED; i++)
+   {
+      if (orbis_exec_owned[i].addr != addr)
+         continue;
+
+      sceKernelMunmap(addr, orbis_exec_owned[i].size);
+      sceKernelReleaseDirectMemory(orbis_exec_owned[i].phys, orbis_exec_owned[i].size);
+      memset(&orbis_exec_owned[i], 0, sizeof(orbis_exec_owned[i]));
+      return;
+   }
+   (void)size;
 }
