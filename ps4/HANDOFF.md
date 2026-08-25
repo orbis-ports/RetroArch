@@ -1621,3 +1621,139 @@ own FBOs on this driver rather than to the context, and leaves `EnableFragmentDe
 `EnableCopyDepthToRDRAM` as the next two things to bisect. Untested, and it is the first time
 GLideN64 has run over zink on this GPU - the fault could be in any of GLideN64, zink, RADV or
 these thunks.
+
+## The toolchain's own bugs, and the instruments built to find them
+
+Three defects this week were in the SDK rather than in any core, and all three presented as a core
+crashing. They are recorded together because the shape repeats: **a prebuilt library compiled for a
+different platform's constants, shipped for this one.**
+
+### ⚠ libc++.a compares against LINUX'S ETIMEDOUT on a FreeBSD target
+
+Observed loading a ROM in mupen64plus-next:
+
+    libc++abi: terminating with uncaught exception of type std::__1::system_error:
+               condition_variable timed_wait failed: Operation timed out
+
+"Operation timed out" IS errno 60, ETIMEDOUT, and a timeout is the ordinary outcome of a timed wait -
+`wait_for` returns `cv_status::timeout` and does not throw. It threw because the comparison that
+filters that case out was compiled against a different number. Disassembling
+`condition_variable.cpp.o` out of the SDK's `libc++.a`:
+
+    322: 83 7d 94 6e    cmpl $0x6e, -0x6c(%rbp)     ; 0x6e = 110
+
+110 is Linux's ETIMEDOUT. This console is FreeBSD underneath, its pthread returns 60, and the SDK's
+own `bits/errno.h` agrees with 60. **Every timed wait that has ever expired on this platform threw.**
+
+⚠ **AND IT IS NOT LIMITED TO condition_variable.** `std::future::wait_for`, `shared_timed_mutex` and
+everything else with a deadline goes through `__do_timed_wait`. The call site that killed the N64
+core is `CommandRing::thread_loop`, which does `cond.wait_for(holder, 500us, …)` whenever the RDP
+worker has nothing to do - so the core died the first moment it went idle.
+
+`ps4/orbis_cv_fix.cpp` rebuilds `condition_variable`'s four strong symbols from libc++ 11's own
+source against this platform's headers. ⚠ All four, not just the broken one: an archive member is
+all-or-nothing, so providing `__do_timed_wait` alone would leave `notify_one`, `notify_all` and
+`wait` undefined. `notify_all_at_thread_exit` is deliberately absent - it needs libc++'s private
+per-thread bookkeeping and no core here has referenced it.
+
+⚠ **Fixing it at `pthread_cond_timedwait` instead would have been wrong**, and the reasoning is worth
+keeping: everything compiled in this workshop sees ETIMEDOUT as 60 through the SDK's headers and
+tests for 60. Only the prebuilt library expects 110. Translating the return value would fix libc++ by
+breaking every honest caller. The mismatch belongs where it was introduced.
+
+The real fix is a libc++ rebuilt against the target's headers, which is an OpenOrbis change.
+
+### A core's dying words now reach a channel someone reads
+
+`assert()`, libc++abi's `abort_message()` and `__cxa_pure_virtual` all say exactly what went wrong and
+then call `abort()`. All of it goes to stderr, and on this kernel fd 2 goes nowhere.
+
+⚠ **AND POINTING fd 2 SOMEWHERE IS NOT AVAILABLE:** `dup2` onto 1 or 2 returns **EPERM**. The
+descriptor table is not ours to rearrange, so the message has to be caught before it is written
+rather than after.
+
+`ps4/orbis_abort_report.c` defines `abort_message`, `__assert_fail` and `abort` itself, overriding the
+toolchain's by definition order - each lives in an archive member of its own defining that one symbol,
+so a definition reaching the linker first means the member is never pulled. It reports through
+`sceKernelDebugOutText` (synchronous; a UDP datagram needs the process to survive its own send) and
+appends to `/data/retroarch-abort.log`.
+
+⚠ **The one that matters most is `abort()` itself, and what it must produce is the RETURN ADDRESS.**
+Plenty of code aborts without a message - libunwind's `_LIBUNWIND_ABORT`, GNU lightning, paraLLEl-RSP's
+allocator. Those arrive as a bare SIGABRT with `abort` as the only frame, because a core is built
+`-fomit-frame-pointer` and the console's backtracer cannot walk through it. The return address is on
+the stack whether or not there is a frame pointer. It found `RSP::JIT::CPU::init_jit_thunks` in one
+step, after two rounds of guessing had found nothing.
+
+⚠ **`-DNDEBUG` IS PER TRANSLATION UNIT.** A core built with it still links libretro-common,
+orbis-compat and vendored dependencies that were not. An assertion in one of those is
+indistinguishable from a C++ runtime failure from the outside.
+
+### Measuring instead of arguing
+
+`ps4/orbis_profile.c` is linked into every core the harness builds and turns itself on when
+`/data/retroarch-profile` exists - a file rather than an environment variable, because each image
+carries its own static musl and `setenv` in the frontend is invisible to a `.prx`.
+
+It exists because three performance stories in one day turned out to be wrong before it was written.
+The section above on the N64 frame is entirely its output.
+
+## Networking: what the SDK gives us and what it does not
+
+`HAVE_NETWORKING` is still 0. What follows was measured to size the work, not to do it.
+
+⚠ **`libretro-common/include/net/net_compat.h` HAS NO ORBIS ARM.** It has Vita, PS3, PSL1GHT and
+Windows; this platform falls through to the generic POSIX branch and calls `connect()`, `select()`,
+`setsockopt()` like any Unix. Checked at symbol level across `libc.a`, `libkernel.a`, `libpthread.a`:
+
+    present   socket send recv getaddrinfo freeaddrinfo inet_pton inet_ntop
+              gethostbyname fcntl
+
+    missing   connect bind listen accept sendto recvfrom shutdown
+              setsockopt getsockopt getpeername select poll close
+
+⚠ **DO NOT FILL THE GAPS ONE AT A TIME.** musl's `socket()` returns a file descriptor from a syscall;
+`sceNetSocket()` returns an `OrbisNetId`. Implementing the missing dozen over `sceNet*` while keeping
+musl's `socket()` puts two descriptor namespaces in one program, and handing one to a function
+expecting the other compiles cleanly. Take the whole set, `socket()` included, as an archive-member
+override in orbis-compat - the same technique `orbis_abort_report.c` and `orbis_cv_fix.cpp` use.
+
+Three details the wrapper absorbs: `sceNetSocket` takes a NAME as its first argument that POSIX has no
+place for; there is **no `sceNetSelect`** and the epoll family is declared in this SDK as
+`void sceNetEpollWait();` - the symbol without a signature; and `sceNetInit()` already works, proven
+by the log channel, so TCP is the untested part rather than the stack coming up.
+
+For TLS: `time()`, `getrandom` and `getentropy` are all present in libc. BearSSL and mbedTLS are
+vendored under `deps/` and wired to `HAVE_SSL`. Sony's own `libSceSsl.so` and `libSceHttp.so` are
+present as stubs - `orbis/Ssl.h` exists but declares `void sceSslConnect();`, names without
+signatures. Using `libSceHttp` would make the whole socket layer above unnecessary and is the
+interesting fallback, at the price of establishing those signatures.
+
+## Distribution: mesa as a release, and where orbis-compat sits
+
+The full plan for building and publishing all of this from GitHub Actions lives outside this file.
+Two findings from it belong here because they are facts about the tree.
+
+**A Mesa bundle is 87 MB and 15 MB compressed** - `libvulkan_radeon.a` 35 MB, `libgallium-*.a` 41 MB,
+`libEGL.a` 5.5 MB, the GLES dispatch 228 KB, `include/` 5.5 MB. Building Mesa in every consumer's
+pipeline pays for the same work repeatedly; it is the one input both expensive and slow-changing.
+
+⚠ **AND MESA IS LINK-TIME COUPLED TO orbis-compat, not merely compile-time.** Its archives carry
+undefined references only the overlay satisfies:
+
+    libvulkan_radeon.a  ->  clock_gettime fstat open unlink pthread_create
+                            orbis_sysconf  _Znam _Znwm _ZnwmRKSt9nothrow_t
+
+`orbis_sysconf` is the tell: orbis-compat's `unistd.h` defines `sysconf` as a macro renaming it, so
+every Mesa object that asks how many CPUs the machine has imports a symbol that exists nowhere else.
+
+That settles two questions that will be asked again. **The direction cannot invert** - orbis-compat is
+the base layer and Mesa its consumer, so publishing Mesa out of orbis-compat's repository would have
+the base release the thing built on top of it, and every overlay change would drag a full Mesa build
+behind it. **And the overlay does not belong inside the Mesa tarball** - those references resolve at
+the FINAL link where `-lorbis-compat` is already on the line, and bundling a copy would freeze the
+layer that changes most often inside the artifact meant to change least.
+
+The proportionate check is the import list itself: assert that every symbol Mesa's archives import
+from orbis-compat is still defined by the orbis-compat about to be linked. ⚠ It catches presence, not
+meaning - a changed return value or a constant inlined at Mesa's compile time leaves nothing to check.
