@@ -128,7 +128,7 @@ One core proving the path works is enough for now; the rest wait for matching co
 | `mesen-s` | Nintendo - SNES / SFC / Game Boy / Color (Mesen-S) | 4,2M | `9e4fdeb` | plays |  |
 | `mrboom` | Mr.Boom (Bomberman) | 9,2M | `40ac320` | plays |  |
 | `mu` | Palm OS (Mu) | 1,4M | `f9d34a0` | plays |  |
-| `mupen64plus_next` | Nintendo - Nintendo 64 (Mupen64Plus-Next) | 8,4M | `f275caf+3` | slow | plays Shadows of the Empire at 15-30 fps and stutters. ParaLLEl-RDP over Vulkan, R4300 dynarec on, RSP forced to LLE by the core. `VK_EXT_external_memory_host` is absent, so RDRAM is copied rather than imported |
+| `mupen64plus_next` | Nintendo - Nintendo 64 (Mupen64Plus-Next) | 8,4M | `f275caf+4` | slow | plays Shadows of the Empire at 16-19 fps. Profiled on hardware: RSP 47% of wall, RDP command building 43%, R4300 dynarec 10%, GPU idle. `VK_EXT_external_memory_host` is off on this driver, so RDRAM is copied rather than shared |
 | `nekop2` | NEC - PC-98 (Neko Project II) | 2,1M | `5fdbb21` | untested | |
 | `neocd` | SNK - Neo Geo CD (NeoCD) | 2,9M | `8f2d42c` | untested | |
 | `nestopia` | Nintendo - NES / Famicom (Nestopia) | 7,1M | `6c2d242` | broken | loads and runs, green screen, exits cleanly - renders wrong, not a crash |

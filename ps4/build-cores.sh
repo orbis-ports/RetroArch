@@ -178,7 +178,7 @@ fi
 CORE_SUPPORT_LIB="$WORK/liborbis-core-support.a"
 if [[ ! -f "$CORE_SUPPORT_LIB" ]]; then
   _sup=()
-  for _s in orbis_gl_stubs.c orbis_exec_mem.c orbis_abort_report.c orbis_cv_fix.cpp; do
+  for _s in orbis_gl_stubs.c orbis_exec_mem.c orbis_abort_report.c orbis_profile.c orbis_cv_fix.cpp; do
     # ⚠ orbis_cv_fix REPLACES A MEMBER OF libc++.a AND SO MUST BE COMPILED THE SAME WAY THE CORES
     # ARE - libc++'s own headers first. It defines std::condition_variable's members, so a
     # different <condition_variable> than the cores see would be a different class.

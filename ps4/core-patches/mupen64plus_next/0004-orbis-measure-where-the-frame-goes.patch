@@ -1,0 +1,88 @@
+diff --git a/mupen64plus-rsp-paraLLEl/parallel.cpp b/mupen64plus-rsp-paraLLEl/parallel.cpp
+index 57cb1a7..c9ffc9e 100644
+--- a/mupen64plus-rsp-paraLLEl/parallel.cpp
++++ b/mupen64plus-rsp-paraLLEl/parallel.cpp
+@@ -21,8 +21,31 @@ RSP::JIT::CPU cpu;
+ #endif
+ short MFC0_count[32];
+ int SP_STATUS_TIMEOUT;
++
++
+ } // namespace RSP
+ 
++#ifdef __ORBIS__
++/* RetroArch/ps4/orbis_profile.c - off unless /data/retroarch-profile exists. */
++extern "C" {
++	unsigned long long orbis_profile_now(void);
++	int  orbis_profile_enabled(void);
++	void orbis_profile_add(int slot, const char *name, unsigned long long us);
++}
++namespace {
++struct OrbisSlotTimer {
++	int slot; const char *name; unsigned long long t0; bool on;
++	OrbisSlotTimer(int s, const char *n) : slot(s), name(n), t0(0), on(orbis_profile_enabled() != 0)
++	{ if (on) t0 = orbis_profile_now(); }
++	~OrbisSlotTimer() { if (on) orbis_profile_add(slot, name, orbis_profile_now() - t0); }
++};
++}
++#define ORBIS_TIME(s, n) OrbisSlotTimer orbis_timer_(s, n)
++#else
++#define ORBIS_TIME(s, n) do {} while (0)
++#endif
++
++
+ extern "C"
+ {
+ 	// Hack entry point to use when loading savestates when we're tracing.
+@@ -52,6 +75,11 @@ extern "C"
+ 
+ 	EXPORT unsigned int CALL parallelRSPDoRspCycles(unsigned int cycles)
+ 	{
++		/* ⚠ THE RSP RUNS ON THE CPU. It is a programmable vector DSP executing the game's own
++		 * microcode, recompiled here by GNU lightning, and it runs beside the recompiled R4300
++		 * with no GPU in the path at all - which is the thing most easily misread about a core
++		 * advertised as "ParaLLEl-RDP on Vulkan". Only the RDP half is on the GPU. */
++		ORBIS_TIME(3, "rsp-lle");
+ 		if (*RSP::rsp.SP_STATUS_REG & (SP_STATUS_HALT | SP_STATUS_BROKE))
+ 			return 0;
+ 
+diff --git a/mupen64plus-video-paraLLEl/parallel.cpp b/mupen64plus-video-paraLLEl/parallel.cpp
+index 3d408a1..9ec148f 100644
+--- a/mupen64plus-video-paraLLEl/parallel.cpp
++++ b/mupen64plus-video-paraLLEl/parallel.cpp
+@@ -40,6 +40,16 @@ int parallelInitiateGFX(GFX_INFO Gfx_Info)
+ 	return true;
+ }
+ 
++
++#ifdef __ORBIS__
++/* RetroArch/ps4/orbis_profile.c - off unless /data/retroarch-profile exists. */
++extern "C" {
++   unsigned long long orbis_profile_now(void);
++   int  orbis_profile_enabled(void);
++   void orbis_profile_add(int slot, const char *name, unsigned long long us);
++}
++#endif
++
+ void parallelMoveScreen(int xpos, int ypos)
+ {
+ }
+@@ -50,6 +60,18 @@ void parallelProcessDList(void)
+ 
+ void parallelProcessRDPList(void)
+ {
++#ifdef __ORBIS__
++	/* This is the RDP half, and it is the half people assume is "on the GPU". Building and
++	 * submitting the command stream is CPU work; whether a GPU wait lands here too depends on
++	 * the synchronous-RDP option. Measuring it settles both. */
++	if (orbis_profile_enabled())
++	{
++		unsigned long long t0 = orbis_profile_now();
++		RDP::process_commands();
++		orbis_profile_add(2, "rdp-submit", orbis_profile_now() - t0);
++		return;
++	}
++#endif
+ 	RDP::process_commands();
+ }
+ 

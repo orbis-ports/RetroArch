@@ -1,5 +1,5 @@
 diff --git a/libretro/libretro.c b/libretro/libretro.c
-index 7665666..a8029f3 100644
+index 7665666..30c4c76 100644
 --- a/libretro/libretro.c
 +++ b/libretro/libretro.c
 @@ -222,6 +222,10 @@ uint32_t IgnoreTLBExceptions = 0;
@@ -28,7 +28,54 @@ index 7665666..a8029f3 100644
         }
  
         var.key = CORE_NAME "-rsp-plugin";
-@@ -1400,6 +1411,23 @@ static void update_variables(bool startup)
+@@ -950,6 +961,23 @@ static void update_variables(bool startup)
+           if (!strcmp(var.value, "hle"))
+           {
+              // If we use angrylion with hle, we will force parallel if available!
++             //
++             // ⚠ AND IT IS A CORRECTNESS REQUIREMENT, NOT THE ACCURACY PREFERENCE IT LOOKS LIKE.
++             // This override was relaxed here on 2026-08-25 to buy back CPU time on a 1.6 GHz
++             // Jaguar, on the reasoning that the HLE RSP emits ordinary RDP command lists that
++             // ParaLLEl-RDP would consume. It does not. The HLE RSP draws by calling the graphics
++             // plugin's ProcessDList, and ParaLLEl-RDP's is empty:
++             //
++             //     void parallelProcessDList(void) { }                  <- mupen64plus-video-paraLLEl/parallel.cpp
++             //     void parallelProcessRDPList(void) { RDP::process_commands(); }
++             //
++             // ParaLLEl-RDP implements the LOW-level entry point and nothing else, so with an HLE
++             // RSP the display list goes nowhere. Observed on hardware: the core loads, the log
++             // says "Plugins in use: RDP=ParaLLEl RSP=HLE", and the screen stays black.
++             //
++             // The fast pairing for a machine this size is GLideN64 with the HLE RSP, and that is
++             // blocked on something else entirely - this port has no RETRO_HW_CONTEXT_OPENGL
++             // driver, which is why GLideN64 is not offered at all here.
+              if(current_rdp_type != RDP_PLUGIN_ANGRYLION && current_rdp_type != RDP_PLUGIN_PARALLEL)
+              {
+                 plugin_connect_rsp_api(RSP_PLUGIN_HLE);
+@@ -997,7 +1025,21 @@ static void update_variables(bool startup)
+ #endif 
+           }
+        }
+-       
++
++       /* ⚠ SAY WHICH TWO PLUGINS ARE ACTUALLY RUNNING, because until now nothing did unless a
++        * fallback happened to fire. The selection reads an option, then several branches may
++        * override it, and a saved value in the .opt file beats every default - so "the option
++        * says hle" is not the same claim as "the HLE RSP is running", and reading the first as
++        * the second cost a round of measurements here (2026-08-25). One line, once, at startup.
++        * These are the two choices that decide where this core's frame time goes. */
++       log_cb(RETRO_LOG_INFO, "Plugins in use: RDP=%s RSP=%s\n",
++             current_rdp_type == RDP_PLUGIN_PARALLEL   ? "ParaLLEl" :
++             current_rdp_type == RDP_PLUGIN_ANGRYLION  ? "Angrylion" :
++             current_rdp_type == RDP_PLUGIN_GLIDEN64   ? "GLideN64" : "?",
++             current_rsp_type == RSP_PLUGIN_PARALLEL   ? "ParaLLEl (LLE)" :
++             current_rsp_type == RSP_PLUGIN_CXD4       ? "CXD4 (LLE)" :
++             current_rsp_type == RSP_PLUGIN_HLE        ? "HLE" : "?");
++
+ #ifdef IOS
+        bool can_jit = false;
+        if (!environ_cb(RETRO_ENVIRONMENT_GET_JIT_CAPABLE, &can_jit) || !can_jit)
+@@ -1400,6 +1442,23 @@ static void update_variables(bool startup)
               r4300_emumode = EMUMODE_DYNAREC;
         }
  
@@ -52,8 +99,75 @@ index 7665666..a8029f3 100644
         var.key = CORE_NAME "-aspect";
         var.value = NULL;
         if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+@@ -2020,7 +2079,7 @@ void retro_unload_game(void)
+        glsm_ctl(GLSM_CTL_STATE_BIND, NULL);
+        while(!threaded_gl_safe_shutdown)
+        {
+-          co_switch(game_thread);
++      co_switch(game_thread);
+        }
+        glsm_ctl(GLSM_CTL_STATE_UNBIND, NULL);
+     
+@@ -2040,8 +2099,24 @@ void retro_unload_game(void)
+     retro_savestate_complete = false;
+ }
+ 
++#ifdef __ORBIS__
++/* RetroArch/ps4/orbis_profile.c - off unless /data/retroarch-profile exists. */
++unsigned long long orbis_profile_now(void);
++int  orbis_profile_enabled(void);
++void orbis_profile_add(int slot, const char *name, unsigned long long us);
++void orbis_profile_tick(void);
++#endif
++
+ void retro_run (void)
+ {
++#ifdef __ORBIS__
++    /* ⚠ THREE NUMBERS, AND THE POINT IS THE GAP BETWEEN THEM. "guest" is everything the emulated
++     * machine does - R4300, RSP, and the RDP command building underneath it, all on this thread.
++     * "present" is handing the finished frame to the frontend. Whatever "total" holds that the
++     * other two do not is the frontend waiting on us, or us waiting on the GPU. */
++    unsigned long long orbis_t_run = orbis_profile_enabled() ? orbis_profile_now() : 0;
++    unsigned long long orbis_t_mark;
++#endif
+     libretro_swap_buffer = false;
+     static bool updated = false;
+ 
+@@ -2062,7 +2137,17 @@ void retro_run (void)
+        glsm_ctl(GLSM_CTL_STATE_BIND, NULL);
+     }
+ 
++#ifdef __ORBIS__
++    orbis_t_mark = orbis_t_run ? orbis_profile_now() : 0;
++#endif
+     co_switch(game_thread);
++#ifdef __ORBIS__
++    if (orbis_t_run)
++    {
++        orbis_profile_add(1, "guest", orbis_profile_now() - orbis_t_mark);
++        orbis_t_mark = orbis_profile_now();
++    }
++#endif
+ 
+     if(current_rdp_type == RDP_PLUGIN_GLIDEN64)
+     {
+@@ -2096,6 +2181,14 @@ void retro_run (void)
+         // screen_pitch will be 0 for GLN
+         video_cb(NULL, retro_screen_width, retro_screen_height, screen_pitch);
+     }
++#ifdef __ORBIS__
++    if (orbis_t_run)
++    {
++        orbis_profile_add(4, "present", orbis_profile_now() - orbis_t_mark);
++        orbis_profile_add(0, "retro_run total", orbis_profile_now() - orbis_t_run);
++        orbis_profile_tick();
++    }
++#endif
+ }
+ 
+ void retro_reset (void)
 diff --git a/libretro/libretro_core_options.h b/libretro/libretro_core_options.h
-index fb39aa9..6a95069 100644
+index fb39aa9..873dbda 100644
 --- a/libretro/libretro_core_options.h
 +++ b/libretro/libretro_core_options.h
 @@ -78,10 +78,22 @@ struct retro_core_option_v2_definition option_defs_us[] = {
@@ -79,3 +193,28 @@ index fb39aa9..6a95069 100644
      },
      {
          CORE_NAME "-43screensize",
+@@ -1034,7 +1046,23 @@ struct retro_core_option_v2_definition option_defs_us[] = {
+             { "True", "Enabled" },
+             { "False", "Disabled" },
+             { NULL, NULL },
+-        }
++        },
++/* ⚠ THIS OPTION HAS NO DEFAULT UPSTREAM, WHICH IS NOT THE SAME AS HAVING A HARMLESS ONE. The
++ * field after the values array is the default and it is absent here, so RetroArch falls back to
++ * the FIRST value - "True". Every one of ParaLLEl-RDP's knobs in this file is written that way,
++ * so on any platform the accurate-and-slow setting is what a fresh install gets, and nothing in
++ * the option's own text says so.
++ *
++ * Naming it explicitly on this console, and naming the other answer: synchronous RDP makes the
++ * CPU wait for the GPU so that a frame buffer read back on the CPU is exact. Few games do that,
++ * and the machine paying for it here is a 1.6 GHz Jaguar that is already missing its frame
++ * budget. A game that needs it can turn it back on; a user who never opens the menu should not
++ * be paying for accuracy they cannot see. */
++#ifdef __ORBIS__
++        "False"
++#else
++        NULL
++#endif
+     },
+     {
+         CORE_NAME "-parallel-rdp-overscan",

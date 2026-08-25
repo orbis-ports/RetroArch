@@ -1,8 +1,19 @@
 diff --git a/mupen64plus-rsp-paraLLEl/jit_allocator.cpp b/mupen64plus-rsp-paraLLEl/jit_allocator.cpp
-index 5100e60..60e50ca 100644
+index 5100e60..d8f7dc8 100644
 --- a/mupen64plus-rsp-paraLLEl/jit_allocator.cpp
 +++ b/mupen64plus-rsp-paraLLEl/jit_allocator.cpp
-@@ -22,10 +22,33 @@ static constexpr bool huge_va = std::numeric_limits<size_t>::max() > 0x100000000
+@@ -14,7 +14,9 @@ namespace RSP
+ {
+ namespace JIT
+ {
+-#ifdef IOS // iOS/tvOS is 64bit but does not allow an infinite amount of VA space
++#if defined(IOS) || defined(__ORBIS__) // iOS/tvOS is 64bit but does not allow an infinite amount of VA space
++// The PlayStation 4 joins iOS here for a different reason: see block_size below. It has address
++// space to spare and no way to reserve it without also taking the physical pages.
+ static constexpr bool huge_va = false;
+ #else
+ static constexpr bool huge_va = std::numeric_limits<size_t>::max() > 0x100000000ull;
+@@ -22,10 +24,41 @@ static constexpr bool huge_va = std::numeric_limits<size_t>::max() > 0x100000000
  // On 64-bit systems, we will never allocate more than one block, this is important since we must ensure that
  // relative jumps are reachable in 32-bits.
  // We won't actually allocate 1 GB on 64-bit, but just reserve VA space for it, which we have basically an infinite amount of.
@@ -13,12 +24,20 @@ index 5100e60..60e50ca 100644
 +// not a ceiling to reserve, it is memory that is really taken, and on a console with no swap
 +// asking for the gigabyte above would simply fail.
 +//
-+// 64 MiB, and the single-block invariant in the comment above is the reason it is one number
-+// rather than a growth policy: the RSP's instruction memory is 4 KiB, so this is a very large
-+// arena for what compiles into it, and staying inside one block keeps every relative jump the
-+// JIT emits reachable by construction. If it is ever exhausted the abort in allocate_code below
-+// fires and says so, which is a better failure than a second block two gigabytes away.
-+static constexpr size_t block_size = 64 * 1024 * 1024;
++// ⚠ AND IT IS SMALL BECAUSE THE ARENA IS LEAKED ON EVERY CORE LOAD. A global RSP::JIT::CPU is
++// constructed each time the module is loaded, and this port does not run a module's destructors
++// when it is unloaded, so nothing gives the memory back. RetroArch loads a core several times
++// over - once for the menu to read its name, again to run it - and the first attempt at this used
++// 64 MiB blocks. Measured on hardware 2026-08-25: four arenas, 256 MiB, and the next load got
++//
++//     [orbis] exec_mem: no direct memory for 65536 KiB -> 0x80020023
++//
++// EAGAIN - the pool was gone, and the core aborted on a machine that had been running it fine
++// minutes earlier. 2 MiB is upstream's own figure for platforms without unlimited address space,
++// and the growth path below (huge_va false) is theirs too: 64-bit iOS ships it, so a second block
++// is not the hazard the single-block comment above suggests - jumps stay inside the block they
++// were compiled into, and calls out of the JIT are absolute.
++static constexpr size_t block_size = 2 * 1024 * 1024;
 +// RetroArch/ps4/orbis_exec_mem.c, linked in by the port's build harness.
 +extern "C" void *orbis_exec_mem_alloc(size_t size);
 +extern "C" void  orbis_exec_mem_free(void *addr, size_t size);
@@ -37,7 +56,7 @@ index 5100e60..60e50ca 100644
  	for (auto &block : blocks)
  		VirtualFree(block.code, 0, MEM_RELEASE);
  #else
-@@ -46,7 +69,12 @@ static size_t align_page(size_t offset)
+@@ -46,7 +79,12 @@ static size_t align_page(size_t offset)
  
  static bool commit_read_write(void *ptr, size_t size)
  {
@@ -51,7 +70,7 @@ index 5100e60..60e50ca 100644
  	return VirtualAlloc(ptr, size, MEM_COMMIT, PAGE_READWRITE) == ptr;
  #else
  	return mprotect(ptr, size, PROT_READ | PROT_WRITE) == 0;
-@@ -55,7 +83,16 @@ static bool commit_read_write(void *ptr, size_t size)
+@@ -55,7 +93,16 @@ static bool commit_read_write(void *ptr, size_t size)
  
  static bool commit_execute(void *ptr, size_t size)
  {
@@ -69,7 +88,7 @@ index 5100e60..60e50ca 100644
  	DWORD old_protect;
  	return VirtualProtect(ptr, align_page(size), PAGE_EXECUTE, &old_protect) != 0;
  #else
-@@ -104,7 +141,16 @@ void *Allocator::allocate_code(size_t size)
+@@ -104,7 +151,16 @@ void *Allocator::allocate_code(size_t size)
  Allocator::Block Allocator::reserve_block(size_t size)
  {
  	Block block;
