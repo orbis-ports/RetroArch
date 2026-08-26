@@ -822,6 +822,32 @@ jobs:
           # it would surface as one arbitrary core failing to upload.
           npx --yes wrangler@4 --version
 
+          # ⚠ PROVE THE TOKEN WORKS, DO NOT ASSUME IT. Checking that the secret is non-empty
+          # says nothing about whether Cloudflare accepts it: a first run failed here with 101
+          # consecutive `"code":10000, "message":"Authentication error"` - one per core, after
+          # ~9 minutes of uploads, with zero successes. A round trip on one small object costs
+          # three seconds and names the problem before anything else runs.
+          probe=".r2-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'probe\n' > /tmp/r2-probe
+          if ! npx --yes wrangler@4 r2 object put "$R2_CORES_BUCKET/$probe" \
+                 --file /tmp/r2-probe --content-type text/plain --remote 2>/tmp/r2-probe.err; then
+            echo "!! the R2 token cannot write to bucket '$R2_CORES_BUCKET'" >&2
+            sed 's/^/   /' /tmp/r2-probe.err >&2
+            echo "   Three things produce this, in order of likelihood:" >&2
+            echo "   1. CLOUDFLARE_API_TOKEN holds the wrong string. The R2 token page shows a" >&2
+            echo "      'Token value' AND an S3 'Access Key ID'/'Secret Access Key'; wrangler" >&2
+            echo "      wants the Token value. The S3 pair authenticates a different API." >&2
+            echo "   2. The token is scoped to specific buckets and '$R2_CORES_BUCKET' is not" >&2
+            echo "      among them - or the scoping itself is the problem, since bucket-scoped" >&2
+            echo "      tokens are documented against the S3 API rather than this one." >&2
+            echo "   3. CLOUDFLARE_ACCOUNT_ID belongs to a different account than the token." >&2
+            echo "   The GitHub Release above already carries the archival copy; only the" >&2
+            echo "   console-facing copy is missing." >&2
+            exit 1
+          fi
+          npx --yes wrangler@4 r2 object delete "$R2_CORES_BUCKET/$probe" --remote >/dev/null 2>&1 || true
+          echo "== the token can write to $R2_CORES_BUCKET
+
       # ⚠ READ THE OLD LISTING BEFORE OVERWRITING IT. wrangler has no `r2 object list`, and no
       # S3 keys exist for this bucket on purpose - so the only inventory of what is currently
       # published is the .index-extended already in it. Fetch it now; the prune step below diffs
