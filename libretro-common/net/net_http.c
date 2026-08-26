@@ -34,6 +34,19 @@
 #endif
 #include <compat/strl.h>
 #include <features/features_cpu.h>
+
+/* ⚠ THE TRANSPORT TRACE HAS TO REACH SOMEWHERE THE CONSOLE CAN SHOW IT.
+ *
+ * net_http_log_transport_state() below writes to stderr, which is the one channel this
+ * platform does not have: dup2() onto fd 1 or 2 answers EPERM on Orbis, so nothing written
+ * there is ever seen. RARCH_LOG goes through the frontend's logger, which on this port
+ * already reaches klog and the UDP log channel - dylib.c takes the same route for the same
+ * reason. Enabled by -DORBIS_NET_TRACE rather than by DEBUG, so a diagnostic package can be
+ * built without turning on every other debug path in the tree. */
+#if defined(ORBIS) && defined(ORBIS_NET_TRACE) && defined(RARCH_INTERNAL)
+#include "../../verbosity.h"
+#define NET_HTTP_TRACE 1
+#endif
 #include <file/file_path.h>
 #include <lists/string_list.h>
 #include <retro_common_api.h>
@@ -201,7 +214,7 @@ struct http_connection_t
 static void net_http_log_transport_state(
       const struct http_t *state, const char *stage, ssize_t io_len)
 {
-#if defined(DEBUG)
+#if defined(DEBUG) || defined(NET_HTTP_TRACE)
    const char *method = "GET";
    const char *domain = "<null>";
    const char *path   = "<null>";
@@ -223,7 +236,12 @@ static void net_http_log_transport_state(
       }
    }
 
-   fprintf(stderr,
+#ifdef NET_HTTP_TRACE
+#define NET_HTTP_TRACE_OUT(...) RARCH_LOG(__VA_ARGS__)
+#else
+#define NET_HTTP_TRACE_OUT(...) fprintf(stderr, __VA_ARGS__)
+#endif
+   NET_HTTP_TRACE_OUT(
          "[net_http] %s: method=%s host=%s port=%d path=/%s ssl=%d fd=%d connected=%d request_sent=%d err=%d io_len=%ld errno=%d (%s)\n",
          stage ? stage : "unknown",
          method,
@@ -238,7 +256,10 @@ static void net_http_log_transport_state(
          (long)io_len,
          errno,
          strerror(errno));
+#ifndef NET_HTTP_TRACE
    fflush(stderr);
+#endif
+#undef NET_HTTP_TRACE_OUT
 #else
    (void)state;
    (void)stage;

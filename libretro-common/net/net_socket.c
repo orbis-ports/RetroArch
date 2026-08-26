@@ -32,6 +32,11 @@
 
 #include <net/net_socket.h>
 
+#ifdef ORBIS
+/* For sceNetSetsockopt in socket_set_block(); see the note there. */
+#include <orbis/Net.h>
+#endif
+
 int socket_init(void **address, uint16_t port, const char *server,
       enum socket_type type, int family)
 {
@@ -186,6 +191,34 @@ bool socket_set_block(int fd, bool block)
    u32 i = !block;
 
    return !net_ioctl(fd, FIONBIO, &i);
+#elif defined(ORBIS)
+   /* ⚠ NEITHER fcntl NOR ioctl MAY CHANGE THIS SOCKET'S FLAGS, AND THE GENERIC BRANCH BELOW
+    * IS WHY THE CORE DOWNLOADER NEVER SENT A BYTE. Measured on hardware against a plain LAN
+    * address, no DNS and no TLS in the way:
+    *
+    *     fcntl(F_GETFL)  =  2   errno=0     reading flags is allowed
+    *     fcntl(F_SETFL)  = -1   errno=13    EACCES
+    *     ioctl(FIONBIO)  = -1   errno=13    EACCES
+    *     connect()       =  0   errno=0     blocking connect succeeds
+    *
+    * So the socket is fine; only the switch to non-blocking is refused. That mattered far more
+    * than it looks: socket_connect_with_timeout() calls socket_nonblock() FIRST and returns on
+    * failure without reaching connect(), and net_http then reports "socket_connect_failed" with
+    * whatever errno is lying around - an fcntl refusal wearing a connect refusal's name.
+    *
+    * ⚠ AND THE DESCRIPTOR NAMESPACE IS SHARED, WHICH IS WHAT MAKES THIS ONE LINE ENOUGH.
+    * sceNetSetsockopt() applied to the fd musl's socket() returned answers 0, and the connect()
+    * after it returns EINPROGRESS rather than 0 - so the flag really took, on a descriptor
+    * neither API was documented to share. musl's socket() is a wrapper over __sys_socketex, the
+    * same syscall sceNetSocket() uses, and the measurement confirms it.
+    *
+    * The SDK names no sceNet option constants at all - orbis/Net.h declares the function and
+    * nothing else - so these two are the values this API family uses, verified by the probe in
+    * ps4/orbis_net_probe.c rather than taken on trust. */
+   int i = !block;
+
+   return !sceNetSetsockopt(fd, 0xFFFF /* SOL_SOCKET */, 0x1200 /* SO_NBIO */,
+         &i, sizeof(i));
 #else
    int flags = fcntl(fd, F_GETFL);
 

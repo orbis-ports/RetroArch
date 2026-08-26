@@ -402,6 +402,12 @@ static void task_core_updater_get_list_handler(retro_task_t *task)
             if (!*buildbot_url)
                goto task_finished;
 
+            /* ⚠ SAY WHICH URL, ALWAYS. The saved core_updater_buildbot_cores_url beats the
+             * compiled-in default, so a package can be built pointing at the right host and
+             * still fetch from a stale one that an older run wrote into retroarch.cfg. One
+             * line here turns "Failed to retrieve core list" from a guess into a fact. */
+            RARCH_LOG("[Core updater] Fetching core list from \"%s\".\n", buildbot_url);
+
             /* Configure file transfer object */
             if (!(transf = (file_transfer_t*)calloc(1,
                         sizeof(file_transfer_t))))

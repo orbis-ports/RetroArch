@@ -90,6 +90,14 @@ PS4_PKG_VERSION    := 01.00
 # media/retroarch-vector_invader-only.svg composited on our own ground instead.
 PS4_ICON           := ps4/icon0.png
 
+# Transport tracing for the HTTP task. OFF by default; a diagnostic build sets it to 1 and the
+# stage names (dns_lookup_failed / socket_create_failed / socket_connect_failed / ...) reach the
+# console log instead of stderr, which this platform cannot redirect - dup2 onto fd 1 or 2
+# answers EPERM. See the note at the top of libretro-common/net/net_http.c.
+#
+#   make -f Makefile.orbis ORBIS_NET_TRACE=1 ... pkg
+ORBIS_NET_TRACE    ?= 0
+
 # ---------------------------------------------------------------------------
 # Toolchain and the platform overlay.
 # ---------------------------------------------------------------------------
@@ -417,6 +425,11 @@ OC_DEFINES      := -DNETLOG_HOST='"$(PS4_NETLOG_HOST)"' -DNETLOG_PORT=$(PS4_NETL
                    -DPS4_APP_BUILD_STAMP='"$(PS4_APP_STAMP)"'
 
 DEFINES += -DRARCH_INTERNAL -DRARCH_CONSOLE -DHAVE_FILTERS_BUILTIN
+
+ifeq ($(ORBIS_NET_TRACE),1)
+  DEFINES += -DORBIS_NET_TRACE
+  OBJ     += ps4/orbis_net_probe.o
+endif
 
 # ⚠ -Werror IS DELIBERATELY OFF, and the old build's was load-bearing for nothing:
 # it was only ever exercised by a CI job that linked HAVE_STATIC_DUMMY against stub
