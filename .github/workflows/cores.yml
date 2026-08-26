@@ -688,10 +688,17 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # ⚠ include-hidden-files, AND THIS IS THE SAME DOT AGAIN. Since v4.4 upload-artifact
+      # excludes hidden files by default, so `path: dist/.index-extended` matched NOTHING and
+      # failed with "No files were found with the provided path" - on a file that was sitting
+      # right there, verified one step earlier. The leading dot that made GitHub Releases
+      # unusable as a host bites here too, for an unrelated reason and with a different
+      # message. R2 is unaffected: wrangler takes a literal path, not a glob.
       - uses: actions/upload-artifact@v4
         with:
           name: cores-index
           path: dist/.index-extended
+          include-hidden-files: true
           if-no-files-found: error
 
       # ⚠ STALE ASSETS ARE DELETED BEFORE THE NEW ONES GO UP. This tag is rolling, and
