@@ -14,6 +14,7 @@
 #   --drop-clones     delete each core's clone once it is done with (default under CI)
 #   --keep-clones     keep every clone (default interactively)
 #   --jobs N          parallelism for each core's make
+#   --core-timeout S  wall-clock cap per core in seconds; 0 disables   (default 1500)
 #
 # ⚠ ONE CORE IS THE NORMAL CASE, NOT THE SPECIAL ONE. `--all` exists for a sweep, but the thing
 # this is used for afterwards is "upstream moved, rebuild gambatte" and "I have a fix for
@@ -31,12 +32,21 @@
 # gives the core a sane arm to start from, its own link fails (host driver, -shared), and the
 # objects are collected and linked here. A core that needs more than that gets a patch.
 #
-# ⚠ AND THE CLONES ARE A DISK PROBLEM BEFORE THEY ARE A TIME ONE. This work directory reaches
-# 15 GB across the recipe and a GitHub-hosted runner has about 14 GB free, so a shard that keeps
-# every clone runs out of disk partway through and reports whatever a full disk looks like -
-# usually a compile error in an unrelated core. --drop-clones removes each clone once the harness
-# is finished with it, successful or not, so at most one is on disk at a time. Nothing worth
-# keeping lives in there: the logs, the .elf, the .prx and the manifest are all in $WORK itself.
+# ⚠ THE CLONES ARE HYGIENE, NOT SURVIVAL - THE PLAN'S DISK FIGURE IS WRONG. This work directory
+# reaches 15 GB across the recipe, and the plan (and the text that stood here) said a
+# GitHub-hosted runner has "about 14 GB free" - which would have made dropping the clones the
+# difference between finishing the sweep and failing it. MEASURED, on every ubuntu-latest runner
+# in run 32944175297 (2026-08-26), `df -h` printed:
+#
+#     /dev/root  145G  59G  86G  41% /          - and /mnt sits on that same filesystem
+#
+# 86 GB free against a 15 GB peak. So --drop-clones is HYGIENE: it keeps the tree small, keeps a
+# rerun from tripping over a half-fetched clone, and keeps `du` legible. It is NOT what stands
+# between a sweep and a full disk, and it stays on in CI anyway because nothing worth keeping
+# lives in a clone - the logs, the .elf, the .prx and the manifest are all in $WORK itself.
+#
+# What actually held shard 0 open for 59 minutes was TIME: kronos sat in one `make` from 07:45:37
+# to 08:43:01 and the runner was reclaimed underneath it. See --core-timeout below.
 #
 # ⚠ THE DEFAULT IS DECIDED BY $CI, NOT CHOSEN. Dropping cannot be the unconditional default -
 # it would break the workflow this script is named after. `build-cores.sh --recipe <r> gambatte`
@@ -61,6 +71,9 @@ TOOLCHAIN="$OO_PS4_TOOLCHAIN"
 WORK="${HOME}/.cache/ps4-cores"; OUT=""; RECIPE=""
 PATCHES="$HERE/core-patches"
 JOBS="$(nproc)"; ALL=0; LIST=0; UPDATE=0; KEEP=0
+# 1500s = 25 min. Chosen from measured data, not from taste - see the block above capped().
+CORE_TIMEOUT="${PS4_CORE_TIMEOUT:-1500}"
+CORE_TIMEOUT_KILL=30      # grace between the TERM and the KILL that follows it
 DROP_CLONES=-1        # -1: decide from $CI below.  0: keep.  1: drop.
 CORES=()
 while [[ $# -gt 0 ]]; do
@@ -70,6 +83,7 @@ while [[ $# -gt 0 ]]; do
     --out)     OUT="$2";     shift 2 ;;
     --patches) PATCHES="$2"; shift 2 ;;
     --jobs|-j) JOBS="$2";    shift 2 ;;
+    --core-timeout) CORE_TIMEOUT="$2"; shift 2 ;;
     --all)     ALL=1;        shift ;;
     --list)    LIST=1;       shift ;;
     --update)  UPDATE=1;     shift ;;
@@ -81,6 +95,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$RECIPE" && -f "$RECIPE" ]] || { echo "build-cores: --recipe <file> is required" >&2; exit 2; }
+case "$CORE_TIMEOUT" in
+  ''|*[!0-9]*) echo "build-cores: --core-timeout wants whole seconds, got '$CORE_TIMEOUT'" >&2; exit 2 ;;
+esac
+if [[ "$CORE_TIMEOUT" -ne 0 ]] && ! command -v timeout >/dev/null; then
+  echo "build-cores: coreutils timeout is missing; the per-core cap is OFF" >&2
+  CORE_TIMEOUT=0
+fi
 OUT="${OUT:-$WORK/out}"
 
 if [[ $DROP_CLONES -eq -1 ]]; then
@@ -239,8 +260,78 @@ core_make_flags() {
   esac
 }
 
+# ⚠ A PER-CORE WALL-CLOCK CAP, BECAUSE ONE CORE MUST NOT SPEND THE WHOLE SHARD'S BUDGET.
+#
+# Run 32944175297, shard 0: frodo finished at 07:45:37 and the NEXT line in the log is at
+# 08:43:01. kronos held one `make` open for 57 minutes, the runner was reclaimed underneath the
+# job ("The runner has received a shutdown signal"), and fourteen other cores in that shard - and
+# the publish job behind them - were lost to one core that would not stop.
+#
+# ⚠ THE NUMBER COMES FROM THE MEASUREMENT, NOT FROM TASTE. Timing every core in all eight shards
+# of that run (the gaps between consecutive report lines) puts the slowest SUCCESSFUL core at
+# mednafen_saturn, 831s. Next behind it: same_cdi 204s, mame2003 105s, puae 99s. The slowest
+# FAILING core that failed honestly was mame2015 at 245s. So the whole recipe fits under ~14
+# minutes per core, with one core defining that ceiling on its own.
+#
+#     1500s = 25 min = 1.8x mednafen_saturn.
+#
+# The headroom is for a slower runner and a cold clone, not for a second mednafen_saturn - and it
+# is still 1/2.3 of what kronos spent. --core-timeout 0 turns it off for a hand-run build.
+#
+# ⚠ AND IT KILLS THE PROCESS GROUP, NOT ONLY THE CHILD. `make -j4` leaves clang++ processes
+# behind: the same log ends with the runner reaping "orphan process: pid (6929) (make)" and three
+# stray clang++. GNU timeout WITHOUT --foreground puts itself and the command in a fresh process
+# group and signals the whole group on expiry; with --foreground it signals the command alone.
+# Measured here against a fake Makefile whose recipe backgrounds a `sh -c sleep 300`:
+#
+#     plain timeout        -> rc=124, 0 survivors
+#     timeout --foreground -> rc=124, 3 survivors
+#
+# So: no --foreground, ever, and -k to follow the TERM with a KILL for anything that ignores it.
+#
+# ⚠ AND THE SAME NEW PROCESS GROUP HAS TO BE KILLED BY HAND WHEN THE *RUNNER* CANCELS US. That
+# group is what insulates make from a signal aimed at this script's group - which is the whole
+# point on expiry and exactly wrong on a cancel, where make would be left running until the
+# runner's own orphan reaper found it. So the pid is written down while the command runs and
+# on_signal() below kills its group. Backgrounding it and waiting is not decoration either: bash
+# defers a trap until the current FOREGROUND command returns, so a script sitting in a 25-minute
+# `make` would not run its handler until that make was done.
+CORE_DEADLINE=0
+CAPPED_PID_FILE=""
+capped() { # capped <cmd>... - run it inside what is left of this core's budget
+  if [[ "$CORE_TIMEOUT" -eq 0 ]]; then "$@"; return; fi
+  local left=$(( CORE_DEADLINE - SECONDS ))
+  [[ "$left" -gt 0 ]] || return 124
+  timeout -k "$CORE_TIMEOUT_KILL" -s TERM "$left" "$@" &
+  local tpid=$! rc
+  printf '%s\n' "$tpid" > "$CAPPED_PID_FILE"
+  wait "$tpid"; rc=$?
+  : > "$CAPPED_PID_FILE"
+  return "$rc"
+}
+# ⚠ THE GUARD IS pgid == pid, AND IT IS NOT PARANOIA - THIS IS `kill` ON A NEGATIVE NUMBER. GNU
+# timeout makes itself the LEADER of the group it creates, so its pgid equals its pid; a pid that
+# has been recycled into something else almost never satisfies that, and the file is emptied the
+# moment each capped command returns.
+# shellcheck disable=SC2329  # run from the traps below, which shellcheck cannot follow
+kill_capped() {
+  local p g
+  p="$(cat "$CAPPED_PID_FILE" 2>/dev/null)" || return 0
+  [[ "$p" =~ ^[0-9]+$ ]] || return 0
+  g="$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' ')"
+  [[ "$g" == "$p" ]] || return 0
+  kill -TERM "-$g" 2>/dev/null
+  sleep 2
+  kill -KILL "-$g" 2>/dev/null
+  : > "$CAPPED_PID_FILE"
+}
+# 124 is timeout's own verdict; 128+9 is what it reports when -k had to escalate to SIGKILL.
+timed_out() { [[ "$1" -eq 124 || "$1" -eq 137 ]]; }
+
 MANIFEST="$OUT/cores.manifest"
 : > "$MANIFEST.new"
+CAPPED_PID_FILE="$WORK/.capped.pid"
+: > "$CAPPED_PID_FILE"
 
 # ⚠ MERGE ON THE WAY OUT, NOT AT THE END OF THE LOOP. A sweep of 162 cores takes hours and the
 # first one was stopped partway through: 64 cores built, every one of them missing from the
@@ -248,6 +339,7 @@ MANIFEST="$OUT/cores.manifest"
 # gets done again. A trap records it however the run ends.
 #
 # MERGE and not replace, too: building one core must not delete the record of the other hundred.
+# shellcheck disable=SC2329  # run from the traps below, which shellcheck cannot follow
 merge_manifest() {
   [[ -s "$MANIFEST.new" ]] || { rm -f "$MANIFEST.new"; return; }
   if [[ -f "$MANIFEST" ]]; then
@@ -278,18 +370,46 @@ drop_clone() {
   rm -rf "$victim"
 }
 
+# shellcheck disable=SC2329  # run from the traps below, which shellcheck cannot follow
 on_exit() { drop_clone; merge_manifest; }
-trap on_exit EXIT INT TERM
+
+# ⚠ A SIGNAL HAS TO END THE RUN, NOT JUST RUN THE HANDLER AND CARRY ON. `trap on_exit TERM` does
+# NOT stop the script: bash runs the handler and resumes at the next statement. Run 32944175297
+# shard 0 shows exactly what that costs. The runner's SIGTERM killed kronos's make, on_exit
+# deleted the kronos clone and merged the manifest - and then the loop RESUMED, found no objects
+# in a directory that had just been removed ("find: '/mnt/ps4-cores/libretro-kronos': No such
+# file or directory"), and recorded `kronos COMPILE` for a core it never finished compiling.
+# Then it went on to clone mame2003_plus and recorded `mame2003_plus CLONE` for a clone the
+# cancel interrupted. Two fabricated verdicts, both of which read as broken cores.
+# shellcheck disable=SC2329  # run from the traps below, which shellcheck cannot follow
+on_signal() { # on_signal <name> <exit status>
+  trap - EXIT INT TERM
+  echo "build-cores: caught SIG$1 - stopping, the results so far stand" >&2
+  kill_capped
+  on_exit
+  exit "$2"
+}
+trap on_exit EXIT
+trap 'on_signal INT 130' INT
+trap 'on_signal TERM 143' TERM
 
 printf '%-24s %-9s %-9s %-8s %s\n' CORE RESULT SIZE COMMIT NOTE
 printf '%-24s %-9s %-9s %-8s %s\n' ------------------------ --------- --------- -------- ----
 
+N_OK=0; N_FORK=0; N_BAD=0; N_SKIP=0; FAILED=()
 report() { # core result size commit note
   printf '%-24s %-9s %-9s %-8s %s\n' "$1" "$2" "$3" "$4" "$5"
   printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" >> "$MANIFEST.new"
+  case "$2" in
+    OK)   N_OK=$((N_OK + 1)) ;;
+    FORK) N_FORK=$((N_FORK + 1)) ;;   # built on purpose and deliberately not written
+    SKIP) N_SKIP=$((N_SKIP + 1)) ;;   # not in the recipe, or a build type this port cannot use
+    *)    N_BAD=$((N_BAD + 1)); FAILED+=("$1($2)") ;;
+  esac
 }
 
 for core in "${CORES[@]}"; do
+  CORE_DEADLINE=$(( SECONDS + CORE_TIMEOUT ))
   line="$(recipe_line "$core")"
   [[ -n "$line" ]] || { report "$core" SKIP - - "not in the recipe"; continue; }
   read -r _name dir url branch _fetch buildtype makefile subdir _rest <<<"$line"
@@ -308,7 +428,14 @@ for core in "${CORES[@]}"; do
   [[ $DROP_CLONES -eq 1 ]] && CLONE_TO_DROP="$src"
   if [[ ! -d "$src/.git" ]]; then
     rm -rf "$src"
-    if ! git clone -q --depth 1 --recursive -b "$branch" "$url" "$src" 2>"$WORK/$core.clone"; then
+    # Capped too, and not only the make: the log gives no way to tell which of the two ate
+    # kronos's 57 minutes, because a quiet clone prints nothing until it is done.
+    capped git clone -q --depth 1 --recursive -b "$branch" "$url" "$src" 2>"$WORK/$core.clone"
+    rc=$?
+    if timed_out "$rc"; then
+      report "$core" TIMEOUT - - "clone ran past ${CORE_TIMEOUT}s"
+      continue
+    elif [[ "$rc" -ne 0 ]]; then
       report "$core" CLONE - - "$(tail -1 "$WORK/$core.clone" | cut -c1-46)"
       continue
     fi
@@ -363,8 +490,17 @@ for core in "${CORES[@]}"; do
   # missing symbol. Turning it off makes both sides agree and loses nothing that exists here.
   # $makeflags is a list of make variables and must word-split - hence the disable below.
   # shellcheck disable=SC2086
-  ( cd "$bdir" && make -f "${makefile:-Makefile}" platform=unix HAVE_CDROM=0 $makeflags \
+  ( cd "$bdir" && capped make -f "${makefile:-Makefile}" platform=unix HAVE_CDROM=0 $makeflags \
         CC="$CC_ORBIS" CXX="$CXX_ORBIS" AR=llvm-ar -k -j"$JOBS" ) >"$WORK/$core.log" 2>&1
+  rc=$?
+  # ⚠ TIMEOUT IS ITS OWN VERDICT AND NOT "COMPILE". A core that ran out of clock has objects
+  # half-written and a log that ends mid-sentence; calling that a compile failure sends whoever
+  # reads the manifest looking for an error message that was never printed. The two want
+  # different follow-up - one wants a patch, the other wants a profile or a bigger cap.
+  if timed_out "$rc"; then
+    report "$core" TIMEOUT - "$commit" "make ran past ${CORE_TIMEOUT}s, killed with its children"
+    continue
+  fi
 
   mapfile -t objs < <(find "$src" -name '*.o' -type f | sort)
   if [[ ${#objs[@]} -eq 0 ]]; then
@@ -378,11 +514,16 @@ for core in "${CORES[@]}"; do
   # undefined glXxx symbols and not one of the twenty-two its recompiler was missing, which reads
   # as "a GL core, otherwise complete" - the opposite of the truth. The note below quotes the first
   # symbol either way, but the log has to hold all of them for anyone to work from.
-  if ! ld.lld "${objs[@]}" "$WEAK_STUBS" "${KEEP_SYMS[@]}" --error-limit=0 -o "$WORK/$core.elf" \
+  capped ld.lld "${objs[@]}" "$WEAK_STUBS" "${KEEP_SYMS[@]}" --error-limit=0 -o "$WORK/$core.elf" \
         -m elf_x86_64 -pie --script "${ORBIS_LINK_SCRIPT:-$HERE/orbis-module.ld}" --eh-frame-hdr --no-rosegment \
         -L"$TOOLCHAIN/lib" -L"$ORBIS_COMPAT_DIR/build" "$COMMON_LIB" "$CORE_SUPPORT_LIB" \
         -lorbis-compat -lc -lkernel -lc++ -lSceNet -lSceUserService \
-        "$TOOLCHAIN/lib/crtlib.o" >"$WORK/$core.link" 2>&1; then
+        "$TOOLCHAIN/lib/crtlib.o" >"$WORK/$core.link" 2>&1
+  rc=$?
+  if timed_out "$rc"; then
+    report "$core" TIMEOUT "${#objs[@]}o" "$commit" "the link ran past ${CORE_TIMEOUT}s"
+    continue
+  elif [[ "$rc" -ne 0 ]]; then
     err="$(grep -m1 -oP 'undefined symbol: \K.*' "$WORK/$core.link" | cut -c1-46)"
     report "$core" LINK "${#objs[@]}o" "$commit" "${err:-link failed}"
     continue
@@ -418,8 +559,13 @@ for core in "${CORES[@]}"; do
       report "$core" FORK "${#objs[@]}o" "$commit" "built, NOT written - $core has a port of its own"
       continue ;;
   esac
-  ( cd "$WORK" && OO_PS4_TOOLCHAIN="$TOOLCHAIN" "$TOOLCHAIN/bin/linux/create-fself" \
+  ( cd "$WORK" && export OO_PS4_TOOLCHAIN="$TOOLCHAIN" && capped "$TOOLCHAIN/bin/linux/create-fself" \
       -in="$core.elf" -out="$core.oelf" --lib="$name.prx" --paid 0x3800000000000011 ) >"$WORK/$core.fself" 2>&1
+  rc=$?
+  if timed_out "$rc"; then
+    report "$core" TIMEOUT "${#objs[@]}o" "$commit" "create-fself ran past ${CORE_TIMEOUT}s"
+    continue
+  fi
   # ⚠ create-fself EXITS 0 WHEN IT REFUSES, so the file is the test, not the status. And it
   # refuses over a single unresolvable symbol, which its own message names - repeating that name
   # here is the difference between "it refused" and a verdict somebody can act on.
@@ -436,3 +582,37 @@ for core in "${CORES[@]}"; do
   report "$core" OK "$(du -h "$OUT/$name.prx" | cut -f1)" "$commit" ""
 done
 
+# ⚠ THE EXIT STATUS ANSWERS "IS THE HARNESS BROKEN", NOT "DID EVERY CORE BUILD", AND THE DECISION
+# LIVES HERE RATHER THAN IN THE WORKFLOW.
+#
+# The recipe carries 163 cores and only 101 have ever built anywhere. A core that will not compile
+# is the STEADY STATE of this project, not an exception, so a shard that reddens over one of them
+# takes the other fourteen - and the publish job behind them - down with it. Run 32944175297 lost
+# a whole release that way.
+#
+# Every exit above this line is systemic: orbis-compat missing, no libretro-common objects to
+# build the frontend archive from, the weak stubs or the support archive refusing to compile, a
+# malformed argument. Those mean the next core would fail for the same reason as this one. A
+# per-core COMPILE / LINK / CLONE / PATCH / FSELF / NO-ABI / TIMEOUT verdict does not: it is DATA,
+# it is already in the manifest and in the table above, and the shard should upload what it built.
+#
+# The one per-core outcome that IS systemic is all of them at once. If nothing in the list
+# produced a module, the cause is far more likely to be this harness or its toolchain than 15
+# unrelated cores breaking on the same morning, and a green job with an empty out/ is the exact
+# silent success this project has already paid for.
+#
+# ⚠ AND THE WORKFLOW MUST NOT SECOND-GUESS THIS BY PARSING THE MANIFEST FOR A PASS/FAIL. Two
+# places deciding what counts as a failure is two places that will disagree, and the manifest
+# cannot speak for the runs that died before writing one. The workflow READS the manifest - for
+# the step summary, and to say which cores are missing from the index - and keys pass/fail on
+# this status alone.
+echo "== $N_OK built, $N_BAD failed, $N_SKIP skipped, $N_FORK left to a port of their own"
+[[ "$N_BAD" -eq 0 ]] || echo "== did not build: ${FAILED[*]}"
+
+if [[ $((N_OK + N_FORK)) -eq 0 ]]; then
+  echo "build-cores: none of the ${#CORES[@]} core(s) asked for produced a module." >&2
+  echo "   That is a broken harness far more often than it is $((N_BAD + N_SKIP)) core(s) all" >&2
+  echo "   breaking on the same morning." >&2
+  exit 1
+fi
+exit 0

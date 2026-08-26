@@ -7,10 +7,33 @@
 # - build the frontend first". So every core job downloads frontend-common-objects from the
 # newest successful run of frontend.yml, and there is no arrangement in which cores build first.
 #
-# ⚠ SHARDED FOR DISK BEFORE TIME. The work directory reaches 15 GB across the recipe and a
-# GitHub-hosted runner has around 14 GB free on /. Eight shards plus --drop-clones keeps at most
-# one clone alive at a time; the wall clock is set by the widest shard (~10 min for
-# mame2003_plus at -j4), not by the total.
+# ⚠ SHARDED FOR TIME, NOT FOR DISK - AND THE PLAN'S DISK FIGURE IS WRONG. The work directory
+# reaches 15 GB across the recipe and the plan said a GitHub-hosted runner has "around 14 GB free
+# on /", which made the sharding sound like a survival measure. MEASURED on run 32944175297
+# (2026-08-26), every ubuntu-latest runner in this matrix printed
+#
+#     /dev/root  145G  59G  86G  41% /
+#
+# and /mnt turned out to be on that same filesystem, so the "Pick a work directory" step below is
+# choosing a path, not a disk. 86 GB free against a 15 GB peak: --drop-clones is HYGIENE and not
+# what stands between the sweep and a full disk. It stays.
+#
+# What sharding actually buys is wall clock, and the wall clock is set by the widest shard - 25
+# min for shard 6, whose mednafen_saturn alone took 831s of it.
+#
+# ⚠ AND EVERY JOB HERE CARRIES timeout-minutes, BECAUSE A CANCEL WITH NO NUMBER ON IT IS A
+# MYSTERY. Shard 0 of that run sat in one core for 57 minutes and was then killed by "The runner
+# has received a shutdown signal" at 59 minutes - nothing in this file had asked for either
+# number, so there was no way to tell a hung core from a reclaimed runner. Now there is: the caps
+# below are set from that run's measured durations, and ps4/build-cores.sh caps each core.
+#
+# ⚠ A CORE THAT WILL NOT BUILD IS THE STEADY STATE, NOT AN INCIDENT, AND NOTHING HERE MAY TREAT
+# IT AS ONE. The recipe carries 163 cores; 101 have ever built anywhere. So `shard` is green when
+# it builds SOME cores and says loudly in its step summary which ones it did not, and `publish`
+# runs on partial results and states its own coverage rather than pretending to 163. The only
+# things that redden a shard are systemic: no toolchain, no frontend objects, or not one core in
+# the whole shard producing a module. See the exit-convention block at the end of
+# ps4/build-cores.sh, which is where that decision is made and stays made.
 #
 # ⚠ AND THE INDEX IS CUT WHERE THE BINARIES ARE, NEVER LATER. create-fself is not
 # byte-reproducible - two links from identical objects produced .prx files differing at byte 833
@@ -84,6 +107,9 @@ jobs:
   plan:
     if: github.repository == 'orbis-ports/RetroArch'
     runs-on: ubuntu-latest
+    # Two checkouts, an awk and a `gh run list`: 12s measured on run 32944175297. 10 minutes is
+    # entirely queueing and network slack.
+    timeout-minutes: 10
     # `gh run list` reads another workflow's history, which contents:read does not cover.
     permissions:
       contents: read
@@ -159,6 +185,12 @@ jobs:
   shard:
     needs: plan
     runs-on: ubuntu-latest
+    # ⚠ MEASURED, NOT GUESSED. Run 32944175297's seven healthy shards took 6, 8, 9, 9, 13, 13 and
+    # 25 minutes. The widest was 25. Add the per-core cap that ps4/build-cores.sh now enforces
+    # (25 min) and a shard that loses two cores to it still lands near 75; 90 is that with the
+    # toolchain restore on top. Anything past 90 minutes is not a slow shard, it is a stuck one,
+    # and this is the number that says so instead of leaving a bare "The operation was canceled".
+    timeout-minutes: 90
     # ⚠ actions:read IS WHAT MAKES THE CROSS-WORKFLOW DOWNLOAD POSSIBLE. download-artifact with
     # a run-id from frontend.yml goes through the Actions API, not through this run's own
     # artifact scope; without it the step fails with a 403 that reads like a missing artifact.
@@ -179,10 +211,19 @@ jobs:
           ref: ${{ env.LIBRETRO_SUPER_REF }}
           path: .libretro-super
 
-      # ⚠ THE WORK DIRECTORY GOES ON THE TEMP DISK IF THERE IS ONE. / has about 14 GB free on a
-      # GitHub-hosted runner and /mnt has tens of gigabytes of ephemeral storage. Running out of
-      # disk mid-sweep does not announce itself: it surfaces as a compile error in whichever
-      # core happened to be writing at the time, which reads as a broken core.
+      # ⚠ THE WORK DIRECTORY GOES ON THE TEMP DISK IF THERE IS ONE - BUT ON THESE IMAGES THERE
+      # IS NO SEPARATE ONE, AND THE PLAN'S NUMBERS SAID OTHERWISE. The plan had / at "about
+      # 14 GB free" with /mnt holding tens of gigabytes of ephemeral storage beside it. On run
+      # 32944175297 the `df -h` below printed the SAME filesystem twice:
+      #
+      #     /dev/root  145G  59G  86G  41% /
+      #     /dev/root  145G  59G  86G  41% /
+      #
+      # - once for $work under /mnt and once for /. So this step still picks the better path if a
+      # real ephemeral disk ever comes back, but today it is choosing between two names for one
+      # 145 GB volume with 86 GB free, and running out of disk mid-sweep is not the failure mode
+      # this workflow needs to defend against. Running out of TIME is; see timeout-minutes above
+      # and --core-timeout below. Keep the df: it is how the next person learns this changed.
       - name: Pick a work directory
         id: work
         run: |
@@ -235,8 +276,21 @@ jobs:
           # ⚠ --drop-clones EXPLICITLY, even though CI=true already selects it. The plan's rule
           # is "never pass --keep in CI"; saying the positive out loud costs one word and
           # survives someone changing what the default means.
+          #
+          # ⚠ --core-timeout IS THE FIX FOR RUN 32944175297 AND IT IS PASSED OUT LOUD FOR THE
+          # SAME REASON. 1500s = 25 min = 1.8x mednafen_saturn, the slowest core that actually
+          # SUCCEEDED anywhere in that run at 831s. kronos spent 3444s and took the release with
+          # it. The reasoning in full, with the runner-up timings, is at capped() in
+          # ps4/build-cores.sh.
+          #
+          # ⚠ AND THIS STEP STILL RUNS UNDER `set -e`, ON PURPOSE. build-cores.sh exits non-zero
+          # ONLY for something systemic - no toolchain, no libretro-common objects, or not one
+          # core in this shard producing a module. A core that fails to compile, link, patch or
+          # finish in time exits 0 and lands in cores.manifest, which the steps below read. The
+          # convention is documented at the end of ps4/build-cores.sh; do not add a second
+          # opinion about it here.
           ps4/build-cores.sh --recipe "$RECIPE" --work "$WORK" --out "$WORK/out" \
-            --drop-clones --jobs "$(getconf _NPROCESSORS_ONLN)" "${cores[@]}"
+            --drop-clones --core-timeout 1500 --jobs "$(getconf _NPROCESSORS_ONLN)" "${cores[@]}"
           df -h "$WORK" /
 
       # ⚠ ASSERT ON ARTEFACTS. A green run that produced nothing usable is the failure this
@@ -249,33 +303,57 @@ jobs:
       # create-fself emits a fake-signed SELF: `file` calls it "data", llvm-nm refuses it, and
       # `strings` does not even contain the symbol names. The ELF beside it in the work
       # directory is the same link, one step earlier, and is the last readable form.
+      #
+      # ⚠ AND A MODULE THAT FAILS IS QUARANTINED, NOT FATAL. This used to exit 1 on the first bad
+      # module, which is the same "one core reddens fifteen" mistake the rest of this file now
+      # refuses to make - except worse, because the fourteen good .prx files were already built
+      # and sitting right there. Deleting the offender keeps the promise the publish job depends
+      # on ("partial means fewer cores, never a broken index"): make-index.sh only ever sees the
+      # modules that survived, so the index and the archives still agree exactly. The verdict is
+      # written back into cores.manifest so the summary and the publish job can name it.
       - name: Assert every module has retro_run
         env:
           WORK: ${{ steps.work.outputs.work }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
+          mods=("$WORK"/out/*.prx)
+          [ "${#mods[@]}" -gt 0 ] || { echo "!! shard ${{ matrix.shard }} built no cores at all" >&2; exit 1; }
+          man="$WORK/out/cores.manifest"
           bad=0; n=0
-          for prx in "$WORK"/out/*.prx; do
-            [ -e "$prx" ] || { echo "!! shard ${{ matrix.shard }} built no cores at all" >&2; exit 1; }
+          for prx in "${mods[@]}"; do
             name="$(basename "$prx" .prx)"; core="${name%_libretro}"
             elf="$WORK/$core.elf"
+            note=""
             if [ ! -f "$elf" ]; then
-              echo "!! $name.prx exists but $elf does not - cannot verify its ABI" >&2
-              bad=$((bad + 1)); continue
+              note="the .prx is here but $core.elf is not - its ABI cannot be verified"
+            else
+              # No `grep -q` in a pipeline under pipefail: it exits on the first match, SIGPIPEs
+              # llvm-nm, and fails the pipeline for cores whose symbol table outgrows the pipe
+              # buffer. That false verdict scales with the size of the core - it condemns the big
+              # ones. Capture first, test after.
+              syms="$(llvm-nm "$elf" 2>/dev/null || true)"
+              case "$syms" in
+                *" T retro_run"*) n=$((n + 1)); continue ;;
+                *) note="linked without retro_run - it is not a core, whatever it built" ;;
+              esac
             fi
-            # No `grep -q` in a pipeline under pipefail: it exits on the first match, SIGPIPEs
-            # llvm-nm, and fails the pipeline for cores whose symbol table outgrows the pipe
-            # buffer. That false verdict scales with the size of the core - it condemns the big
-            # ones. Capture first, test after.
-            syms="$(llvm-nm "$elf" 2>/dev/null || true)"
-            case "$syms" in
-              *" T retro_run"*) n=$((n + 1)) ;;
-              *) echo "!! $name has no retro_run - it is not a core, whatever it built" >&2
-                 bad=$((bad + 1)) ;;
-            esac
+            echo "!! $name: $note" >&2
+            rm -f "$prx"
+            bad=$((bad + 1))
+            if [ -f "$man" ] && awk -F'\t' -v c="$core" '$1 == c {found = 1} END {exit !found}' "$man"; then
+              awk -F'\t' -v OFS='\t' -v c="$core" -v note="$note" \
+                  '$1 == c { $2 = "NO-ABI"; $3 = "-"; $5 = note } {print}' "$man" > "$man.abi"
+              mv "$man.abi" "$man"
+            else
+              printf '%s\tNO-ABI\t-\t-\t%s\n' "$core" "$note" >> "$man"
+            fi
           done
-          [ "$bad" -eq 0 ] || { echo "!! $bad module(s) failed the ABI check" >&2; exit 1; }
-          echo "== $n modules carry retro_run"
+          echo "== $n modules carry retro_run, $bad quarantined"
+          [ "$n" -gt 0 ] || {
+            echo "!! every module shard ${{ matrix.shard }} produced failed the ABI check." >&2
+            echo "   That is the harness or the toolchain, not $bad unrelated core(s)." >&2
+            exit 1; }
 
       # Zips and the index fragment, computed from the exact bytes about to be uploaded.
       # The fragment is named per shard: eight files called .index-extended would collide the
@@ -285,6 +363,14 @@ jobs:
           WORK: ${{ steps.work.outputs.work }}
         run: |
           set -euo pipefail
+          mkdir -p out
+          # ⚠ THE MANIFEST TRAVELS WITH THE ZIPS, because the publish job has to say WHY a core is
+          # missing from the index and the only place that knows is the shard that tried to build
+          # it. Named per shard for the same reason the index fragment is: eight files called
+          # cores.manifest would collide the moment publish merges them into one directory. It is
+          # a .tsv so no glob in this file that means "index fragment" or "archive" can pick it up.
+          cp -f "$WORK/out/cores.manifest" "out/cores-manifest-${{ matrix.shard }}.tsv" \
+            || : > "out/cores-manifest-${{ matrix.shard }}.tsv"
           ps4/make-index.sh --in "$WORK/out" --out out \
             --index "index-fragment-${{ matrix.shard }}.txt"
           cat "out/index-fragment-${{ matrix.shard }}.txt"
@@ -295,20 +381,58 @@ jobs:
           path: |
             out/*.prx.zip
             out/index-fragment-${{ matrix.shard }}.txt
+            out/cores-manifest-${{ matrix.shard }}.tsv
           if-no-files-found: error
           retention-days: 7
 
+      # ⚠ A GREEN SHARD THAT QUIETLY DROPPED TWO CORES IS THE FAILURE THIS WHOLE CHANGE IS
+      # SUPPOSED TO PREVENT. The job no longer reddens over a core that will not build - so the
+      # only thing left standing between "13 of 15" and nobody noticing is this summary, and it
+      # leads with the count and names the casualties in a table before it offers the manifest.
       - name: Build report
         if: always()
         env:
           WORK: ${{ steps.work.outputs.work }}
+          SHARD: ${{ matrix.shard }}
         run: |
+          set -uo pipefail
+          man="$WORK/out/cores.manifest"
           {
-            echo "### shard ${{ matrix.shard }}"
-            echo
-            echo '```'
-            cat "$WORK/out/cores.manifest" 2>/dev/null || echo "(no manifest)"
-            echo '```'
+            if [ ! -s "$man" ]; then
+              echo "### shard $SHARD - no manifest"
+              echo
+              echo "\`build-cores.sh\` recorded nothing. It did not get far enough to try a core:"
+              echo "look at the toolchain and frontend-object steps above, not at the cores."
+            else
+              total="$(wc -l < "$man")"
+              ok="$(awk -F'\t' '$2 == "OK"' "$man" | wc -l)"
+              bad="$(awk -F'\t' '$2 != "OK" && $2 != "SKIP" && $2 != "FORK"' "$man" | wc -l)"
+              echo "### shard $SHARD - $ok of $total built"
+              echo
+              if [ "$bad" -gt 0 ]; then
+                echo "**$bad core(s) did NOT build.** The job is green regardless: a core that will"
+                echo "not compile is data, not a broken pipeline. These are the ones to look at."
+                echo
+                echo "| core | result | note |"
+                echo "|---|---|---|"
+                awk -F'\t' '$2 != "OK" && $2 != "SKIP" && $2 != "FORK" {
+                              printf "| `%s` | **%s** | %s |\n", $1, $2, $5 }' "$man"
+                echo
+                echo "\`TIMEOUT\` means the core ran past \`--core-timeout\` and was killed with its"
+                echo "children - not that it fails to compile. The two want different follow-up."
+                echo
+              else
+                echo "Every core in this shard built."
+                echo
+              fi
+              echo "<details><summary>full manifest</summary>"
+              echo
+              echo '```'
+              cat "$man"
+              echo '```'
+              echo
+              echo "</details>"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------------------
@@ -325,6 +449,10 @@ jobs:
   fork:
     if: github.repository == 'orbis-ports/RetroArch'
     runs-on: ubuntu-latest
+    # One core, from a cold checkout: 73s of compile-and-link inside a 110s job on run
+    # 32944175297. 30 minutes is 16x that, which is the right kind of margin for a single build
+    # with no matrix behind it - and still a number, which is the point.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -387,13 +515,41 @@ jobs:
           retention-days: 7
 
   # ---------------------------------------------------------------------------------------
+  # ⚠ PARTIAL RESULTS ARE STILL A RELEASE, AND `needs: shard` ALONE SAID OTHERWISE.
+  # On run 32944175297 seven shards finished in 6-25 minutes and shard 0 was killed at 59. With a
+  # plain `needs`, that one job skipped this one, and 150-odd cores that were built, zipped,
+  # indexed and uploaded were thrown away because a fifteenth of the matrix did not come back.
+  # The condition below runs publish whenever there is anything to publish. `shard` is still in
+  # `needs` - the job waits for the whole matrix, and its result is read out in the coverage step
+  # so a partial release says so in its own summary.
+  #
+  # `!cancelled()` and not `always()`: if a human cancels the run, they mean it. A shard that
+  # fails on its own is a different thing entirely and must not stop the other seven shipping.
   publish:
     needs: [plan, shard, fork]
+    if: >-
+      !cancelled()
+      && needs.plan.result == 'success'
+      && needs.fork.result == 'success'
     runs-on: ubuntu-latest
+    # Downloads ~100 archives, hashes every one of them out of its zip, then pushes each to R2
+    # through a fresh `npx wrangler` (8 wide, ~5 min of pure latency by the estimate at that
+    # step) and HEADs them all back. Never measured end to end - this job has not run yet - so
+    # 60 is a deliberately loose first number to be tightened once there is a real duration.
+    timeout-minutes: 60
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      # The coverage step needs the recipe to know what "all of them" was supposed to mean, and
+      # ps4/shard-cores.sh reads it out of the same pinned commit the matrix was dealt from.
+      - name: Checkout libretro-super
+        uses: actions/checkout@v4
+        with:
+          repository: libretro/libretro-super
+          ref: ${{ env.LIBRETRO_SUPER_REF }}
+          path: .libretro-super
 
       - name: Collect every shard
         uses: actions/download-artifact@v4
@@ -451,6 +607,74 @@ jobs:
       # module unpacked out of the archive that will carry it.
       - name: Verify the index against the archives
         run: ps4/make-index.sh --out dist --verify
+
+      # ⚠ SAY HOW MUCH OF THE RECIPE THIS ACTUALLY IS. A silent 150-core release that everyone
+      # believes is 163 is worse than a loud one: the missing thirteen get rediscovered one at a
+      # time, on a console, by whoever went looking for a core that was never there. So this step
+      # states the three numbers that matter - in the recipe, attempted, in the index - and names
+      # every core that is missing together with the verdict the shard recorded for it.
+      #
+      # It cannot fail the job. Coverage is a fact about this release, not a threshold: a run
+      # that publishes 150 of 163 has done the right thing with what built.
+      - name: Coverage
+        env:
+          SHARD_RESULT: ${{ needs.shard.result }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          # --include-forks: mednafen_psx_hw is kept out of the matrix on purpose and built by
+          # the `fork` job, but it is in the recipe and it is in this release, so it belongs in
+          # the denominator.
+          ps4/shard-cores.sh --recipe "$RECIPE" --all --include-forks | LC_ALL=C sort > /tmp/cov-recipe
+          total="$(wc -l < /tmp/cov-recipe)"
+
+          awk '{print $3}' dist/.index-extended | sed 's/_libretro\.prx\.zip$//' \
+            | LC_ALL=C sort > /tmp/cov-indexed
+          indexed="$(wc -l < /tmp/cov-indexed)"
+
+          : > /tmp/cov-verdicts
+          for m in dist/cores-manifest-*.tsv; do cat "$m" >> /tmp/cov-verdicts; done
+          attempted="$(awk -F'\t' 'NF {print $1}' /tmp/cov-verdicts | LC_ALL=C sort -u | wc -l)"
+
+          LC_ALL=C comm -23 /tmp/cov-recipe /tmp/cov-indexed > /tmp/cov-missing
+          nmissing="$(wc -l < /tmp/cov-missing)"
+
+          {
+            echo "### Coverage"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| cores in the recipe | $total |"
+            echo "| attempted by a shard | $attempted |"
+            echo "| in \`.index-extended\` | **$indexed** |"
+            echo "| missing | $nmissing |"
+            echo
+            if [ "$SHARD_RESULT" != "success" ]; then
+              echo "> **The \`shard\` matrix came back \`$SHARD_RESULT\`.** This release is cut from"
+              echo "> whatever the shards that did finish uploaded. Cores a failed shard was"
+              echo "> carrying appear below with no recorded status - they were never reported on,"
+              echo "> which is not the same as having failed to build."
+              echo
+            fi
+            if [ "$nmissing" -gt 0 ]; then
+              echo "**$nmissing of $total cores are not in this release:**"
+              echo
+              echo "| core | recorded status | note |"
+              echo "|---|---|---|"
+              while read -r c; do
+                [ -n "$c" ] || continue
+                row="$(awk -F'\t' -v c="$c" '$1 == c {print $2 "\t" $5; exit}' /tmp/cov-verdicts)"
+                if [ -z "$row" ]; then
+                  printf '| `%s` | _never reported_ | no shard manifest mentions it |\n' "$c"
+                else
+                  printf '| `%s` | **%s** | %s |\n' "$c" "${row%%$'\t'*}" "${row#*$'\t'}"
+                fi
+              done < /tmp/cov-missing
+            else
+              echo "Every core in the recipe is in this release."
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Summary
         run: |
