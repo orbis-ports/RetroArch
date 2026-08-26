@@ -7,7 +7,7 @@
 #
 #   - uses: ./.github/actions/orbis-toolchain
 #     with:
-#       sdk-tag:          v0.5.2
+#       sdk-tag:          v0.5.4
 #       orbis-compat-ref: <commit sha>
 #       mesa-release:     orbis-mesa-<sha>
 #
@@ -21,27 +21,29 @@ inputs:
   sdk-tag:
     description: OpenOrbis-PS4-Toolchain release tag to install.
     required: false
-    default: v0.5.2
+    default: v0.5.4
   sdk-repo:
     description: Repository the SDK release comes from.
     required: false
     default: OpenOrbis/OpenOrbis-PS4-Toolchain
   sdk-asset:
-    # TODO(verify): the exact asset name has NOT been established. What IS established:
-    #   * the SDK on the development machine lives at ~/.local/opt/openorbis and its
-    #     CHANGELOG.md tops out at "v0.5.2 - December 21st, 2021", which is upstream's
-    #     last tagged release;
-    #   * but bin/linux/create-fself is dated 2026-01-04 and link.x 2025-02-18, BOTH
-    #     newer than that release - so the working copy is NOT the v0.5.2 asset. It is
-    #     either a build of the repo's own toolchain.yml workflow or a hand-updated tree.
-    #   * there is no install record anywhere in RetroArch/ps4, orbis-compat or mesa-ps4,
-    #     and no flake.nix in either overlay repo that fetches it.
-    # So: confirm the asset name against the releases page (or publish a known-good copy
-    # under orbis-ports) BEFORE trusting a green run here. A wrong tag installs a 2021 SDK
-    # against 2026 headers and the failure will not name itself.
+    # ESTABLISHED, not guessed. The CHANGELOG inside the tree stops at "v0.5.2 - December
+    # 21st, 2021", which is why this looked like a 2021 toolchain and why the tag was wrong
+    # here at first: upstream stopped updating the changelog, not the toolchain. v0.5.4 was
+    # published 2026-01-04, and bin/linux/create-fself in the development machine's copy
+    # carries that same date.
+    #
+    # Verified by content rather than by date: create-fself and link.x extracted from
+    # toolchain-llvm-18.tar.gz are BYTE-IDENTICAL to the ones at ~/.local/opt/openorbis -
+    # the tree that built all 101 cores and the 60 fps N64 run. So this pin is not "the
+    # newest release", it is "the tree this port is known to work with".
+    #
+    # ⚠ The tarball nests everything under OpenOrbis/PS4Toolchain/. The unpack step below
+    # finds link.x and re-roots on it rather than stripping a fixed component count, so a
+    # future asset that flattens the layout still lands correctly.
     description: Glob for the release asset holding the toolchain tree.
     required: false
-    default: PS4Toolchain.tar.gz
+    default: toolchain-llvm-18.tar.gz
   orbis-compat-repo:
     description: Repository holding the platform overlay.
     required: false

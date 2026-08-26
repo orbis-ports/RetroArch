@@ -72,7 +72,7 @@ env:
   LIBRETRO_SUPER_REF: ${{ github.event.inputs.libretro-super-ref || 'bc2b5463fe7e45a36295db54f74bc56b950dec4b' }}
   ORBIS_COMPAT_REF: ${{ github.event.inputs.orbis-compat-ref || '2460acbef8850fab0e525b58a6961d947c86fc3f' }}
   MESA_RELEASE: ${{ github.event.inputs.mesa-release || 'orbis-mesa-88428bbb5e40' }}
-  OPENORBIS_SDK_TAG: v0.5.2
+  OPENORBIS_SDK_TAG: v0.5.4
   SHARDS: ${{ github.event.inputs.shards || '8' }}
   RECIPE: .libretro-super/recipes/linux/cores-linux-x64-generic
 

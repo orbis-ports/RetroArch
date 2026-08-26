@@ -43,7 +43,7 @@ env:
   # produces a binary that links cleanly and misbehaves at run time.
   ORBIS_COMPAT_REF: ${{ github.event.inputs.orbis-compat-ref || '2460acbef8850fab0e525b58a6961d947c86fc3f' }}
   MESA_RELEASE: ${{ github.event.inputs.mesa-release || 'orbis-mesa-88428bbb5e40' }}
-  OPENORBIS_SDK_TAG: v0.5.2
+  OPENORBIS_SDK_TAG: v0.5.4
 
 jobs:
   frontend:
