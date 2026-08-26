@@ -31,7 +31,7 @@ on:
       mesa-release:
         description: mesa-ps4 release tag whose orbis-mesa-<sha>.tar.gz to consume.
         required: false
-        default: orbis-mesa-88428bbb5e40
+        default: orbis-mesa-c42aa135f234
 
 permissions:
   contents: read
@@ -42,7 +42,7 @@ env:
   # constants inside the eboot; a cache that serves yesterday's Mesa against today's headers
   # produces a binary that links cleanly and misbehaves at run time.
   ORBIS_COMPAT_REF: ${{ github.event.inputs.orbis-compat-ref || '2460acbef8850fab0e525b58a6961d947c86fc3f' }}
-  MESA_RELEASE: ${{ github.event.inputs.mesa-release || 'orbis-mesa-88428bbb5e40' }}
+  MESA_RELEASE: ${{ github.event.inputs.mesa-release || 'orbis-mesa-c42aa135f234' }}
   OPENORBIS_SDK_TAG: v0.5.4
 
 jobs:
