@@ -1896,3 +1896,50 @@ console reading the index between the two states downloads a core that is not th
 runs after the new index is live, and the only inventory available is the *previous* index, because
 wrangler has no `r2 object list` and no S3 keys exist. An object no index ever named is invisible to
 the job and needs a manual sweep.
+
+## The pipeline runs: what four red runs taught, and what is live
+
+`http://cores.prx0.com/.index-extended` serves 101 lines over plain HTTP, no redirect. All 101
+archives return 200. The first core's `.prx`, unzipped, hashes to exactly the CRC its index line
+claims. That is every step the console performs except the console.
+
+**Coverage is honest and it is not 163.** The recipe has 164 cores, 163 were attempted, **101 are in
+the index**. Those 101 are the same set this machine has built by hand - CI introduces no difference
+of its own, which is the most useful thing the first green run said. The other 63 now carry a
+recorded reason: `bsnes` `fbneo` `desmume` `dosbox_svn` `bluemsx` fail to LINK on missing symbols;
+`bsnes_hd_beta` wants `GOMP_parallel`, so OpenMP; `chailove` `geolith` `daphne` want PHYSFS, zlib and
+SDL; `bsnes2014` and `freej2me` link *without* `retro_run` and are quarantined as NO-ABI; `citra` and
+`blastem` produce no objects at all, so they build differently than the harness assumes.
+
+**Four failures, and only one was environmental.**
+
+⚠ *The runner is reclaimed sometimes.* Shard 0 ran 59 minutes and died with `The runner has received
+a shutdown signal`. `kronos` had spent 57 of those minutes and its recorded `COMPILE` verdict is an
+artifact - `trap ... EXIT INT TERM` does not stop bash, so the handler ran, deleted the clone, and
+execution *resumed* to write a row about a core that had already been killed. Anyone chasing
+`glsym/rglgen_private` should get a clean run first. The fix is a 25-minute per-core cap, chosen
+from measurement: the slowest *successful* core anywhere is `mednafen_saturn` at 831 s. It must not
+use `timeout --foreground` - tested, that leaves three orphaned `clang++` behind; without it, none.
+
+⚠ *One core failing must never block 162.* `publish` has `needs: shard`, so a red shard sank the
+whole release. Per-core outcomes are data now; a shard fails only if *zero* cores build.
+
+⚠ *The leading dot bites a third time.* `actions/upload-artifact` has excluded hidden files by
+default since v4.4, so `path: dist/.index-extended` matched NOTHING - on a file verified one step
+earlier. `include-hidden-files: true`. Releases rename it, upload-artifact hides it, R2 keeps it.
+
+⚠ *A non-empty secret is not a working one.* The first R2 attempt produced 101 consecutive
+`"code":10000, "Authentication error"` with zero successes, after nine minutes of uploading, because
+the credentials step only checked that the variables were set. ⚠ **AND THE CAUSE WAS THE BUCKET
+SCOPING.** An R2-page token with *Apply to specific buckets only* authenticates the S3 endpoint, not
+the REST path `wrangler r2 object put` uses. What works: a Custom Token with
+`Account · Workers R2 Storage · Edit`, account-scoped, no bucket restriction. A one-object probe now
+proves the token in three seconds before anything else runs.
+
+And one of ours: the probe's own `echo` was committed with an unclosed quote, which YAML validation
+cannot see because to YAML it is a perfectly good string. Every `run:` block now goes through
+`bash -n` before commit.
+
+Live: `orbis-mesa-c42aa135f234` (16.4 MB, past the link probe), the `cores` Release as the archival
+copy (103 assets, where GitHub stores the index as `default.index-extended`), and the R2 bucket the
+console actually reads. The frontend `.pkg` is still an artifact, not a Release - that needs a tag.
