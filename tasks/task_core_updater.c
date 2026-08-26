@@ -24,6 +24,11 @@
 
 #include <string/stdstring.h>
 #include <file/file_path.h>
+
+#if defined(ORBIS)
+/* chmod(), for the execute bit a downloaded core needs - see CORE_UPDATER_DOWNLOAD_END. */
+#include <sys/stat.h>
+#endif
 #include <net/net_http.h>
 #include <streams/interface_stream.h>
 #include <streams/file_stream.h>
@@ -1160,6 +1165,31 @@ static void task_core_updater_download_handler(retro_task_t *task)
          {
             size_t _len;
             char task_title[128];
+
+#if defined(ORBIS)
+            /* ⚠ A DOWNLOADED CORE ARRIVES WITHOUT THE EXECUTE BIT, AND THIS PLATFORM WILL NOT
+             * LOAD IT. Measured: the zip extracts to 0666, every .prx that has ever loaded on
+             * this console is 0777, and the download reported success while the core then
+             * failed with "Failed to open libretro core" - the file being byte-correct the
+             * whole time. sceKernelLoadStartModule needs the bit; the archive does not carry
+             * one, because a zip entry's external attributes are not honoured here.
+             *
+             * 0777 rather than 0755 deliberately: that is the mode the working cores already
+             * on this console carry, and they are owned by a different uid than the one the
+             * downloader writes as. Matching what is proven beats reasoning about who ends up
+             * owning the file. */
+            if (download_handle->local_core_path &&
+                *download_handle->local_core_path &&
+                path_is_valid(download_handle->local_core_path))
+            {
+               if (chmod(download_handle->local_core_path, 0777) != 0)
+                  RARCH_WARN("[Core updater] Could not make \"%s\" executable: it will not load.\n",
+                        download_handle->local_core_path);
+               else
+                  RARCH_LOG("[Core updater] Marked \"%s\" executable.\n",
+                        download_handle->local_core_path);
+            }
+#endif
 
             /* Set final task title */
             task_free_title(task);
