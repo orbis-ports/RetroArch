@@ -1943,3 +1943,26 @@ cannot see because to YAML it is a perfectly good string. Every `run:` block now
 Live: `orbis-mesa-c42aa135f234` (16.4 MB, past the link probe), the `cores` Release as the archival
 copy (103 assets, where GitHub stores the index as `default.index-extended`), and the R2 bucket the
 console actually reads. The frontend `.pkg` is still an artifact, not a Release - that needs a tag.
+
+## RetroArchV, and why the title id had to move with the name
+
+The package is now `RetroArchV`, title id `RTRV00001`, content label `RETROARCHV000000`.
+
+⚠ The console decides collisions by **title id**, never by the name on screen. A second package
+carrying `RTRA00001` would not have appeared beside an existing RetroArch install - the installer
+would have treated it as an update and replaced it, silently, with something built by strangers.
+Renaming the title alone would have left that exactly as dangerous while looking solved. Both moved
+together, so the two are different applications as far as the system is concerned and either can be
+removed without touching the other.
+
+`ps4/icon0.png` is 512x512 and opaque on purpose: the system draws icon0 as a square, so the rounded
+corners in `media/ico_src/icon.svg` would have appeared as transparent notches. It is the invader
+from `media/retroarch-vector_invader-only.svg` - cropped to its alpha bounding box, because the
+source has ~30% padding inside its viewBox and scaling the box rather than the glyph produced a
+small mark floating in a large field - recoloured white over our own gradient, with a chevron mark.
+Verified by content rather than by build success: the icon's bytes appear verbatim inside the
+`.pkg`, alongside one `RetroArchV` and four `RTRV00001`.
+
+Both workflow steps that used to spell `IV0000-RTRA00001_00-RETROARCH0000000.pkg` now glob
+`IV0000-*.pkg` and assert exactly one. They were already stale when this landed - a hardcoded name
+in CI for a value Makefile.orbis owns is a green run that copies a file which no longer exists.

@@ -73,10 +73,22 @@ HAVE_OPENGLES      ?= 0
 
 # TITLE_ID is AAAA00000 - four letters, five digits - because param.sfo and the content id
 # both embed it and make-pkg.sh rejects anything else. CONTENT_LABEL is <=16 chars.
-PS4_TITLE_ID       := RTRA00001
-PS4_TITLE_NAME     := RetroArch
-PS4_CONTENT_LABEL  := RETROARCH0000000
+#
+# ⚠ THE CONSOLE DECIDES COLLISIONS BY TITLE_ID, NOT BY THE NAME ON SCREEN. Someone who already
+# has a RetroArch build installed and installs this one would have had the old package silently
+# replaced if both carried RTRA00001 - the installer treats a matching title id as an update,
+# not as a second application. Renaming the title alone would not have prevented that, which is
+# why both moved together: RTRV00001 is a different application as far as the system is
+# concerned, so the two sit side by side and either can be removed without touching the other.
+PS4_TITLE_ID       := RTRV00001
+PS4_TITLE_NAME     := RetroArchV
+PS4_CONTENT_LABEL  := RETROARCHV000000
 PS4_PKG_VERSION    := 01.00
+
+# 512x512, opaque, full-bleed. The system draws icon0.png as a square, so the rounded corners
+# in media/ico_src/icon.svg would have shown as transparent notches; this is the invader from
+# media/retroarch-vector_invader-only.svg composited on our own ground instead.
+PS4_ICON           := ps4/icon0.png
 
 # ---------------------------------------------------------------------------
 # Toolchain and the platform overlay.
@@ -667,6 +679,7 @@ pkg: eboot.bin
 		--eboot eboot.bin --out-dir . \
 		--title-id $(PS4_TITLE_ID) --title "$(PS4_TITLE_NAME)" \
 		--version $(PS4_PKG_VERSION) --content-label $(PS4_CONTENT_LABEL) \
+		$(if $(wildcard $(PS4_ICON)),--icon $(PS4_ICON),) \
 		--sdk $(TOOLCHAIN)
 
 # Upload to the console over GoldHEN's FTP. lftp rather than curl: it is what the packages
