@@ -846,7 +846,7 @@ jobs:
             exit 1
           fi
           npx --yes wrangler@4 r2 object delete "$R2_CORES_BUCKET/$probe" --remote >/dev/null 2>&1 || true
-          echo "== the token can write to $R2_CORES_BUCKET
+          echo "== the token can write to $R2_CORES_BUCKET"
 
       # ⚠ READ THE OLD LISTING BEFORE OVERWRITING IT. wrangler has no `r2 object list`, and no
       # S3 keys exist for this bucket on purpose - so the only inventory of what is currently
