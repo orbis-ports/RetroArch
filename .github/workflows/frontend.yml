@@ -106,12 +106,58 @@ jobs:
       # has to be in the link whether or not Vulkan is the video driver that runs).
       # Building with HAVE_VULKAN=1 alone shipped once with an EMPTY core list and wrote an
       # empty core_info.cache to /data - measured 2026-08-23.
+      #
+      # ⚠ THE CORE DOWNLOADER'S ADDRESS IS COMPILED IN, AND A WRONG ONE IS INVISIBLE AT RUN
+      # TIME. Makefile.orbis passes ORBIS_BUILDBOT_URL through as -DORBIS_BUILDBOT_SERVER_URL
+      # (Makefile.orbis:255-258); when it is empty, config.def.h's ORBIS arm decides. A package
+      # pointing at the wrong host installs, boots, and shows an EMPTY core list - which looks
+      # exactly like a network fault, a broken index or a dead bucket. So the URL that actually
+      # got baked in is read back out of config.def.h when no variable is set, printed here,
+      # written into the run summary, and looked for in the linked .elf below. That chain is
+      # the only thing that tells a correct package from a misaimed one.
+      #
+      # Empty is not an error. `make VAR=` leaves ifneq($(ORBIS_BUILDBOT_URL),) false, the
+      # define is never added, and config.def.h's own default stands - a PR build with no
+      # repository variables configured still compiles and packages.
       - name: Compile RA + package
+        env:
+          ORBIS_BUILDBOT_URL: ${{ vars.CORES_BASE_URL }}
         run: |
           set -euo pipefail
+          url="${ORBIS_BUILDBOT_URL:-}"
+          if [ -z "$url" ]; then
+            # Whatever config.def.h holds today - do not restate it here, or the two drift and
+            # this step confidently reports a URL the binary does not carry.
+            baked="$(sed -n 's/^#define ORBIS_BUILDBOT_SERVER_URL "\(.*\)"$/\1/p' config.def.h | head -1)"
+            echo "::warning title=No core URL variable::CORES_BASE_URL is unset - this package keeps config.def.h's compiled-in default, '$baked'."
+            case "$baked" in
+              ''|*PLACEHOLDER*|*.invalid/*)
+                echo "::warning title=Placeholder core URL::'$baked' is not a real host - this package's Core Downloader will list NOTHING on a console." ;;
+            esac
+          else
+            # RetroArch joins <base> to each filename out of .index-extended and would insert
+            # the separator itself, but the publish job in cores.yml builds <base><filename> by
+            # concatenation - so the two must agree on the trailing slash.
+            case "$url" in
+              */) ;;
+              *) echo "::warning title=Core URL has no trailing slash::CORES_BASE_URL is '$url'; using '$url/'"
+                 url="$url/" ;;
+            esac
+            case "$url" in
+              https://*) echo "::warning title=Core URL is https::HAVE_SSL is 0 in Makefile.orbis, so this build cannot fetch '$url' until BearSSL lands (phase 5b). Expected for R2; the LAN bring-up test uses plain http." ;;
+            esac
+            baked="$url"
+          fi
+          echo "== buildbot URL baked into this package: $baked"
+          echo "PS4_BAKED_BUILDBOT_URL=$baked" >> "$GITHUB_ENV"
+          echo "### Core Downloader URL" >> "$GITHUB_STEP_SUMMARY"
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$baked\`" >> "$GITHUB_STEP_SUMMARY"
+
           make -f Makefile.orbis \
             HAVE_VULKAN=1 HAVE_OPENGLES=1 \
             HAVE_STATIC_DUMMY=0 HAVE_DYNAMIC=1 \
+            ORBIS_BUILDBOT_URL="$url" \
             -j"$(getconf _NPROCESSORS_ONLN)" pkg
 
       # ⚠ ASSERT ON ARTEFACTS, NOT ON THE EXIT STATUS. The eboot rule has failed with status
@@ -130,6 +176,20 @@ jobs:
           sz="$(stat -c%s "$pkg")"
           [ "$sz" -gt 4000000 ] || { echo "!! $pkg is only $sz bytes - that is not a RetroArch build" >&2; exit 1; }
           echo "== $pkg $sz bytes"
+          # ⚠ AND ASK THE BINARY ITSELF WHICH URL IT CARRIES, rather than trusting the step
+          # that passed it. A warning, not a failure: the string is read out of the .elf with
+          # `strings`, and a future -Os/-flto arrangement could legitimately split or merge it
+          # without anything being wrong. If this stops matching, that is the moment to look.
+          if [ -n "${PS4_BAKED_BUILDBOT_URL:-}" ]; then
+            if strings retroarch_orbis.elf | grep -Fq -- "$PS4_BAKED_BUILDBOT_URL"; then
+              echo "== the binary carries $PS4_BAKED_BUILDBOT_URL"
+            else
+              echo "::warning title=Buildbot URL not found in the binary::'$PS4_BAKED_BUILDBOT_URL' was passed to make but is not a string in retroarch_orbis.elf."
+            fi
+          fi
+          if strings retroarch_orbis.elf | grep -Eq -- 'PLACEHOLDER|orbis-ports\.invalid'; then
+            echo "::warning title=Placeholder core URL::This package carries a placeholder buildbot URL - its Core Downloader will list nothing on a console."
+          fi
           # The second output the cores job consumes. Say the count here, where an empty
           # upload is still cheap to explain.
           n="$(find libretro-common -name '*.o' -type f | wc -l)"

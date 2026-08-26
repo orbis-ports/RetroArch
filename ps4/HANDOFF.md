@@ -1860,3 +1860,39 @@ asset, and pinning `v0.5.2` would build against a 2021 SDK. Publishing a known-g
 
 Measured: 101 cores, 461 MB, 109 MiB zipped; 101/101 modules carry `retro_run`; all 101 index CRCs
 cross-checked against `7z h` and Info-ZIP.
+
+## Where the cores are hosted, and why not GitHub
+
+Measured, not chosen on taste. **A GitHub Release asset cannot be named `.index-extended`.** Uploading
+that exact filename to a throwaway release stored it as `default.index-extended`; the dotted name
+returns 404 and the renamed one returns 200. The filename is a hardcoded string literal at
+`tasks/task_core_updater.c:389`, joined onto the base URL - so hosting on Releases would have meant
+patching the client with an `#ifdef` and diverging from upstream over a hosting quirk.
+
+**Cloudflare R2 keeps the key verbatim.** Same test against the bucket: `PUT .index-extended`,
+`GET /.index-extended`, 200, exact name. No client patch. The bucket is `orbis-cores` on account
+`dde701a9fad0ed4ac032e5bfbbae1b56`.
+
+**The domain is what makes it usable before TLS exists.** The bucket's own `pub-*.r2.dev` hostname
+answers plain http with a 301 to https. `net_http.c:2329` follows redirects, so it would walk
+straight into a handshake that `HAVE_SSL=0` cannot complete - a silently empty Core Downloader. A
+custom domain does not redirect: `prx0.com` was registered, `cores.prx0.com` attached to the bucket,
+and plain `http://cores.prx0.com/.index-extended` returns 200 with no redirect. ⚠ That is the only
+reason the domain exists, and it is what takes phase 5b off the critical path - BearSSL is still
+wanted, but nothing waits on it now. `config.def.h`'s ORBIS arm points there.
+
+Ownership verification takes a few minutes and reports `error code: 1014` on http until it clears;
+`wrangler r2 bucket domain list orbis-cores` shows `ownership_status` going pending → active.
+
+**CI credentials, and why these names.** `wrangler` rather than rclone/aws-cli, so no S3 access keys
+exist to leak; the R2 API token is scoped `Workers R2 Storage: Edit`. `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID` are org secrets, the token restricted to this repository - the org is mostly
+upstream forks, and a fork with an enabled workflow is the cheapest way for a secret to reach a log.
+`R2_CORES_BUCKET` and `CORES_BASE_URL` are org *variables*, not secrets: they are not sensitive, and
+as variables they appear in the log, which shortens "where did that URL come from" to one glance.
+
+**Upload ordering is load-bearing.** `.index-extended` goes last, after every zip it names - a
+console reading the index between the two states downloads a core that is not there yet. Pruning
+runs after the new index is live, and the only inventory available is the *previous* index, because
+wrangler has no `r2 object list` and no S3 keys exist. An object no index ever named is invisible to
+the job and needs a manual sweep.

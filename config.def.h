@@ -1918,23 +1918,27 @@
  * beside ours, appear in the core list and fail to load every time with no explanation.
  * Both changes together, or neither.
  *
- * ⚠ AND IT IS A PLACEHOLDER UNTIL THE RELEASE HOST IS DECIDED. The index and the payloads
- * must share one directory, because RetroArch joins each filename from .index-extended to
- * this base URL - it never stores a URL per core. Whichever host wins that argument, this is
- * the one place the answer goes.
+ * The host is a Cloudflare R2 bucket, and the trailing slash is required: RetroArch joins
+ * each filename from .index-extended onto this base URL and never stores a URL per core, so
+ * the index and the payloads must sit in one directory.
  *
- * Override it for a bring-up test without editing this file:
+ * ⚠ R2 rather than GitHub Releases because of the leading dot. A Release asset uploaded as
+ * .index-extended is silently renamed to default.index-extended - measured, the dotted name
+ * 404s - and the filename is hardcoded at tasks/task_core_updater.c:389. R2 keeps the key
+ * verbatim, so the client needs no patch.
+ *
+ * ⚠ http, ON PURPOSE, AND IT IS WHAT MAKES THIS WORK AT ALL. HAVE_SSL is 0 - BearSSL is
+ * phase 5b - so an https base URL would fail in the handshake and produce a silent empty core
+ * list. The bucket's own pub-*.r2.dev hostname answers plain http with a 301 to https, which
+ * net_http.c:2329 follows straight into that handshake; a custom domain does not, because
+ * Always Use HTTPS is off for this hostname. That is the whole reason the domain exists.
+ *
+ * Point it somewhere else for a bring-up test without editing this file:
  *
  *     make -f Makefile.orbis ORBIS_BUILDBOT_URL=http://192.168.100.1:8000/ ...
- *
- * ⚠ http, NOT https, ON PURPOSE. TLS is phase 5b (HAVE_SSL in Makefile.orbis) and no
- * certificate path exists yet, so an https URL here would fail in the handshake and produce
- * exactly the same silent empty list. GitHub redirects http to https on both Releases and
- * Pages, so the real URL cannot be plain http either - which is why this stays a placeholder
- * rather than a guess at the final address.
  */
 #ifndef ORBIS_BUILDBOT_SERVER_URL
-#define ORBIS_BUILDBOT_SERVER_URL "http://cores.orbis-ports.invalid/PLACEHOLDER-see-config.def.h/"
+#define ORBIS_BUILDBOT_SERVER_URL "http://cores.prx0.com/"
 #endif
 #define DEFAULT_BUILDBOT_SERVER_URL ORBIS_BUILDBOT_SERVER_URL
 #elif defined(WEBOS)

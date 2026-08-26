@@ -492,12 +492,13 @@ jobs:
             fi
           done < /tmp/have
 
-      # ⚠ THE LEADING DOT IS THE WHOLE DISTRIBUTION MODEL AND IT IS STILL UNPROVEN (spike S1).
-      # RetroArch builds every download URL as <buildbot_url>/<filename>, taking the filenames
-      # out of .index-extended in that same directory - there is no way to split the index from
-      # the payload across two hosts. If a Release asset cannot keep a leading dot, the whole
-      # thing moves to Pages. The verification step below answers that question on the first
-      # real run instead of leaving it to someone with a console.
+      # ⚠ SPIKE S1 IS ANSWERED AND THE ANSWER IS NO. A Release asset does NOT keep a leading
+      # dot: uploading `.index-extended` produces an asset named `default.index-extended`, and
+      # the dotted URL 404s (measured 2026-08-26). RetroArch builds every download URL as
+      # <buildbot_url>/<filename> from the names inside .index-extended and never stores a URL
+      # per core, so the index and the payloads cannot live on two hosts - which is why the
+      # console reads Cloudflare R2 (steps below) and this Release is now only the archival
+      # copy. It still carries the index under whatever name GitHub gives it; nothing fetches it.
       - name: Release
         if: github.event.inputs.dry-run != 'true'
         uses: softprops/action-gh-release@v2
@@ -507,31 +508,263 @@ jobs:
           body: |
             Libretro cores for the PlayStation 4, built by `.github/workflows/cores.yml`.
 
-            Rolling tag: the assets are replaced on every publish. `.index-extended` is the
-            listing RetroArch's Core Downloader reads - point `network_buildbot_url` at the
-            directory these assets are served from.
+            Rolling tag: the assets are replaced on every publish. This Release is the archival
+            copy. The console does NOT read it - GitHub renames `.index-extended` to
+            `default.index-extended`, and RetroArch's Core Downloader needs the listing and the
+            archives in one directory under the same names. That directory is the R2 bucket
+            `network_buildbot_url` points at.
           files: |
             dist/.index-extended
             dist/*.prx.zip
             dist/*.info
           fail_on_unmatched_files: false
 
-      - name: Fetch the published index back (spike S1)
+      # ---------------------------------------------------------------------------------
+      # CLOUDFLARE R2: THE COPY THE CONSOLE ACTUALLY READS.
+      #
+      # ⚠ ONE DIRECTORY, INDEX AND PAYLOADS TOGETHER. core_updater_list.c:436 joins each
+      # filename out of .index-extended onto network_buildbot_url and nothing else; there is no
+      # per-core URL anywhere in the format. So every object goes under the SAME prefix, and the
+      # prefix is derived from CORES_BASE_URL's own path below rather than written twice.
+      #
+      # ⚠ R2 KEEPS THE LEADING DOT. `PUT .index-extended` then `GET /.index-extended` returns
+      # 200 with that exact name (measured 2026-08-26). That single fact is why the host is R2
+      # and not Releases.
+      #
+      # ⚠ THE CONSOLE STILL CANNOT FETCH THIS TODAY, AND THAT IS KNOWN. r2.dev answers plain
+      # http with a 301 to https; net_http.c:2329 does follow it, but Makefile.orbis has
+      # HAVE_SSL := 0, so the handshake never happens. TLS is phase 5b (BearSSL). Until then the
+      # bring-up test uses a plain-http server on the LAN. Publishing here is not blocked on it.
+      - name: Check the R2 credentials
+        id: r2
         if: github.event.inputs.dry-run != 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_CORES_BUCKET: ${{ vars.R2_CORES_BUCKET }}
+          CORES_BASE_URL: ${{ vars.CORES_BASE_URL }}
         run: |
           set -euo pipefail
-          url="$(gh release view cores --json assets \
-                 --jq '.assets[] | select(.name == ".index-extended") | .url')"
-          if [ -z "$url" ]; then
-            echo "!! the release has no asset named .index-extended." >&2
-            echo "   S1 is answered and the answer is no: Releases will not keep a leading" >&2
-            echo "   dot, and the index and the zips must share a directory. Move the" >&2
-            echo "   distribution to Pages, or rename the listing on both sides." >&2
-            exit 1
+          # ⚠ FAIL HERE, NOT SILENTLY LATER. An unset secret expands to the empty string, and
+          # `wrangler r2 object put` with no token in the environment prints a login prompt it
+          # cannot show and exits - but only after some objects may already have gone up under
+          # a half-configured bucket name. Name every missing one at once instead.
+          missing=0
+          for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID R2_CORES_BUCKET CORES_BASE_URL; do
+            if [ -z "${!v:-}" ]; then
+              echo "!! $v is empty or unset" >&2
+              missing=$((missing + 1))
+            fi
+          done
+          [ "$missing" -eq 0 ] || {
+            echo "   The cores cannot be published to R2 without all four. Two are repository" >&2
+            echo "   secrets (CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID) and two are" >&2
+            echo "   repository variables (R2_CORES_BUCKET, CORES_BASE_URL)." >&2
+            echo "   The GitHub Release above already carries the archival copy." >&2
+            exit 1; }
+
+          base="$CORES_BASE_URL"
+          case "$base" in
+            https://*|http://*) ;;
+            *) echo "!! CORES_BASE_URL must start with http:// or https://, got '$base'" >&2; exit 1 ;;
+          esac
+          # RetroArch itself would cope (fill_pathname_join_special inserts the separator), but
+          # the checks in this job concatenate <base><filename> directly.
+          case "$base" in
+            */) ;;
+            *) echo "== CORES_BASE_URL has no trailing slash; using '$base/'"; base="$base/" ;;
+          esac
+
+          # The key prefix IS the URL's path, so <base><filename> can only ever resolve to the
+          # object this job wrote. Today that path is empty (bucket root).
+          rest="${base#*://}"
+          prefix="${rest#*/}"
+          prefix="${prefix%/}"
+
+          echo "base=$base"        >> "$GITHUB_OUTPUT"
+          echo "bucket=$R2_CORES_BUCKET" >> "$GITHUB_OUTPUT"
+          echo "prefix=$prefix"    >> "$GITHUB_OUTPUT"
+          echo "== bucket $R2_CORES_BUCKET, prefix '${prefix:-(root)}', base $base"
+
+          # Warm the npx cache once, serially. 8 wrangler processes racing to populate
+          # ~/.npm/_npx at the same time is a documented way to get a corrupt cache entry, and
+          # it would surface as one arbitrary core failing to upload.
+          npx --yes wrangler@4 --version
+
+      # ⚠ READ THE OLD LISTING BEFORE OVERWRITING IT. wrangler has no `r2 object list`, and no
+      # S3 keys exist for this bucket on purpose - so the only inventory of what is currently
+      # published is the .index-extended already in it. Fetch it now; the prune step below diffs
+      # against it after the new one is up.
+      - name: Remember what the bucket lists today
+        if: github.event.inputs.dry-run != 'true'
+        env:
+          BASE: ${{ steps.r2.outputs.base }}
+        run: |
+          set -euo pipefail
+          if curl -sSfL --retry 3 --retry-delay 2 \
+               "${BASE}.index-extended?v=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+               -o /tmp/r2-index-before; then
+            echo "== the bucket currently lists $(wc -l < /tmp/r2-index-before) cores"
+          else
+            : > /tmp/r2-index-before
+            echo "== no readable .index-extended in the bucket (first publish, or it is private)"
           fi
-          curl -sSfL "$url" -o /tmp/roundtrip
-          diff dist/.index-extended /tmp/roundtrip \
+
+      # ⚠ THE ZIPS FIRST, THE INDEX AFTER - AND THE TWO ARE SEPARATE STEPS FOR THAT REASON
+      # ALONE. A console that reads the listing between the two states downloads a core that is
+      # not there yet and reports a broken download for a core nobody broke.
+      #
+      # ⚠ AND `--remote` IS NOT OPTIONAL. Since wrangler 3.60 `r2 object put` writes to the
+      # LOCAL miniflare store by default: without the flag every one of these 101 uploads
+      # succeeds, prints nothing alarming, and puts the cores in .wrangler/state on a runner
+      # that is about to be destroyed.
+      - name: Push the cores to R2
+        if: github.event.inputs.dry-run != 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BUCKET: ${{ steps.r2.outputs.bucket }}
+          PREFIX: ${{ steps.r2.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          # One `npx wrangler r2 object put` per object, and there are 101 of them: a node
+          # start-up plus a round trip is a couple of seconds each, so serially this step is
+          # ~5 minutes of latency and nothing else. Eight at a time is the same width as the
+          # build matrix, is far under R2's rate limits, and keeps the failure attributable to
+          # one named file - which a single batched call could not do.
+          cat > "${RUNNER_TEMP}/r2-put.sh" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          f="$1"
+          n="$(basename "$f")"
+          key="${PREFIX:+$PREFIX/}$n"
+          log="${RUNNER_TEMP}/r2-$n.log"
+          for attempt in 1 2 3; do
+            if npx --yes wrangler@4 r2 object put "$BUCKET/$key" \
+                 --file "$f" --content-type application/zip --remote >/dev/null 2>"$log"; then
+              echo "== $n"
+              exit 0
+            fi
+            echo "-- $n failed (attempt $attempt)" >&2
+            sleep $((attempt * 5))
+          done
+          echo "!! could not upload $n to $BUCKET/$key" >&2
+          cat "$log" >&2 || true
+          exit 1
+          SH
+          chmod +x "${RUNNER_TEMP}/r2-put.sh"
+
+          n="$(find dist -maxdepth 1 -name '*.prx.zip' -type f | wc -l)"
+          [ "$n" -gt 0 ] || { echo "!! there are no archives to upload" >&2; exit 1; }
+          echo "== uploading $n archives, 8 at a time"
+          # xargs exits 123 if any child failed, and `set -e` turns that into a red step.
+          find dist -maxdepth 1 -name '*.prx.zip' -type f -print0 \
+            | xargs -0 -r -n1 -P 8 "${RUNNER_TEMP}/r2-put.sh"
+
+      - name: Push .index-extended to R2 (last, after every zip it names)
+        if: github.event.inputs.dry-run != 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BUCKET: ${{ steps.r2.outputs.bucket }}
+          PREFIX: ${{ steps.r2.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          key="${PREFIX:+$PREFIX/}.index-extended"
+          # no-store on the listing only: the archives are content-addressed by CRC and may be
+          # cached forever, but a stale listing is how a console decides a core it does not have
+          # is up to date.
+          npx --yes wrangler@4 r2 object put "$BUCKET/$key" \
+            --file dist/.index-extended \
+            --content-type 'text/plain; charset=utf-8' \
+            --cache-control 'no-store' \
+            --remote
+          echo "== $BUCKET/$key"
+
+      # ⚠ THE REPLACEMENT FOR THE OLD SPIKE-S1 STEP. It no longer asks whether the dot survives
+      # - that is settled - it asks whether the thing the console will fetch is the thing this
+      # job built, over the public URL the binary is compiled with.
+      - name: Fetch the published index back from R2
+        if: github.event.inputs.dry-run != 'true'
+        env:
+          BASE: ${{ steps.r2.outputs.base }}
+        run: |
+          set -euo pipefail
+          url="${BASE}.index-extended?v=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          # The query string is a cache-buster for whatever sits in front of the bucket; R2
+          # ignores it when resolving the key.
+          curl -sSfL --retry 5 --retry-delay 3 --retry-all-errors "$url" -o /tmp/r2-index \
+            || { echo "!! ${BASE}.index-extended is not fetchable." >&2
+                 echo "   Either the bucket is not public, or the leading dot did not survive." >&2
+                 exit 1; }
+          diff dist/.index-extended /tmp/r2-index \
             || { echo "!! the published .index-extended is not the one that was uploaded" >&2; exit 1; }
-          echo "== S1: a Release asset does keep its leading dot, and round-trips byte for byte"
+          echo "== the index round-trips byte for byte from $BASE"
+
+          # One object per line, checked over the same base URL the console joins onto - not
+          # over the bucket API. A key that is present but unreachable at <base><filename> is
+          # exactly as broken as a missing one.
+          cat > "${RUNNER_TEMP}/r2-head.sh" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          n="$1"
+          code="$(curl -s -o /dev/null -w '%{http_code}' -I -L --retry 3 --retry-delay 2 "${BASE}${n}")"
+          [ "$code" = "200" ] || { echo "!! ${BASE}${n} -> HTTP $code" >&2; exit 1; }
+          SH
+          chmod +x "${RUNNER_TEMP}/r2-head.sh"
+          export BASE
+          awk '{print $3}' /tmp/r2-index | xargs -r -n1 -P 8 "${RUNNER_TEMP}/r2-head.sh"
+          echo "== all $(wc -l < /tmp/r2-index) archives the index names answer 200 under $BASE"
+
+      # ⚠ A CORE DROPPED FROM THE RECIPE WOULD OTHERWISE LIVE IN THE BUCKET FOREVER, unlisted
+      # and still downloadable by anyone who guessed the URL - the same reason the Release above
+      # prunes its assets. The inventory is the PREVIOUS .index-extended, captured before this
+      # job overwrote it, because wrangler cannot list a bucket and no S3 keys exist.
+      #
+      # ⚠ AND IT RUNS AFTER THE NEW INDEX IS UP, NEVER BEFORE. Until that moment the live
+      # listing is the old one, and the old one names these files.
+      #
+      # An object that was never named by any index this job published is NOT removed: with no
+      # list API there is nothing that can see it. That is a one-time manual sweep if it ever
+      # happens, not a silent gap this job could close.
+      - name: Drop objects the new index no longer names
+        if: github.event.inputs.dry-run != 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BUCKET: ${{ steps.r2.outputs.bucket }}
+          PREFIX: ${{ steps.r2.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          if [ ! -s /tmp/r2-index-before ]; then
+            echo "== nothing was published before this run; nothing to prune"
+            exit 0
+          fi
+          awk '{print $3}' /tmp/r2-index-before | LC_ALL=C sort -u > /tmp/r2-had
+          awk '{print $3}' dist/.index-extended | LC_ALL=C sort -u > /tmp/r2-have
+          comm -23 /tmp/r2-had /tmp/r2-have > /tmp/r2-stale
+          if [ ! -s /tmp/r2-stale ]; then
+            echo "== no stale objects"
+            exit 0
+          fi
+          while read -r a; do
+            [ -n "$a" ] || continue
+            case "$a" in *.prx.zip) ;; *) echo "-- skipping unexpected name '$a'" >&2; continue ;; esac
+            echo "== dropping stale object $a"
+            npx --yes wrangler@4 r2 object delete "$BUCKET/${PREFIX:+$PREFIX/}$a" --remote
+          done < /tmp/r2-stale
+
+      - name: R2 summary
+        if: github.event.inputs.dry-run != 'true'
+        env:
+          BASE: ${{ steps.r2.outputs.base }}
+          BUCKET: ${{ steps.r2.outputs.bucket }}
+        run: |
+          {
+            echo "### Published to R2"
+            echo
+            echo "- bucket: \`$BUCKET\`"
+            echo "- base URL: \`$BASE\` (this is what \`ORBIS_BUILDBOT_URL\` must be)"
+            echo "- listing: \`${BASE}.index-extended\`, $(wc -l < dist/.index-extended) cores"
+            echo "- pruned: $(wc -l 2>/dev/null < /tmp/r2-stale || echo 0) stale object(s)"
+          } >> "$GITHUB_STEP_SUMMARY"
