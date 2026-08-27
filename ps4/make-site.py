@@ -414,6 +414,8 @@ def main():
     ap.add_argument("--version", required=True, help="e.g. v0.1.2")
     ap.add_argument("--src-url", required=True, help="frontend source at this version")
     ap.add_argument("--bundle", action="store_true", help="also build the all-cores archive")
+    ap.add_argument("--bundle-name", help="link an archive that already exists, without rebuilding")
+    ap.add_argument("--bundle-size", default="", help="its size, for the button")
     args = ap.parse_args()
 
     base = args.base if args.base.endswith("/") else args.base + "/"
@@ -443,6 +445,18 @@ def main():
     icon = icon_data_uri(args.icon)
     ctx["mark"] = ('<img class="mark" src="%s" alt="" width="56" height="56">' % icon) if icon else ""
     ctx["favicon"] = ('<link rel="icon" href="%s">' % icon) if icon else ""
+
+    if not args.bundle and not args.bundle_name:
+        # ⚠ SAY SO. Without --bundle the page renders perfectly well and simply has no
+        # "every core, one archive" card - which is the single thing an offline visitor came
+        # for. It went missing exactly once that way, silently, on a page that looked fine.
+        print("== NO BUNDLE: the page will have no all-cores download. Pass --bundle --dist "
+              "<dir>, or --bundle-name <file> to point at one that already exists.",
+              file=sys.stderr)
+
+    if args.bundle_name and not args.bundle:
+        ctx["bundle_name"] = args.bundle_name
+        ctx["bundle_size"] = args.bundle_size
 
     if args.bundle:
         if not args.dist:
