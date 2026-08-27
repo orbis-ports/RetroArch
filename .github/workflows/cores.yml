@@ -46,8 +46,14 @@ name: CI PS4 cores
 on:
   workflow_dispatch:
     inputs:
+      cores:
+        description: >
+          Space-separated core names to build instead of the whole recipe. One shard, no
+          release. For chasing a single core's build failure without an hour of runner time.
+        required: false
+        default: ""
       shards:
-        description: How many parallel core shards.
+        description: How many parallel core shards. Ignored when `cores` is set.
         required: false
         default: "8"
       frontend-run-id:
@@ -108,6 +114,7 @@ env:
   MESA_RELEASE: ${{ github.event.inputs.mesa-release || 'orbis-mesa-c42aa135f234' }}
   OPENORBIS_SDK_TAG: v0.5.4
   SHARDS: ${{ github.event.inputs.shards || '8' }}
+  CORES_SUBSET: ${{ github.event.inputs.cores }}
   RECIPE: .libretro-super/recipes/linux/cores-linux-x64-generic
 
 jobs:
@@ -142,6 +149,21 @@ jobs:
         id: plan
         run: |
           set -euo pipefail
+
+          # ⚠ A NAMED SUBSET IS ONE SHARD AND NO RELEASE. Chasing why one core fails to build
+          # should not cost 163 builds and an hour of wall clock - and it did, twice, before
+          # this existed. The shard job reads the same variable and passes the names straight
+          # to ps4/build-cores.sh, so what runs here is what runs in a full matrix.
+          if [ -n "${CORES_SUBSET:-}" ]; then
+            echo "== subset: $CORES_SUBSET"
+            echo "### PS4 cores: named subset" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "$CORES_SUBSET" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo 'shards=["0"]' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           n="${SHARDS}"
           case "$n" in ''|*[!0-9]*) echo "!! shards must be a number, got '$n'" >&2; exit 1 ;; esac
           [ "$n" -ge 1 ] || { echo "!! shards must be at least 1" >&2; exit 1; }
@@ -281,7 +303,13 @@ jobs:
           WORK: ${{ steps.work.outputs.work }}
         run: |
           set -euo pipefail
-          mapfile -t cores < <(ps4/shard-cores.sh --recipe "$RECIPE" "${{ matrix.shard }}" "$SHARDS")
+          if [ -n "${CORES_SUBSET:-}" ]; then
+            # Named on the dispatch. Deliberately NOT filtered against the recipe: a core the
+            # recipe skips is exactly the kind you want to try by hand.
+            read -r -a cores <<< "$CORES_SUBSET"
+          else
+            mapfile -t cores < <(ps4/shard-cores.sh --recipe "$RECIPE" "${{ matrix.shard }}" "$SHARDS")
+          fi
           [ "${#cores[@]}" -gt 0 ] || { echo "!! shard ${{ matrix.shard }} is empty" >&2; exit 1; }
           echo "== ${#cores[@]} cores: ${cores[*]}"
           # ⚠ --drop-clones EXPLICITLY, even though CI=true already selects it. The plan's rule
@@ -590,8 +618,12 @@ jobs:
   # fails on its own is a different thing entirely and must not stop the other seven shipping.
   publish:
     needs: [plan, shard, fork]
+    # ⚠ NEVER PUBLISH A SUBSET. A run of two named cores would otherwise cut an index listing
+    # two cores and prune the other ninety-nine out of the bucket - the diagnostic run would
+    # take the release down with it.
     if: >-
       !cancelled()
+      && github.event.inputs.cores == ''
       && needs.plan.result == 'success'
       && needs.fork.result == 'success'
     runs-on: ubuntu-latest
