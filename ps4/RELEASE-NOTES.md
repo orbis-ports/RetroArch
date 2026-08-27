@@ -33,6 +33,14 @@ Use RetroArch's own **Quit RetroArch** entry, or the Quit combo on the pad. It e
 hung and needing a restart: the application tears its graphics context down on the way out, and
 taken away mid-frame it sometimes does not get to.
 
+## New in v0.1.4
+
+- **The build no longer reaches into the host's headers.** `-isysroot` never stopped clang
+  searching `/usr/include`, so anything the SDK, the platform overlay and Mesa all lacked was
+  silently taken from whichever machine did the building. Everything now compiles against this
+  platform's headers only.
+- **Nintendo 64 is in the core list** for the first time, on GLideN64.
+
 ## New in v0.1.3
 
 - **Update Assets no longer crashes.** Large updater downloads stream to disk instead of being
