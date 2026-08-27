@@ -405,6 +405,11 @@ jobs:
       # Only for the cores that failed. A green shard's logs are 20 MB of nothing.
       - name: Keep the logs of the cores that did not build
         if: always()
+        # ⚠ WORK IS A STEP-LEVEL VARIABLE, NOT A JOB-LEVEL ONE. Without this the step died on
+        # `WORK: unbound variable` under set -u - and said so only inside its own log, which is
+        # the log nobody reads when the interesting failure is two steps earlier.
+        env:
+          WORK: ${{ steps.work.outputs.work }}
         # ⚠ DIAGNOSTICS MUST NEVER REDDEN A BUILD, and the first version of this step did.
         # GitHub runs `run:` under `bash -e`, so `[ -f x ] && cp x y && kept=1` returning 1
         # because the file was absent killed the job - in the shards where every core built,
