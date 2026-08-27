@@ -33,6 +33,14 @@ Use RetroArch's own **Quit RetroArch** entry, or the Quit combo on the pad. It e
 hung and needing a restart: the application tears its graphics context down on the way out, and
 taken away mid-frame it sometimes does not get to.
 
+## New in v0.1.3
+
+- **Update Assets no longer crashes.** Large updater downloads stream to disk instead of being
+  held whole in memory - assets.zip is 71 MB and killed the process at the end of the transfer.
+- **Update Core Info Files and Update Assets exist at all.** Both entries were missing from the
+  build while the documentation told you to use them.
+- **Vulkan is the default video driver**, rather than OpenGL translating to it.
+
 ## What is here
 
 - 101 cores, built for this console, at `cores.prx0.com`
