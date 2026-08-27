@@ -196,9 +196,18 @@ ol.steps{margin:0 0 14px;padding-left:1.3em}
 ol.steps li{margin:.4em 0}
 
 .note{border-left:3px solid var(--warn);background:var(--raised);padding:14px 18px;border-radius:0 8px 8px 0;margin:20px 0}
-/* The one note that sits outside the prose column - directly under the download
-   buttons, answering the question those buttons raise - takes their full measure. */
+/* ⚠ THE BOX IS WIDE; THE MEASURE MUST NOT BE. Directly under the download buttons, this note
+   answers the question those buttons raise, so it spans them - but 940px of 16px text is about
+   105 characters per line, half again past comfortable. Two columns fill the width and keep
+   each line near 60. Justifying instead would only trade a ragged edge for word-space rivers:
+   there is no hyphenation to absorb the slack, and unbreakable tokens like CE-34878-0 and
+   /data/retroarch/savestates would blow gaps through the lines that carry them. */
 .note.wide{max-width:none}
+@media (min-width:760px){
+  .note.wide{column-count:2;column-gap:34px}
+  .note.wide p{margin-top:0;break-inside:avoid}
+  .note.wide p:last-child{margin-bottom:0}
+}
 .note b{color:var(--warn)}
 
 /* ⚠ THE CORE TABLE IS WIDER THAN THE PROSE COLUMN, so it gets the viewport rather than the
