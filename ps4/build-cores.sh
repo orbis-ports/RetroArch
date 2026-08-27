@@ -245,16 +245,28 @@ fi
 # ⚠ SOME CORES NEED FLAGS THE RECIPE DOES NOT CARRY, and one needs its build type overruled.
 #
 # The recipe's build type is about the machine libretro-super was written for, not about this one.
-# mupen64plus_next is GENERIC_GL there because GLideN64 is its default renderer - but it also ships
-# paraLLEl-RDP over Vulkan, which is the renderer this console can actually run, and the core's
-# patch tree makes that the only one it offers. Skipping it on the recipe's say-so would have
-# skipped a Vulkan core for being an OpenGL one.
+# mupen64plus_next is GENERIC_GL there, and that turned out to be right for this console too -
+# but only after the frontend grew an OpenGL context driver. Until then the flags below asked for
+# paraLLEl-RDP over Vulkan, which was the only renderer that could run at all.
+#
+# ⚠ THAT IS NO LONGER TRUE AND THE FLAGS OUTLIVED IT. Measured on hardware, Shadows of the
+# Empire: GLideN64 with the HLE RSP is 60.41 fps and 5.2 ms of work in a 16.7 ms frame;
+# paraLLEl-RDP is 43 ms a frame. And the paraLLEl configuration does not even link here -
+# HAVE_PARALLEL_RDP=1 drops libretro-common/glsm from the build while GLideN64's sources, which
+# are compiled either way, still call glsm_ctl. It built on this machine only because a clone
+# from an earlier GLideN64 run still had glsm.o lying in it; a fresh clone in CI reported
+# "undefined symbol: glsm_ctl" and mupen64plus_next has never been in a release.
+#
+# So: no HAVE_PARALLEL_RDP, which is also what makes the patch tree's fallback choose
+# RDP_PLUGIN_GLIDEN64 (see 0002, guarded on that same define), and no LLE, because the HLE RSP is
+# what GLideN64 draws from - paraLLEl-RDP implements only the low-level entry point and pairs
+# with an HLE RSP as a black screen.
 #
 # Anything listed here is built whatever its build type says. The flags are the recipe's own for
 # that core, minus the ones platform=unix already sets.
 core_make_flags() {
   case "$1" in
-    mupen64plus_next) echo "HAVE_PARALLEL_RDP=1 HAVE_PARALLEL_RSP=1 HAVE_THR_AL=1 LLE=1 WITH_DYNAREC=x86_64 FORCE_GLES3=1" ;;
+    mupen64plus_next) echo "HAVE_THR_AL=1 WITH_DYNAREC=x86_64 FORCE_GLES3=1" ;;
     parallel_n64)     echo "HAVE_PARALLEL=1 HAVE_PARALLEL_RSP=1 HAVE_THR_AL=1 WITH_DYNAREC=x86_64" ;;
     *)                echo "" ;;
   esac
