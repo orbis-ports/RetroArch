@@ -21,6 +21,15 @@ files arrive. Everything works either way; only the names are missing.
 
 Then **Online Updater → Core Downloader** lists 101 cores. Download one and it is ready to use.
 
+## Quitting
+
+Use RetroArch's own **Quit RetroArch** entry, or the Quit combo on the pad. It ends with
+`CE-34878-0` on screen; that dialog is expected here and nothing is wrong.
+
+**Do not close it from the console** — PS button, *Close Application*. That can leave the system
+hung and needing a restart: the application tears its graphics context down on the way out, and
+taken away mid-frame it sometimes does not get to.
+
 ## What is here
 
 - 101 cores, built for this console, at `cores.prx0.com`
@@ -33,7 +42,7 @@ Then **Online Updater → Core Downloader** lists 101 cores. Download one and it
 
 - **63 of 164 recipe cores do not build yet**, for reasons recorded per core. The ones that are
   listed are the ones that link and carry `retro_run`.
-- **Quitting shows CE-34878-0.** The process ends rather than idling forever; the dialog is
-  cosmetic and the alternative was a hang that only a console restart cleared.
+- **Quitting shows CE-34878-0** — see above. The process ends rather than idling forever, and
+  the alternative was a hang that only a console restart cleared.
 - Cores are cloned from upstream's tip when a build is run, so a given core's version is the
   date it was built, not a pinned release.

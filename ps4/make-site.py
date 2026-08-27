@@ -306,6 +306,15 @@ def render(ctx):
 </div>
 
 <div class="prose">
+<div class="note">
+<p><b>Quit from inside the application, not from the console.</b> Use RetroArch's own
+<b>Quit RetroArch</b> entry, or the Quit combo on the pad. It ends with
+<code>CE-34878-0</code> on screen — that dialog is expected here and nothing is wrong.</p>
+<p>Closing it the console's way instead — the PS button, then <em>Close Application</em> — can
+leave the system hung, needing a restart. The application shuts its graphics context down on the
+way out; taken away mid-frame, it sometimes does not get to.</p>
+</div>
+
 <h2>Install</h2>
 <ol class="steps">
   <li>Copy the <code>.pkg</code> to <code>/data/pkg</code> on the console over FTP.</li>
@@ -409,8 +418,9 @@ it. Nothing here is sold, and nothing here should be.</p>
 
 <h2>Known limits</h2>
 <ul>
-  <li>Quitting shows <code>CE-34878-0</code>. The process ends rather than idling forever; the
-      dialog is cosmetic.</li>
+  <li>Quitting shows <code>CE-34878-0</code>. The process ends rather than idling forever, which
+      is the better half of a trade: holding the screen instead would turn every quit into a hang.
+      Quit from inside the application — see the note at the top.</li>
   <li>63 of the 164 cores in the build recipe do not compile for this platform yet. The ones
       listed here are the ones that link and export a working entry point.</li>
   <li>Cores are built from upstream's tip on the day the build ran, so a core's version is a
