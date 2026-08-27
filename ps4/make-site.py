@@ -177,11 +177,14 @@ a{color:var(--accent)}
 a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
 header{border-bottom:1px solid var(--rule);padding:56px 0 32px;margin-bottom:40px}
-.brand{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+/* The masthead is centred; the sections below are not. A masthead is looked at, and centring
+   is what that shape expects. A section heading is read, and belongs on the same left edge as
+   the cards or table it introduces. */
+.brand{display:flex;align-items:center;gap:18px;flex-wrap:wrap;justify-content:center}
 .mark{width:56px;height:56px;flex:0 0 auto;border-radius:12px;display:block}
-h1{font-size:2rem;margin:0;letter-spacing:-.015em;text-wrap:balance}
-.tag{color:var(--muted);margin:.5rem 0 0;max-width:60ch}
-.meta{margin-top:20px;display:flex;gap:10px;flex-wrap:wrap;font-size:.82rem}
+h1{font-size:2rem;margin:0;letter-spacing:-.015em;text-wrap:balance;text-align:center}
+.tag{color:var(--muted);margin:.5rem auto 0;max-width:60ch;text-align:center}
+.meta{margin-top:20px;display:flex;gap:10px;flex-wrap:wrap;font-size:.82rem;justify-content:center}
 .pill{background:var(--raised);border:1px solid var(--rule);border-radius:999px;padding:4px 12px;color:var(--muted)}
 .pill b{color:var(--ink);font-weight:600}
 
