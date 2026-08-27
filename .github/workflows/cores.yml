@@ -377,6 +377,12 @@ jobs:
       # Only for the cores that failed. A green shard's logs are 20 MB of nothing.
       - name: Keep the logs of the cores that did not build
         if: always()
+        # ⚠ DIAGNOSTICS MUST NEVER REDDEN A BUILD, and the first version of this step did.
+        # GitHub runs `run:` under `bash -e`, so `[ -f x ] && cp x y && kept=1` returning 1
+        # because the file was absent killed the job - in the shards where every core built,
+        # which is to say the healthy ones. continue-on-error is the belt; the conditionals
+        # below are the braces.
+        continue-on-error: true
         run: |
           set -uo pipefail
           man="$WORK/out/cores.manifest"
@@ -387,9 +393,12 @@ jobs:
             [ -n "${core:-}" ] || continue
             [ "$result" = "OK" ] && continue
             for ext in log link clone patch fself; do
-              [ -f "$WORK/$core.$ext" ] && cp -f "$WORK/$core.$ext" "out/logs/" && kept=1
+              if [ -f "$WORK/$core.$ext" ]; then
+                cp -f "$WORK/$core.$ext" out/logs/ || true
+                kept=1
+              fi
             done
-          done < "$man"
+          done < "$man" || true"
           if [ "$kept" -eq 1 ]; then
             echo "== kept $(ls out/logs | wc -l) log file(s) for cores that did not build"
             ls out/logs | sed 's/^/   /'
