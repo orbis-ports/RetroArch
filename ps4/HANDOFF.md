@@ -2104,3 +2104,44 @@ before Vulkan, and this port builds with GLES for the sake of cores that need a 
 fresh install came up on zink, translating to the Vulkan that RADV was going to be handed anyway.
 An ORBIS arm now selects Vulkan. It costs GL cores nothing: `video_driver_find_driver()` forces
 the driver to match a core's hardware context and remembers the previous one.
+
+## Why mupen64plus_next was never in a release, and what it says about every other core
+
+It builds here and it has never once built in CI. Two causes, both of them a dependency this
+machine happened to have and nobody had written down.
+
+⚠ **clang falls back to /usr/include, and -isysroot does not stop it.** GLES3/gl3.h and its EGL
+neighbours live in the Mesa tree - `$(ORBIS_MESA_SRC)/include`, the path Makefile.orbis:392 gives
+the frontend - and `ps4/build-cores.sh` never passed it to cores. Measured directly:
+
+    clang --target=x86_64-pc-freebsd12-elf -isysroot $TOOLCHAIN ... -E
+      -> # 1 "/usr/include/GLES3/gl3.h"
+
+So every GL core built on this machine has been compiled against **this Linux desktop's** GLES
+headers. It works, because they are Khronos's and near-identical - an accident that holds. A
+runner has no libgles-dev, nothing to fall back to, and the core fails with
+`'GLES3/gl3.h' file not found`. ⚠ CI was right and the development machine was wrong, which is the
+opposite of how this reads at first: seven objects short, then `undefined symbol: glsm_ctl` at the
+link, and glsm.o was simply one of the files that never compiled.
+
+⚠ **And `nasm` is not on a GitHub runner.** mupen's x86_64 dynarec assembles
+`new_dynarec/x64/linkage_x64.o` with it - `make: nasm: No such file or directory`, Error 127.
+`make` runs with `-k`, so both failures surfaced only as a missing symbol much later.
+
+**The instruments this took, and why they were worth more than the fix.** Four attempts learned
+nothing because the evidence kept being thrown away: a diagnostic step that reddened healthy
+shards (GitHub runs `run:` under `bash -e`, and testing for a file that is absent *because nothing
+failed* returns 1); an artifact with `if-no-files-found: error`, which discards the logs in the one
+case where the logs are all there is; a selection keyed on a manifest that `build-cores.sh` never
+writes when zero cores build - the single-core case exactly; and `WORK`, which is a step-level
+variable, not a job-level one. Each was correct for the path its author had in mind and silent on
+the path being walked, which is the same shape as every defect in this port.
+
+⚠ **`cores.yml` now takes a `cores` input** - space-separated names, one shard, publishes nothing.
+Chasing this cost two full 163-core runs before that existed. Publishing is blocked for a subset on
+purpose: the prune step deletes bucket objects the new index does not name, so a two-core
+diagnostic run would have taken the other ninety-nine down with it.
+
+**Left open.** The host-header fallback is not specific to mupen: any core reaching for a header
+the SDK and overlay lack will silently take this machine's. `-nostdsysteminc` would close it and
+has not been tried.
