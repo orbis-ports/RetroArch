@@ -165,12 +165,15 @@ body{
   padding:0 20px 96px;
 }
 .wrap{max-width:1100px;margin:0 auto}
-/* ⚠ CENTRED, NOT FLUSH LEFT. The reading column stays at 68 characters because that is what
-   reads well - but pinned to the left of a 1100px wrapper it sits under a full-width row of
+/* ⚠ CENTRED, NOT FLUSH LEFT, AND 86 CHARACTERS RATHER THAN 68. The classic 65-75 measure is
+   for prose read at length; this is reference material scanned in short passages, and at 68 in
+   a 1100px column it looked starved. 86 is past the textbook range on purpose - the line height
+   is 1.65, which carries the extra width. The reading column stays bounded because that is what
+   reads comfortably - but pinned to the left of a 1100px wrapper it sits under a full-width row of
    download cards with the right half empty, and the page looks broken rather than restrained.
    Centring costs the shared left edge and buys a balanced page; here the wide elements are
    cards and tables, which have their own frames, so the lost alignment is not missed. */
-.prose{max-width:68ch;margin-left:auto;margin-right:auto}
+.prose{max-width:86ch;margin-left:auto;margin-right:auto}
 code,kbd,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
 code{background:var(--sunk);border:1px solid var(--rule);border-radius:4px;padding:.08em .38em;font-size:.88em}
 a{color:var(--accent)}
