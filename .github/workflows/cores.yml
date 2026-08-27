@@ -413,26 +413,50 @@ jobs:
         continue-on-error: true
         run: |
           set -uo pipefail
-          man="$WORK/out/cores.manifest"
-          [ -f "$man" ] || exit 0
           mkdir -p out/logs
-          kept=0
-          while IFS=$'\t' read -r core result rest; do
-            [ -n "${core:-}" ] || continue
-            [ "$result" = "OK" ] && continue
-            for ext in log link clone patch fself; do
-              if [ -f "$WORK/$core.$ext" ]; then
-                cp -f "$WORK/$core.$ext" out/logs/ || true
-                kept=1
-              fi
-            done
-          done < "$man" || true
-          if [ "$kept" -eq 1 ]; then
-            echo "== kept $(ls out/logs | wc -l) log file(s) for cores that did not build"
-            ls out/logs | sed 's/^/   /'
+
+          # ⚠ THE MANIFEST IS NOT ALWAYS THERE, and the first version of this step keyed on it.
+          # ps4/build-cores.sh treats "not one core produced a module" as systemic and exits
+          # before merging the manifest - which is precisely the single-core diagnostic run.
+          # The step then reported success and kept nothing, twice.
+          #
+          # So: the manifest narrows the selection when it exists, and its absence means take
+          # everything. A shard's worth of build logs is a few megabytes.
+          man="$WORK/out/cores.manifest"
+          if [ -f "$man" ]; then
+            while IFS=$'\t' read -r core result rest; do
+              [ -n "${core:-}" ] || continue
+              [ "$result" = "OK" ] && continue
+              for ext in log link clone patch fself; do
+                [ -f "$WORK/$core.$ext" ] && { cp -f "$WORK/$core.$ext" out/logs/ || true; }
+              done
+            done < "$man" || true
           else
-            echo "== every core in this shard built; no logs kept"
+            echo "== no manifest: the build did not get that far. Keeping every log."
+            for f in "$WORK"/*.log "$WORK"/*.link "$WORK"/*.clone "$WORK"/*.patch "$WORK"/*.fself; do
+              [ -f "$f" ] && { cp -f "$f" out/logs/ || true; }
+            done
           fi
+
+          n="$(ls out/logs 2>/dev/null | wc -l)"
+          if [ "$n" -eq 0 ]; then
+            echo "== every core in this shard built; no logs kept"
+            exit 0
+          fi
+          echo "== kept $n log file(s):"
+          ls out/logs | sed 's/^/   /'
+
+          # ⚠ AND PRINT THEM HERE, not only into an artifact. An artifact costs a download and
+          # a second round trip to read; the errors are a few dozen lines and the run log is
+          # where somebody is already looking.
+          for f in out/logs/*.log; do
+            [ -f "$f" ] || continue
+            echo
+            echo "---------- $(basename "$f") : first errors ----------"
+            grep -nE 'error:|Error [0-9]|No such file' "$f" | head -25 || true
+            echo "---------- $(basename "$f") : last 25 lines ----------"
+            tail -25 "$f" || true
+          done
 
       # Zips and the index fragment, computed from the exact bytes about to be uploaded.
       # The fragment is named per shard: eight files called .index-extended would collide the
