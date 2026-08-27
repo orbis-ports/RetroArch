@@ -124,8 +124,25 @@ fi
 
 mkdir -p "$WORK" "$OUT"
 
+# ⚠ -nostdsysteminc: THE BUILD HOST'S HEADERS ARE NOT PART OF THIS PLATFORM.
+# -isysroot does NOT stop clang searching /usr/include. Measured directly:
+#
+#     clang --target=x86_64-pc-freebsd12-elf -isysroot $TOOLCHAIN ... -E
+#       -> # 1 "/usr/include/GLES3/gl3.h"
+#
+# So a header the SDK, the overlay and Mesa all lack is silently taken from the machine doing
+# the building - this Linux desktop - and the result compiles, links and runs. That is how
+# mupen64plus_next built here for weeks and never once in CI, where there is no libgles-dev to
+# fall back to. The accident held only because those particular headers are Khronos's and
+# near-identical; nothing guarantees the next one will be.
+#
+# ⚠ -nostdinc, NOT -nostdsysteminc. The latter is a -cc1 flag the driver rejects, and
+# `-Xclang -nostdsysteminc` is accepted while doing nothing - measured, the host GLES header
+# still resolved through it. -nostdinc also drops clang's own builtin directory, so that one is
+# added back explicitly, and LAST: ahead of the SDK it would answer <stddef.h> from clang's copy
+# instead of the SDK's and quietly change what this port is built against.
 ORBIS_ARCH=(--target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables
-            -isysroot "$TOOLCHAIN"
+            -isysroot "$TOOLCHAIN" -nostdinc
             -DORBIS -D__ORBIS__ -D__PS4__ -DPS4 -D_BSD_SOURCE=1)
 
 # ⚠ THE INCLUDE ORDER IS NOT A PREFERENCE, AND C++ NEEDS A DIFFERENT ONE FROM C.
@@ -163,11 +180,13 @@ else
   echo "             has none. Point it at a Mesa tree or bundle." >&2
 fi
 
+CLANG_RESOURCE_INC="$(clang -print-resource-dir)/include"
+
 C_INCLUDES=(-isystem "$ORBIS_COMPAT_DIR/include" "${MESA_INCLUDES[@]}"
-            -isystem "$TOOLCHAIN/include")
+            -isystem "$TOOLCHAIN/include" -isystem "$CLANG_RESOURCE_INC")
 CXX_INCLUDES=(-isystem "$TOOLCHAIN/include/c++/v1"
               -isystem "$ORBIS_COMPAT_DIR/include" "${MESA_INCLUDES[@]}"
-              -isystem "$TOOLCHAIN/include"
+              -isystem "$TOOLCHAIN/include" -isystem "$CLANG_RESOURCE_INC"
               -include orbis_prefix.h)
 CC_ORBIS="clang ${ORBIS_ARCH[*]} ${C_INCLUDES[*]}"
 CXX_ORBIS="clang++ ${ORBIS_ARCH[*]} ${CXX_INCLUDES[*]}"

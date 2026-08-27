@@ -362,14 +362,38 @@ endif
 # __STRICT_ANSI__ is set — which -std=cNN always sets.
 # ORBIS/__ORBIS__/__PS4__/PS4: RetroArch's own ifdefs key off ORBIS
 # (libretro-common/dynamic/dylib.c), the overlay's off __PS4__. Both, always.
+# ⚠ -nostdsysteminc: THE BUILD HOST'S HEADERS ARE NOT PART OF THIS PLATFORM.
+# -isysroot does NOT stop clang searching /usr/include. Measured directly:
+#
+#     clang --target=x86_64-pc-freebsd12-elf -isysroot $(TOOLCHAIN) ... -E
+#       -> # 1 "/usr/include/GLES3/gl3.h"
+#
+# So a header the SDK, the overlay and Mesa all lack is silently taken from the machine doing
+# the building - this Linux desktop - and the result compiles, links and runs. That is how
+# mupen64plus_next built here for weeks and never once in CI, where there is no libgles-dev to
+# fall back to. The accident held only because those particular headers are Khronos's and
+# near-identical; nothing guarantees the next one will be.
+#
+# ⚠ -nostdinc, NOT -nostdsysteminc. The latter is a -cc1 flag; the driver rejects it outright,
+# and passing it as `-Xclang -nostdsysteminc` is accepted and does NOT work - measured, the host
+# GLES header still resolved. -nostdinc is the driver flag that actually drops the implicit
+# directories, and it drops clang's own builtin directory with them, so that one is added back
+# by hand as CLANG_RESOURCE_INC.
+#
+# ⚠ AND IT GOES LAST. Put ahead of the SDK it would answer <stddef.h> from clang's copy instead
+# of the SDK's, quietly changing which definitions this port is built against. Last means "only
+# when nothing else has it", which is the role it had before this flag existed.
 ARCHFLAGS := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables \
-             -isysroot $(TOOLCHAIN) \
+             -isysroot $(TOOLCHAIN) -nostdinc \
              -DORBIS -D__ORBIS__ -D__PS4__ -DPS4 -D_BSD_SOURCE=1
 
 # ⚠ THE OVERLAY GOES AHEAD OF THE SDK, AND MUST. It corrects musl declarations by
 # defining musl's own __DEFINED_<name> guards before bits/alltypes.h is reached.
 # Behind the SDK's directory it would compile, do nothing, and say nothing.
-C_INCLUDES   := -isystem $(ORBIS_COMPAT_DIR)/include -isystem $(TOOLCHAIN)/include
+CLANG_RESOURCE_INC := $(shell $(CC) -print-resource-dir)/include
+
+C_INCLUDES   := -isystem $(ORBIS_COMPAT_DIR)/include -isystem $(TOOLCHAIN)/include \
+                -isystem $(CLANG_RESOURCE_INC)
 
 # ⚠ AND FOR C++, libc++ GOES AHEAD OF BOTH. libc++ ships C-header wrappers that
 # #include_next the platform header and add the C++ overloads; the float abs()
@@ -379,6 +403,7 @@ C_INCLUDES   := -isystem $(ORBIS_COMPAT_DIR)/include -isystem $(TOOLCHAIN)/inclu
 # own orbis/*.h are not self-contained.
 CXX_INCLUDES := -isystem $(TOOLCHAIN)/include/c++/v1 \
                 -isystem $(ORBIS_COMPAT_DIR)/include -isystem $(TOOLCHAIN)/include \
+                -isystem $(CLANG_RESOURCE_INC) \
                 -include orbis_prefix.h
 
 INCDIRS += -I. -Ideps -Ilibretro-common/include -Ideps/rcheevos/include \
