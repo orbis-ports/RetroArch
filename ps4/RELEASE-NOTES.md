@@ -7,6 +7,9 @@ rather than Linux shared objects.
 
 Copy the `.pkg` to `/data/pkg` over FTP, then **Settings → Debug Settings → Package Installer**.
 
+Tested on **firmware 11.00** with **GoldHEN v2.4b18.10** (SiSTRo). Other firmware and other
+jailbreak builds may work; nobody has checked, and a report either way is useful.
+
 It installs as **RetroArchV**, title id `RTRV00001`. That is a different title id from the
 RetroArch builds already circulating, so it sits **beside** an existing install rather than
 replacing it — the console decides collisions by title id, not by the name on screen.

@@ -198,17 +198,25 @@ ol.steps li{margin:.4em 0}
 .note{border-left:3px solid var(--warn);background:var(--raised);padding:14px 18px;border-radius:0 8px 8px 0;margin:20px 0}
 .note b{color:var(--warn)}
 
-.tablewrap{overflow-x:auto;border:1px solid var(--rule);border-radius:10px;margin:18px 0}
+/* ⚠ THE CORE TABLE IS WIDER THAN THE PROSE COLUMN, so it gets the viewport rather than the
+   940px measure - at 940 with everything nowrap the last column fell off the right edge and the
+   source link, the one thing the licence notice depends on, was reachable only by scrolling. */
+.tablewrap{overflow-x:auto;border:1px solid var(--rule);border-radius:10px;margin:18px 0;
+  width:min(1240px,calc(100vw - 40px));margin-left:calc((min(940px,100%) - min(1240px,100vw - 40px))/2)}
 table{border-collapse:collapse;width:100%;font-size:.86rem}
-th,td{text-align:left;padding:9px 13px;border-bottom:1px solid var(--rule);white-space:nowrap}
+th,td{text-align:left;padding:9px 13px;border-bottom:1px solid var(--rule);vertical-align:top}
+td:first-child{min-width:22ch}
+th:nth-child(3),td:nth-child(3){min-width:11ch}
 th{background:var(--sunk);color:var(--muted);font-weight:600;position:sticky;top:0}
 tr:last-child td{border-bottom:0}
-td.num{font-variant-numeric:tabular-nums;color:var(--muted)}
-td.sys{color:var(--muted);white-space:normal;min-width:12ch}
+td.num{font-variant-numeric:tabular-nums;color:var(--muted);white-space:nowrap}
+td.mono{white-space:nowrap}
+td.sys{color:var(--muted);min-width:12ch}
 .nc{display:inline-block;background:rgba(217,164,65,.14);color:var(--warn);border-radius:4px;
   padding:1px 7px;font-size:.78rem;margin-left:6px}
 
 footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--rule);color:var(--faint);font-size:.85rem}
+@media (max-width:1280px){ .tablewrap{width:calc(100vw - 40px);margin-left:calc((100% - (100vw - 40px))/2)} }
 @media (max-width:600px){ header{padding-top:36px} h1{font-size:1.6rem} }
 """
 
@@ -289,7 +297,8 @@ def render(ctx):
     <span class="pill">Package <b>%s</b></span>
     <span class="pill">Cores <b>%d</b></span>
     <span class="pill">Index <b>%s</b></span>
-    <span class="pill">Firmware <b>GoldHEN</b></span>
+    <span class="pill">Firmware <b>%s</b></span>
+    <span class="pill">GoldHEN <b>%s</b></span>
   </div>
 </header>
 
@@ -322,6 +331,8 @@ way out; taken away mid-frame, it sometimes does not get to.</p>
   <li>Pick the package and install it.</li>
   <li>Launch <b>RetroArchV</b>.</li>
 </ol>
+<p><b>Tested on firmware %s with GoldHEN %s</b>, by SiSTRo. Other firmware and other jailbreak
+builds may work — nobody has checked, and a report either way is useful.</p>
 <p>It installs under its own title id, <code>RTRV00001</code>, so it sits <em>beside</em> any
 RetroArch already on the console rather than replacing it — the system decides collisions by
 title id, not by the name on screen.</p>
@@ -445,8 +456,10 @@ it. Nothing here is sold, and nothing here should be.</p>
 </div></body></html>
 """ % (ctx["favicon"], len(ctx["index"]), CSS, ctx["mark"], len(ctx["index"]),
        e(ctx["version"]), len(ctx["index"]), e(ctx["index_date"]),
+       e(ctx["firmware"]), e(ctx["goldhen"]),
        e(ctx["version"]), e(ctx["pkg_size"]), e(ctx["pkg_url"]),
        bundle_row,
+       e(ctx["firmware"]), e(ctx["goldhen"]),
        e(ctx["src_url"]), e(ctx["version"]),
        nc_count,
        "\n".join(rows),
@@ -462,6 +475,8 @@ def main():
     ap.add_argument("--recipe", help="the libretro-super recipe the build was driven by")
     ap.add_argument("--info", help="directory of unpacked .info files")
     ap.add_argument("--icon", help="the application icon, inlined into the page")
+    ap.add_argument("--firmware", default="11.00", help="console firmware this was tested on")
+    ap.add_argument("--goldhen", default="2.4b18.10", help="GoldHEN build this was tested on")
     ap.add_argument("--dist", help="directory of *.prx.zip, for --bundle")
     ap.add_argument("--out", required=True, help="where index.html and the bundle are written")
     ap.add_argument("--base", required=True, help="public base URL, with trailing slash")
@@ -496,6 +511,8 @@ def main():
         "index_date": index[0][0],
         "bundle_name": None,
         "bundle_size": "",
+        "firmware": args.firmware,
+        "goldhen": args.goldhen,
     }
 
     icon = icon_data_uri(args.icon)
