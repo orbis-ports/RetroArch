@@ -366,6 +366,37 @@ jobs:
             echo "   That is the harness or the toolchain, not $bad unrelated core(s)." >&2
             exit 1; }
 
+      # ⚠ THE LOGS OF WHAT DID NOT BUILD, BECAUSE WITHOUT THEM A FAILURE IS ONLY A WORD.
+      # ps4/build-cores.sh writes <core>.log (the make output), .link, .clone, .patch and
+      # .fself per core, and the manifest carries only the first 46 characters of one error.
+      # For mupen64plus_next that word was "glsm_ctl" - true, and not enough to act on: make
+      # runs with -k, so a compile that failed early surfaces as a missing symbol at link
+      # time, and the compile error itself was in a file nobody kept. An investigation then
+      # has to reproduce the whole build locally and still cannot see what the runner saw.
+      #
+      # Only for the cores that failed. A green shard's logs are 20 MB of nothing.
+      - name: Keep the logs of the cores that did not build
+        if: always()
+        run: |
+          set -uo pipefail
+          man="$WORK/out/cores.manifest"
+          [ -f "$man" ] || exit 0
+          mkdir -p out/logs
+          kept=0
+          while IFS=$'\t' read -r core result rest; do
+            [ -n "${core:-}" ] || continue
+            [ "$result" = "OK" ] && continue
+            for ext in log link clone patch fself; do
+              [ -f "$WORK/$core.$ext" ] && cp -f "$WORK/$core.$ext" "out/logs/" && kept=1
+            done
+          done < "$man"
+          if [ "$kept" -eq 1 ]; then
+            echo "== kept $(ls out/logs | wc -l) log file(s) for cores that did not build"
+            ls out/logs | sed 's/^/   /'
+          else
+            echo "== every core in this shard built; no logs kept"
+          fi
+
       # Zips and the index fragment, computed from the exact bytes about to be uploaded.
       # The fragment is named per shard: eight files called .index-extended would collide the
       # moment the publish job merges them into one directory.
@@ -393,6 +424,7 @@ jobs:
             out/*.prx.zip
             out/index-fragment-${{ matrix.shard }}.txt
             out/cores-manifest-${{ matrix.shard }}.tsv
+            out/logs/**
           if-no-files-found: error
           retention-days: 7
 
