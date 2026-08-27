@@ -280,7 +280,118 @@ int getaddrinfo_retro(const char *node, const char *service,
       node = (hints->ai_flags & AI_PASSIVE) ? "0.0.0.0" : "127.0.0.1";
 #endif
 
-#ifdef HAVE_SOCKET_LEGACY
+#if defined(ORBIS)
+   /* ⚠ musl's RESOLVER CANNOT RUN ON THIS CONSOLE, AND IT FAILS BEFORE IT EVER ASKS ANYTHING.
+    *
+    * Measured on hardware. sceNetGetDnsInfo() reports a perfectly good nameserver, so there is
+    * nothing wrong with the network configuration - and getaddrinfo() still answers -11
+    * (EAI_SYSTEM) with errno EACCES. The reason is in how musl opens its query socket:
+    * __res_msend asks for SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, and this SDK defines those two
+    * flags as 02000000 and 04000 - LINUX's values. The kernel here is FreeBSD-derived, where
+    * they are 0x10000000/0x20000000 and where socket() did not accept them at all until
+    * FreeBSD 10. The same family of defect as bits/ioctl.h offering only LINUX_FIONBIO, and as
+    * the shipped libc++ comparing against Linux's ETIMEDOUT.
+    *
+    * ⚠ AND OVERRIDING socket() WOULD NOT BE ENOUGH. Probed: socket() with those flags returns a
+    * valid descriptor (16) AND leaves errno at 13. musl tries the flagged form, is refused,
+    * retries plain, then attempts fcntl(F_SETFL, O_NONBLOCK) - which this platform also refuses
+    * - and hands back the descriptor anyway. So its resolver proceeds on a BLOCKING socket it
+    * believes is non-blocking. Repairing the flags would leave that mismatch untouched.
+    *
+    * Sony's resolver has no such problem: sceNetPoolCreate() then sceNetResolverStartNtoa()
+    * answered 188.114.96.11 for buildbot.libretro.com in 73 ms, first try. ⚠ The pool is what
+    * the first attempt was missing - sceNetResolverCreate(memid=0) fails with 0x80410109.
+    *
+    * Pool and resolver are created and destroyed PER CALL rather than kept: net_http resolves
+    * from a worker thread and caches the result itself, so this runs rarely, and per-call state
+    * needs no lock to be safe against that. */
+   {
+      struct addrinfo    *info = (struct addrinfo*)calloc(1, sizeof(*info));
+      struct sockaddr_in *addr = (struct sockaddr_in*)malloc(sizeof(*addr));
+
+      if (!info || !addr)
+         goto orbis_failure;
+
+      info->ai_family   = AF_INET;
+      info->ai_socktype = hints ? hints->ai_socktype : SOCK_STREAM;
+      info->ai_protocol = hints ? hints->ai_protocol : 0;
+      info->ai_addrlen  = sizeof(*addr);
+      info->ai_addr     = (struct sockaddr*)addr;
+
+      memset(addr, 0, sizeof(*addr));
+      addr->sin_family = AF_INET;
+
+      if (service)
+      {
+         char *service_end = NULL;
+         uint16_t port     = (uint16_t)strtoul(service, &service_end, 10);
+
+         /* Numeric ports only. net_http sets AI_NUMERICSERV and passes a number; a name
+          * here would need /etc/services, which this platform does not have either. */
+         if (service_end == service || *service_end)
+            goto orbis_failure;
+
+         addr->sin_port = htons(port);
+      }
+
+      if (!node)
+         goto orbis_failure;
+
+      /* A literal address needs no resolver at all, and this is the common case for the
+       * bring-up server. inet_aton is real here - it comes from libc.a, not from the
+       * resolver. */
+      if (inet_aton(node, &addr->sin_addr))
+      {
+         *res = info;
+         return 0;
+      }
+
+      if (hints && (hints->ai_flags & AI_NUMERICHOST))
+         goto orbis_failure;
+
+      {
+         OrbisNetInAddr resolved;
+         OrbisNetId     rid;
+         int32_t        pool = sceNetPoolCreate("retroarch-dns", 4 * 1024, 0);
+
+         if (pool < 0)
+            goto orbis_failure;
+
+         if ((rid = sceNetResolverCreate("retroarch-dns", pool, 0)) < 0)
+         {
+            sceNetPoolDestroy(pool);
+            goto orbis_failure;
+         }
+
+         memset(&resolved, 0, sizeof(resolved));
+
+         /* 5 s, 3 retries: net_http gives its own task a 5 s connect budget, and a name that
+          * takes longer than that to resolve would not have connected either. */
+         if (sceNetResolverStartNtoa(rid, node, &resolved,
+                  5 * 1000 * 1000, 3, 0) < 0)
+         {
+            sceNetResolverDestroy(rid);
+            sceNetPoolDestroy(pool);
+            goto orbis_failure;
+         }
+
+         memcpy(&addr->sin_addr, &resolved, sizeof(resolved));
+
+         sceNetResolverDestroy(rid);
+         sceNetPoolDestroy(pool);
+      }
+
+      *res = info;
+
+      return 0;
+
+orbis_failure:
+      free(addr);
+      free(info);
+
+      return -1;
+   }
+#elif defined(HAVE_SOCKET_LEGACY)
    {
       struct addrinfo    *info = (struct addrinfo*)calloc(1, sizeof(*info));
       struct sockaddr_in *addr = (struct sockaddr_in*)malloc(sizeof(*addr));
@@ -341,7 +452,10 @@ failure:
 
 void freeaddrinfo_retro(struct addrinfo *res)
 {
-#ifdef HAVE_SOCKET_LEGACY
+   /* ORBIS builds the same single-node shape the legacy branch does - one addrinfo owning one
+    * sockaddr_in, both from malloc - so it frees the same way. Handing one of those to the
+    * SDK's freeaddrinfo() would be a free() of memory its allocator never issued. */
+#if defined(ORBIS) || defined(HAVE_SOCKET_LEGACY)
    if (res)
    {
       free(res->ai_addr);

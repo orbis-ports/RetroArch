@@ -31,6 +31,8 @@
 #include <sys/ioctl.h>
 #include <sys/time.h>
 #include <poll.h>
+#include <netdb.h>
+#include <stdio.h>
 
 #include <orbis/Net.h>
 
@@ -251,6 +253,139 @@ static void probe_alternatives(void)
    close(fd);
 }
 
+/* ⚠ AND NOW NAME RESOLUTION, WHICH THE LAN TEST NEVER TOUCHED.
+ *
+ * The core list works against 192.168.100.1 - a numeric address, so getaddrinfo() had nothing
+ * to do. The first request for a real hostname says otherwise:
+ *
+ *   [net_http] dns_lookup_failed: host=buildbot.libretro.com port=80 fd=-1 errno=2
+ *
+ * musl resolves through /etc/resolv.conf, and this SDK's resolvconf.lo answers it from
+ * sceNetGetDnsInfo(). Three things could be false there and they need separating: the console
+ * may report no DNS servers to the application at all; musl may be reading them and failing
+ * anyway; or Sony's own resolver may work where musl's does not - which is the shape every
+ * other finding today has taken. sceNetResolverStartNtoa() carries a full prototype in
+ * orbis/Net.h, unlike most of that header. */
+static void probe_dns(void)
+{
+   static const char *host = "buildbot.libretro.com";
+   struct addrinfo hints, *res = NULL;
+   OrbisNetDnsInfo dns;
+   OrbisNetInAddr addr;
+   OrbisNetId rid;
+   int32_t rc;
+   char ip[64];
+
+   memset(&dns, 0, sizeof(dns));
+   rc = sceNetGetDnsInfo(&dns, 0);
+   ps4_log("[net probe] dns sceNetGetDnsInfo = 0x%08X primary=%u.%u.%u.%u secondary=%u.%u.%u.%u",
+         (unsigned)rc,
+         dns.primary_dns   & 0xFF, (dns.primary_dns   >> 8) & 0xFF,
+         (dns.primary_dns  >> 16) & 0xFF, (dns.primary_dns >> 24) & 0xFF,
+         dns.secondary_dns & 0xFF, (dns.secondary_dns >> 8) & 0xFF,
+         (dns.secondary_dns >> 16) & 0xFF, (dns.secondary_dns >> 24) & 0xFF);
+
+   memset(&hints, 0, sizeof(hints));
+   hints.ai_family   = AF_INET;
+   hints.ai_socktype = SOCK_STREAM;
+   errno = 0;
+   rc = getaddrinfo(host, "80", &hints, &res);
+   ps4_log("[net probe] dns getaddrinfo(%s) = %d errno=%d (%s)",
+         host, (int)rc, errno, strerror(errno));
+   if (rc == 0 && res)
+   {
+      struct sockaddr_in *sin = (struct sockaddr_in*)res->ai_addr;
+      ps4_log("[net probe] dns getaddrinfo -> %s", inet_ntoa(sin->sin_addr));
+      freeaddrinfo(res);
+   }
+
+   rid = sceNetResolverCreate("retroarch-probe", 0, 0);
+   if (rid < 0)
+   {
+      ps4_log("[net probe] dns sceNetResolverCreate failed: 0x%08X", (unsigned)rid);
+      return;
+   }
+
+   memset(&addr, 0, sizeof(addr));
+   rc = sceNetResolverStartNtoa(rid, host, &addr, 5 * 1000 * 1000, 3, 0);
+   if (rc < 0)
+      ps4_log("[net probe] dns sceNetResolverStartNtoa(%s) failed: 0x%08X", host, (unsigned)rc);
+   else
+   {
+      snprintf(ip, sizeof(ip), "%u.%u.%u.%u",
+            addr.s_addr & 0xFF, (addr.s_addr >> 8) & 0xFF,
+            (addr.s_addr >> 16) & 0xFF, (addr.s_addr >> 24) & 0xFF);
+      ps4_log("[net probe] dns sceNetResolverStartNtoa(%s) -> %s", host, ip);
+   }
+
+   sceNetResolverDestroy(rid);
+}
+
+/* ⚠ WHY musl's RESOLVER CANNOT WORK HERE, AND IT IS THE SAME DEFECT AS THE OTHERS.
+ *
+ * getaddrinfo() answered -11 (EAI_SYSTEM) with errno EACCES while sceNetGetDnsInfo() reported a
+ * perfectly good nameserver, so musl has something to read and fails before using it. musl's
+ * __res_msend opens its query socket as SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK - and this SDK
+ * defines those two flags as 02000000 and 04000, which are LINUX's values. The kernel here is
+ * FreeBSD-derived, where they are 0x10000000/0x20000000 and where socket() did not accept them
+ * at all until FreeBSD 10. Same family as bits/ioctl.h offering only LINUX_FIONBIO, and as the
+ * libc++ that compares against Linux's ETIMEDOUT.
+ *
+ * Two fixes are possible and this measures both: strip the flags inside a socket() override and
+ * apply SO_NBIO afterwards, which repairs every caller including musl's resolver; or bypass musl
+ * entirely with Sony's resolver, which needs a memory pool - sceNetResolverCreate(memid=0)
+ * answered 0x80410109. */
+static void probe_dns_fix(void)
+{
+   static const char *host = "buildbot.libretro.com";
+   OrbisNetInAddr addr;
+   OrbisNetId rid;
+   int32_t pool, rc;
+   int one = 1;
+   int fd;
+
+   errno = 0;
+   fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+   ps4_log("[net probe] dnsfix socket(DGRAM|NONBLOCK|CLOEXEC) = %d errno=%d (%s)",
+         fd, errno, strerror(errno));
+   if (fd >= 0)
+      close(fd);
+
+   errno = 0;
+   fd = socket(AF_INET, SOCK_DGRAM, 0);
+   ps4_log("[net probe] dnsfix socket(DGRAM) = %d errno=%d (%s)", fd, errno, strerror(errno));
+   if (fd >= 0)
+   {
+      errno = 0;
+      ps4_log("[net probe] dnsfix   then SO_NBIO = 0x%08X errno=%d (%s)",
+            (unsigned)sceNetSetsockopt(fd, ORBIS_NET_SOL_SOCKET, ORBIS_NET_SO_NBIO,
+               &one, sizeof(one)), errno, strerror(errno));
+      close(fd);
+   }
+
+   pool = sceNetPoolCreate("retroarch-probe", 4 * 1024, 0);
+   ps4_log("[net probe] dnsfix sceNetPoolCreate = 0x%08X", (unsigned)pool);
+   if (pool < 0)
+      return;
+
+   rid = sceNetResolverCreate("retroarch-probe", pool, 0);
+   if (rid < 0)
+      ps4_log("[net probe] dnsfix sceNetResolverCreate(pool) failed: 0x%08X", (unsigned)rid);
+   else
+   {
+      memset(&addr, 0, sizeof(addr));
+      rc = sceNetResolverStartNtoa(rid, host, &addr, 5 * 1000 * 1000, 3, 0);
+      if (rc < 0)
+         ps4_log("[net probe] dnsfix StartNtoa(%s) failed: 0x%08X", host, (unsigned)rc);
+      else
+         ps4_log("[net probe] dnsfix StartNtoa(%s) -> %u.%u.%u.%u", host,
+               addr.s_addr & 0xFF, (addr.s_addr >> 8) & 0xFF,
+               (addr.s_addr >> 16) & 0xFF, (addr.s_addr >> 24) & 0xFF);
+      sceNetResolverDestroy(rid);
+   }
+   sceNetPoolDestroy(pool);
+}
+
 void orbis_net_probe(void)
 {
    ps4_log("[net probe] target %s:%d - comparing libkernel POSIX against sceNet",
@@ -259,4 +394,6 @@ void orbis_net_probe(void)
    probe_scenet();
    probe_nonblock();
    probe_alternatives();
+   probe_dns();
+   probe_dns_fix();
 }
