@@ -337,6 +337,52 @@ and a core without that bit fails to load with no explanation beyond
 <code>/data/retroarch/info</code> and can be copied across from
 <a href="http://buildbot.libretro.com/assets/frontend/info.zip">libretro's bundle</a>.</p>
 
+<h2>Where everything lives</h2>
+<p>All of it sits under <code>/data/retroarch/</code>, which is writable and survives
+reinstalling the package. Put files there over FTP and RetroArch finds them at startup — there is
+no import step.</p>
+</div>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Directory</th><th>What goes in it</th></tr></thead>
+<tbody>
+<tr><td class="mono">/data/retroarch/cores</td><td class="sys">Cores, as <code>.prx</code> files</td></tr>
+<tr><td class="mono">/data/retroarch/info</td><td class="sys">Core metadata — names, supported extensions, required BIOS files</td></tr>
+<tr><td class="mono">/data/retroarch/system</td><td class="sys">BIOS and firmware. A core that needs one looks here and nowhere else</td></tr>
+<tr><td class="mono">/data/retroarch/roms</td><td class="sys">Content. Only a convention — games can sit anywhere the console can read</td></tr>
+<tr><td class="mono">/data/retroarch/savefiles</td><td class="sys">Battery saves, memory cards</td></tr>
+<tr><td class="mono">/data/retroarch/savestates</td><td class="sys">Save states</td></tr>
+<tr><td class="mono">/data/retroarch/config</td><td class="sys">Per-core configuration overrides, and <code>config/remaps</code> for input remaps</td></tr>
+<tr><td class="mono">/data/retroarch/playlists</td><td class="sys">Playlists built by the scanner</td></tr>
+<tr><td class="mono">/data/retroarch/thumbnails</td><td class="sys">Box art and screenshots</td></tr>
+<tr><td class="mono">/data/retroarch/shaders</td><td class="sys">Shader presets and passes</td></tr>
+<tr><td class="mono">/data/retroarch/overlays</td><td class="sys">Overlays, and <code>overlays/keyboards</code> for on-screen keyboards</td></tr>
+<tr><td class="mono">/data/retroarch/assets</td><td class="sys">Menu assets — icons, fonts, the XMB and Ozone themes</td></tr>
+<tr><td class="mono">/data/retroarch/database/rdb</td><td class="sys">Content databases the scanner matches against</td></tr>
+<tr><td class="mono">/data/retroarch/cheats</td><td class="sys">Cheat files</td></tr>
+<tr><td class="mono">/data/retroarch/logs</td><td class="sys">Logs</td></tr>
+<tr><td class="mono">/data/retroarch/retroarch.cfg</td><td class="sys">The main configuration file</td></tr>
+</tbody></table></div>
+
+<div class="prose">
+<div class="note">
+<p><b>Edit the configuration with RetroArch closed.</b> It keeps its settings in memory and
+writes the whole file out when it exits, so a change made over FTP while it is running is
+overwritten on quit — not merged, replaced.</p>
+</div>
+<p>The package itself is mounted read-only at <code>/app0</code> and holds only the executable,
+the icon and the certificate bundle. Nothing there needs editing, and nothing there can be.</p>
+
+<h2>Configuring it</h2>
+<p>Once the cores are in place, this is ordinary RetroArch. Controller mapping, shaders,
+overlays, per-core options, save states, rewind, netplay's absence, the scanner, playlists — all
+of it behaves as it does everywhere else, with the same menus in the same places. The
+<a href="https://docs.libretro.com/">libretro documentation</a> applies unchanged, and so does
+any guide written for another platform.</p>
+<p>Two habits worth having early: <b>Load Content</b> scans a directory for anything a core
+claims, and per-core settings live under <b>Quick Menu &rarr; Options</b> while the game is
+running, saved with <b>Manage Core Options</b>.</p>
+
 <h2>Source code and licences</h2>
 <p>RetroArch is licensed under the <b>GNU General Public License, version 3</b>, and most cores
 here are GPL of one vintage or another. Distributing these binaries obliges us to hand you the
