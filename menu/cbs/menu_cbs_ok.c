@@ -5468,7 +5468,11 @@ void cb_generic_download(retro_task_t *task,
    settings_t *settings       = config_get_ptr();
    http_transfer_data_t *data = (http_transfer_data_t*)task_data;
 
-   if (!data || !data->data || !transf)
+   if (!data || !transf)
+      goto finish;
+   /* A streamed download has no buffer to inspect - the body is already at
+    * output_path. Only an in-memory transfer must have one. */
+   if (!data->data && !transf->on_disk)
       goto finish;
 
    output_path[0] = '\0';
@@ -5603,10 +5607,13 @@ void cb_generic_download(retro_task_t *task,
    }
 #endif
 
-   if (!filestream_write_file(output_path, data->data, data->len))
+   if (!transf->on_disk)
    {
-      err = "Write failed.";
-      goto finish;
+      if (!filestream_write_file(output_path, data->data, data->len))
+      {
+         err = "Write failed.";
+         goto finish;
+      }
    }
 
 #if defined(HAVE_COMPRESSION)
@@ -5695,6 +5702,49 @@ finish:
 
    if (transf)
       free(transf);
+}
+
+/* ⚠ WHICH DOWNLOADS CAN GO STRAIGHT TO DISK, AND WHY IT MATTERS.
+ *
+ * task_push_http_transfer_file() accumulates the whole body in RAM and hands it to
+ * cb_generic_download(), which writes it out in one go. For a 263 KB core-info bundle that is
+ * invisible. For assets.zip it is 71 MB held while the file is written and then decompressed -
+ * measured on a PlayStation 4, that killed the process outright at the end of the transfer,
+ * black screen and no abort report. Databases (52 MB) survived; assets did not.
+ *
+ * task_push_http_download_file() already streams the body to a path as it arrives, so the peak
+ * is the receive window rather than the payload. It just had no caller here.
+ *
+ * ⚠ ONLY THE ENUMS WHOSE DESTINATION IS A PLAIN SETTINGS DIRECTORY. The sink path has to be
+ * byte-identical to the output_path cb_generic_download() would have computed, and the cases
+ * left out do not have one at push time: core content and autoconfig profiles derive a
+ * subdirectory, thumbnails come from a playlist, and the shader targets are built from the
+ * driver name. Those keep the in-memory path, which is what they have always used.
+ *
+ * A NULL return means exactly that: not eligible, push the old way. */
+static const char *download_stream_dir(enum msg_hash_enums enum_idx,
+      settings_t *settings)
+{
+   if (!settings)
+      return NULL;
+   switch (enum_idx)
+   {
+      case MENU_ENUM_LABEL_CB_UPDATE_ASSETS:
+         return settings->paths.directory_assets;
+      case MENU_ENUM_LABEL_CB_UPDATE_CORE_INFO_FILES:
+         return settings->paths.path_libretro_info;
+      case MENU_ENUM_LABEL_CB_UPDATE_DATABASES:
+         return settings->paths.path_content_database;
+      case MENU_ENUM_LABEL_CB_UPDATE_OVERLAYS:
+         return settings->paths.directory_overlay;
+      case MENU_ENUM_LABEL_CB_UPDATE_CHEATS:
+         return settings->paths.path_cheat_database;
+      case MENU_ENUM_LABEL_CB_CORE_SYSTEM_FILES_DOWNLOAD:
+         return settings->paths.directory_system;
+      default:
+         break;
+   }
+   return NULL;
 }
 
 static int action_ok_download_generic(const char *path,
@@ -5817,6 +5867,33 @@ static int action_ok_download_generic(const char *path,
       net_http_urlencode_full(s3, s, sizeof(s3));
    else
       net_http_urlencode_full(s3, s2, sizeof(s3));
+
+   {
+      const char *stream_dir = download_stream_dir(enum_idx, settings);
+
+      if (stream_dir && *stream_dir && cb == cb_generic_download)
+      {
+         char out_path[PATH_MAX_LENGTH];
+         char out_dir[PATH_MAX_LENGTH];
+
+         fill_pathname_join_special(out_path, stream_dir, transf->path,
+               sizeof(out_path));
+         /* task_push_http_download_file() does not create the directory, and
+          * the destination is routinely absent on a fresh install. */
+         strlcpy(out_dir, out_path, sizeof(out_dir));
+         path_basedir_wrapper(out_dir);
+
+         if (path_mkdir(out_dir))
+         {
+            transf->on_disk = true;
+            task_push_http_download_file(s3, out_path, suppress_msg,
+                  msg_hash_to_str(enum_idx), cb, transf);
+            return 0;
+         }
+         /* Could not make the directory - fall through and let the in-memory
+          * path report the failure the way it always has. */
+      }
+   }
 
    task_push_http_transfer_file(s3, suppress_msg,
          msg_hash_to_str(enum_idx), cb, transf);
