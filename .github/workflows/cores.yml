@@ -398,7 +398,7 @@ jobs:
                 kept=1
               fi
             done
-          done < "$man" || true"
+          done < "$man" || true
           if [ "$kept" -eq 1 ]; then
             echo "== kept $(ls out/logs | wc -l) log file(s) for cores that did not build"
             ls out/logs | sed 's/^/   /'
