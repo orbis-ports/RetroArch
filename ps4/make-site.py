@@ -196,6 +196,9 @@ ol.steps{margin:0 0 14px;padding-left:1.3em}
 ol.steps li{margin:.4em 0}
 
 .note{border-left:3px solid var(--warn);background:var(--raised);padding:14px 18px;border-radius:0 8px 8px 0;margin:20px 0}
+/* The one note that sits outside the prose column - directly under the download
+   buttons, answering the question those buttons raise - takes their full measure. */
+.note.wide{max-width:none}
 .note b{color:var(--warn)}
 
 /* ⚠ THE CORE TABLE IS WIDER THAN THE PROSE COLUMN, so it gets the viewport rather than the
@@ -314,8 +317,7 @@ def render(ctx):
   %s
 </div>
 
-<div class="prose">
-<div class="note">
+<div class="note wide">
 <p><b>Quit from inside the application, not from the console.</b> Use RetroArch's own
 <b>Quit RetroArch</b> entry, or the Quit combo on the pad. It ends with
 <code>CE-34878-0</code> on screen — that dialog is expected here and nothing is wrong.</p>
@@ -324,6 +326,7 @@ leave the system hung, needing a restart. The application shuts its graphics con
 way out; taken away mid-frame, it sometimes does not get to.</p>
 </div>
 
+<div class="prose">
 <h2>Install</h2>
 <ol class="steps">
   <li>Copy the <code>.pkg</code> to <code>/data/pkg</code> on the console over FTP.</li>
