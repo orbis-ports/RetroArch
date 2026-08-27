@@ -1,0 +1,40 @@
+RetroArch for the PlayStation 4, on a jailbroken console under GoldHEN.
+
+Vulkan through RADV, OpenGL ES 3.1 through zink, and a Core Downloader that serves PS4 cores
+rather than Linux shared objects.
+
+## Install
+
+Copy the `.pkg` to `/data/pkg` over FTP, then **Settings → Debug Settings → Package Installer**.
+
+It installs as **RetroArchV**, title id `RTRV00001`. That is a different title id from the
+RetroArch builds already circulating, so it sits **beside** an existing install rather than
+replacing it — the console decides collisions by title id, not by the name on screen.
+
+## First run
+
+**Online Updater → Update Core Info Files.**
+
+Do this once, before browsing the Core Downloader. Core metadata is not shipped in the package,
+so on a fresh install the downloader lists `.prx` filenames instead of core names until those
+files arrive. Everything works either way; only the names are missing.
+
+Then **Online Updater → Core Downloader** lists 101 cores. Download one and it is ready to use.
+
+## What is here
+
+- 101 cores, built for this console, at `cores.prx0.com`
+- Nintendo 64 at 60 fps (GLideN64)
+- PlayStation at 50 fps (Beetle PSX HW, Lightrec, Vulkan renderer)
+- Online Updater: cores, core info, databases, thumbnails, assets
+
+## Known limits
+
+- **No HTTPS.** TLS is not built in. The core host serves plain HTTP on purpose; any other
+  buildbot URL that redirects to HTTPS will fail silently with an empty list.
+- **63 of 164 recipe cores do not build yet**, for reasons recorded per core. The ones that are
+  listed are the ones that link and carry `retro_run`.
+- **Quitting shows CE-34878-0.** The process ends rather than idling forever; the dialog is
+  cosmetic and the alternative was a hang that only a console restart cleared.
+- Cores are cloned from upstream's tip when a build is run, so a given core's version is the
+  date it was built, not a pinned release.
