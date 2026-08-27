@@ -1927,18 +1927,25 @@
  * 404s - and the filename is hardcoded at tasks/task_core_updater.c:389. R2 keeps the key
  * verbatim, so the client needs no patch.
  *
- * ⚠ http, ON PURPOSE, AND IT IS WHAT MAKES THIS WORK AT ALL. HAVE_SSL is 0 - BearSSL is
- * phase 5b - so an https base URL would fail in the handshake and produce a silent empty core
- * list. The bucket's own pub-*.r2.dev hostname answers plain http with a 301 to https, which
- * net_http.c:2329 follows straight into that handshake; a custom domain does not, because
- * Always Use HTTPS is off for this hostname. That is the whole reason the domain exists.
+ * ⚠ https NOW, AND THE http THAT CAME BEFORE IT IS STILL SERVED. TLS works here as of the
+ * BearSSL arm in libretro-common/net/net_socket_ssl_bear.c - the trust anchors ship at
+ * /app0/cacert.pem, and Cloudflare issues this host's certificate automatically. Verified on
+ * hardware against the same bucket over both schemes.
+ *
+ * ⚠ DO NOT TURN ON "Always Use HTTPS" FOR THIS HOSTNAME. Packages already in people's hands -
+ * v0.1.1 and earlier - have no TLS at all, and a redirect they cannot follow turns their Core
+ * Downloader into a silent empty list. Plain http has to keep answering until those are gone.
+ *
+ * Downloading executable code is why this matters: the CRC in .index-extended never
+ * authenticated anything by itself, because it arrives over the same channel as the file it
+ * describes. TLS is what makes it mean something.
  *
  * Point it somewhere else for a bring-up test without editing this file:
  *
  *     make -f Makefile.orbis ORBIS_BUILDBOT_URL=http://192.168.100.1:8000/ ...
  */
 #ifndef ORBIS_BUILDBOT_SERVER_URL
-#define ORBIS_BUILDBOT_SERVER_URL "http://cores.prx0.com/"
+#define ORBIS_BUILDBOT_SERVER_URL "https://cores.prx0.com/"
 #endif
 #define DEFAULT_BUILDBOT_SERVER_URL ORBIS_BUILDBOT_SERVER_URL
 #elif defined(WEBOS)

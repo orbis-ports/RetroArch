@@ -2028,3 +2028,36 @@ and then goes quiet. Capture UDP.
 as 1,104,568 bytes through both lftp and curl, and it is not LF-to-CRLF expansion - the file holds
 907 bytes of 0x0A. Uploads are fine; a 63 MB package installs and runs. Any forensic based on a file
 pulled off this console is based on a corrupted copy.
+
+## TLS, and the one line that made it impossible
+
+HTTPS works, with certificate validation, verified on hardware against the same R2 bucket over
+both schemes so TLS was the only variable.
+
+⚠ **The blocker was never the crypto.** BearSSL is vendored at `deps/bearssl-0.6`, the backend is
+written, and both things TLS needs from the platform - `time()` for validity windows,
+`getrandom`/`getentropy` to seed - were present all along. What stopped it was
+`net_socket_ssl_bear.c` reading its trust anchors from one hardcoded path,
+`/etc/ssl/certs/ca-certificates.crt`, which is a Linux distribution's layout. On a console that
+file does not exist, so BearSSL initialised with **zero** anchors and every handshake failed
+validation.
+
+⚠ And worse than "no TLS": `filestream_read_file` leaves its out-pointer NULL on failure and the
+old code handed that straight to `append_certs_pem_x509()`, whose first act is `strstr(NULL, ...)`.
+Turning on `HAVE_SSL` without fixing that would have made every https URL a crash rather than a
+failed connection. A missing END marker in a truncated bundle had the same shape.
+
+The path list is ordered `/data/retroarch/cacert.pem` then `/app0/cacert.pem`: the writable copy
+wins so roots can be refreshed without a new package - a CA expiring is not a reason to reinstall -
+and `/app0` is read-only but perfectly *readable*, so the shipped bundle needs no first-boot copy.
+`ps4/cacert.pem` is 121 anchors, 185 KB, checked with `openssl s_client` against all three hosts
+this port uses. It reaches the package through the first `--extra` this project has ever passed;
+confirmed on hardware at `/mnt/sandbox/RTRV00001_000/app0/cacert.pem`, 185311 bytes.
+
+`net_socket_ssl.h` also used `ssize_t` without declaring the dependency - transitive everywhere
+else, absent here.
+
+⚠ **Do not enable "Always Use HTTPS" on cores.prx0.com.** v0.1.1 and earlier have no TLS, and a
+redirect they cannot follow turns their Core Downloader into a silent empty list. Plain http must
+keep answering until those packages are gone. This is also why the CRC in `.index-extended` never
+authenticated anything by itself: it arrives over the same channel as the file it describes.

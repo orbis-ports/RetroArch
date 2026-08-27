@@ -203,7 +203,12 @@ static void append_certs_pem_x509(char * certs_pem)
       if (!cert)
          break;
       cert     += STRLEN_CONST("-----BEGIN CERTIFICATE-----");
-      cert_end  = strstr(cert, "-----END CERTIFICATE-----");
+      /* A BEGIN with no matching END is a truncated bundle, and the pre-patch form wrote
+       * through the NULL that strstr returned for it. Stop instead: the anchors gathered so
+       * far are still usable, and a handshake that fails validation is a far better outcome
+       * than a frontend that dies while opening a URL. */
+      if (!(cert_end = strstr(cert, "-----END CERTIFICATE-----")))
+         break;
 
       *cert_end = '\0';
       cert      = delete_linebreaks(cert);
@@ -220,13 +225,43 @@ static void append_certs_pem_x509(char * certs_pem)
  * statically allocatable mutex/etc */
 static void initialize(void)
 {
-   void* certs_pem;
+   /* ⚠ THE PATH LIST, AND WHY THERE IS ONE. The single hardcoded
+    * "/etc/ssl/certs/ca-certificates.crt" is a Linux distribution's layout. On a console it
+    * simply does not exist, and the consequence was worse than "no TLS": filestream_read_file
+    * leaves certs_pem NULL on failure, and the pre-patch form handed that straight to
+    * append_certs_pem_x509(), whose first act is strstr(NULL, ...). Enabling HAVE_SSL without
+    * this would have turned every https URL into a crash rather than a failed handshake.
+    *
+    * Order is deliberate. A bundle the user dropped in the writable data directory wins, so
+    * CAs can be refreshed without waiting for a new package - the shipped copy ages, and a
+    * root expiring is not a reason to reinstall. /app0 is the package root: read-only, always
+    * present, and reading from it needs no first-boot copy. */
+   static const char *ca_paths[] = {
+#if defined(ORBIS)
+      "/data/retroarch/cacert.pem",
+      "/app0/cacert.pem",
+#endif
+      "/etc/ssl/certs/ca-certificates.crt"
+   };
+   size_t i;
+
    if (TAs_NUM)
       return;
-   /* filestream_read_file appends a NUL */
-   filestream_read_file("/etc/ssl/certs/ca-certificates.crt", &certs_pem, NULL);
-   append_certs_pem_x509((char*)certs_pem);
-   free(certs_pem);
+
+   for (i = 0; i < sizeof(ca_paths) / sizeof(ca_paths[0]); i++)
+   {
+      void *certs_pem = NULL;
+
+      /* filestream_read_file appends a NUL */
+      if (!filestream_read_file(ca_paths[i], &certs_pem, NULL) || !certs_pem)
+         continue;
+
+      append_certs_pem_x509((char*)certs_pem);
+      free(certs_pem);
+
+      if (TAs_NUM)
+         return;
+   }
 }
 
 void* ssl_socket_init(int fd, const char *domain)

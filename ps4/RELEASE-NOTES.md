@@ -27,11 +27,10 @@ Then **Online Updater → Core Downloader** lists 101 cores. Download one and it
 - Nintendo 64 at 60 fps (GLideN64)
 - PlayStation at 50 fps (Beetle PSX HW, Lightrec, Vulkan renderer)
 - Online Updater: cores, core info, databases, thumbnails, assets
+- HTTPS, with certificate validation — the trust anchors ship in the package
 
 ## Known limits
 
-- **No HTTPS.** TLS is not built in. The core host serves plain HTTP on purpose; any other
-  buildbot URL that redirects to HTTPS will fail silently with an empty list.
 - **63 of 164 recipe cores do not build yet**, for reasons recorded per core. The ones that are
   listed are the ones that link and carry `retro_run`.
 - **Quitting shows CE-34878-0.** The process ends rather than idling forever; the dialog is
