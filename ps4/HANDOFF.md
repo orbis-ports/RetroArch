@@ -2061,3 +2061,46 @@ else, absent here.
 redirect they cannot follow turns their Core Downloader into a silent empty list. Plain http must
 keep answering until those packages are gone. This is also why the CRC in `.index-extended` never
 authenticated anything by itself: it arrives over the same channel as the file it describes.
+
+## The Online Updater, and a 71 MB download that killed the process
+
+Update Assets crashed the console at the end of the transfer - black screen, no abort report,
+Mesa's log ending mid-frame-statistics with no error. Update Databases, 52 MB, had worked minutes
+earlier.
+
+⚠ **The first explanation was wrong and worth recording as such.** `net_http` grows its response
+buffer by doubling, so a 71 MB body looked like it must pass through a 64 MB → 128 MB realloc
+with both alive at once. It does not: `net_http.c:1556` sizes the buffer from `Content-Length`
+in one allocation as soon as the headers land. The doubling only applies to a chunked response.
+The theory was tidy, matched "at 99%", and was false.
+
+What is true is simpler. The whole body is held in RAM until the transfer completes, then
+`cb_generic_download()` writes it out and starts a decompress task - so the peak is 71 MB of
+buffer, plus the write, plus inflating **7040 files and 85 MB** while the buffer is still alive.
+52 MB survived that and 71 MB did not.
+
+**The fix had been sitting in the tree with no caller.** `task_push_http_download_file()` streams
+the body to a path as it arrives, so the peak is the receive window rather than the payload -
+`task_push_http_transfer_file()`, which every updater entry used, passes `sink_path = NULL`.
+Six downloads now take the streaming path: assets, core info, databases, overlays, cheats and
+core system files. Confirmed on hardware: 6995 files extracted, all nine XMB themes, no crash.
+
+⚠ **Only the enums whose destination is a plain settings directory.** The sink path must equal the
+`output_path` the callback would have computed, and thumbnails, Content Downloader items,
+autoconfig profiles and shader packs all derive a subdirectory that does not exist at push time -
+from a playlist, a category, the joypad driver name. Those keep the in-memory path.
+`download_stream_dir()` returns NULL for them and the old push runs, and a directory that cannot
+be created also falls back rather than failing.
+
+**Two other updater findings from the same session.** ⚠ `HAVE_UPDATE_CORE_INFO` and
+`HAVE_UPDATE_ASSETS` were absent from Makefile.orbis on a reason that had expired - the comment
+said the package ships the .info files, which it never did and cannot, because package contents
+mount read-only at /app0 while RetroArch reads /data/retroarch/info. Measured: `/app0/assets` in
+the installed package holds ZERO files. So the release notes and cores.prx0.com were telling a new
+user to click a menu entry the build did not contain.
+
+⚠ And the video driver defaulted to `gl`. `configuration.c` tests `HAVE_OPENGL || HAVE_OPENGLES`
+before Vulkan, and this port builds with GLES for the sake of cores that need a GL context - so a
+fresh install came up on zink, translating to the Vulkan that RADV was going to be handed anyway.
+An ORBIS arm now selects Vulkan. It costs GL cores nothing: `video_driver_find_driver()` forces
+the driver to match a core's hardware context and remembers the previous one.
