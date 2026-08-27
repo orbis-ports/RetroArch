@@ -461,8 +461,23 @@ jobs:
             out/*.prx.zip
             out/index-fragment-${{ matrix.shard }}.txt
             out/cores-manifest-${{ matrix.shard }}.tsv
-            out/logs/**
           if-no-files-found: error
+          retention-days: 7
+
+      # ⚠ THE LOGS TRAVEL SEPARATELY, AND THAT IS THE WHOLE POINT. The artifact above carries
+      # the built cores and refuses to upload nothing (if-no-files-found: error), which is
+      # right for cores and exactly wrong for diagnostics: a shard where NOTHING built has no
+      # .prx.zip, so the upload fails and takes the logs with it - the one case where the logs
+      # are the only thing worth having. Measured: a single-core run for mupen64plus_next
+      # produced no artifact at all.
+      - name: Upload the logs, whatever else happened
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: cores-logs-${{ matrix.shard }}
+          path: out/logs/**
+          if-no-files-found: ignore
           retention-days: 7
 
       # ⚠ A GREEN SHARD THAT QUIETLY DROPPED TWO CORES IS THE FAILURE THIS WHOLE CHANGE IS
