@@ -138,9 +138,36 @@ ORBIS_ARCH=(--target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables
 # library's abs into std:: and needs the C headers underneath it. This file had c++/v1 appended
 # LAST on its first draft, which is the trap Makefile.orbis and ps4/HANDOFF.md both already
 # describe. Writing a new tool next to a documented trap is not protection from it.
-C_INCLUDES=(-isystem "$ORBIS_COMPAT_DIR/include" -isystem "$TOOLCHAIN/include")
+# ⚠ THE GL HEADERS COME FROM MESA, AND WITHOUT THEM clang QUIETLY USES THE BUILD HOST'S.
+#
+# GLES3/gl3.h and its EGL neighbours live in the Mesa tree - $(ORBIS_MESA_SRC)/include, the same
+# path Makefile.orbis:392 gives the frontend. They are NOT in the SDK and NOT in the overlay.
+#
+# Leaving them out does not fail on a developer machine, which is the whole problem. Measured:
+#
+#     clang --target=x86_64-pc-freebsd12-elf -isysroot $TOOLCHAIN ... -E
+#       -> # 1 "/usr/include/GLES3/gl3.h"
+#
+# -isysroot does not stop clang falling back to /usr/include, so every GL core built here has
+# been compiling against this Linux desktop's GLES headers. It works, because those headers are
+# Khronos's and largely identical - it is an accident that happens to hold. On a runner with no
+# libgles-dev there is nothing to fall back to and the core fails with 'GLES3/gl3.h' file not
+# found, which is how mupen64plus_next has never once been in a release while building fine
+# on this machine.
+MESA_INCLUDES=()
+if [[ -n "${ORBIS_MESA_SRC:-}" && -f "$ORBIS_MESA_SRC/include/GLES3/gl3.h" ]]; then
+  MESA_INCLUDES=(-isystem "$ORBIS_MESA_SRC/include")
+else
+  echo "build-cores: ⚠ ORBIS_MESA_SRC is unset or has no GLES headers - GL cores will fall back" >&2
+  echo "             to whatever this machine has in /usr/include, or fail on a machine that" >&2
+  echo "             has none. Point it at a Mesa tree or bundle." >&2
+fi
+
+C_INCLUDES=(-isystem "$ORBIS_COMPAT_DIR/include" "${MESA_INCLUDES[@]}"
+            -isystem "$TOOLCHAIN/include")
 CXX_INCLUDES=(-isystem "$TOOLCHAIN/include/c++/v1"
-              -isystem "$ORBIS_COMPAT_DIR/include" -isystem "$TOOLCHAIN/include"
+              -isystem "$ORBIS_COMPAT_DIR/include" "${MESA_INCLUDES[@]}"
+              -isystem "$TOOLCHAIN/include"
               -include orbis_prefix.h)
 CC_ORBIS="clang ${ORBIS_ARCH[*]} ${C_INCLUDES[*]}"
 CXX_ORBIS="clang++ ${ORBIS_ARCH[*]} ${CXX_INCLUDES[*]}"

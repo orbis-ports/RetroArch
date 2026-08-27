@@ -276,6 +276,22 @@ jobs:
           orbis-compat-ref: ${{ env.ORBIS_COMPAT_REF }}
           mesa-release: ${{ env.MESA_RELEASE }}
 
+      # ⚠ nasm, BECAUSE A DYNAREC IS WRITTEN IN ASSEMBLY. mupen64plus_next's x86_64 recompiler
+      # assembles mupen64plus-core/src/device/r4300/new_dynarec/x64/linkage_x64.o with nasm, and
+      # a runner has none: `make: nasm: No such file or directory`, Error 127, and the core
+      # then failed at link time on a symbol whose object had never been built. It is on this
+      # project's development machine, which is why nobody noticed.
+      - name: nasm, for cores with an assembler-written dynarec
+        run: |
+          set -euo pipefail
+          if command -v nasm >/dev/null 2>&1; then
+            echo "== nasm already present: $(nasm -v)"
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq nasm
+            echo "== $(nasm -v)"
+          fi
+
       # The other half of the edge in this file's header. The artifact is named
       # frontend-common-objects-<sha8>, so it is matched by pattern rather than by name, and
       # upload-artifact rooted it at libretro-common/ - so it restores straight back into place.
