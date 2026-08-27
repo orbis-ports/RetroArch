@@ -164,7 +164,7 @@ body{
   font:16px/1.65 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
   padding:0 20px 96px;
 }
-.wrap{max-width:940px;margin:0 auto}
+.wrap{max-width:1100px;margin:0 auto}
 .prose{max-width:68ch}
 code,kbd,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
 code{background:var(--sunk);border:1px solid var(--rule);border-radius:4px;padding:.08em .38em;font-size:.88em}
@@ -210,11 +210,11 @@ ol.steps li{margin:.4em 0}
 }
 .note b{color:var(--warn)}
 
-/* ⚠ THE CORE TABLE IS WIDER THAN THE PROSE COLUMN, so it gets the viewport rather than the
-   940px measure - at 940 with everything nowrap the last column fell off the right edge and the
-   source link, the one thing the licence notice depends on, was reachable only by scrolling. */
-.tablewrap{overflow-x:auto;border:1px solid var(--rule);border-radius:10px;margin:18px 0;
-  width:min(1240px,calc(100vw - 40px));margin-left:calc((min(940px,100%) - min(1240px,100vw - 40px))/2)}
+/* ⚠ THE TABLE GETS THE WHOLE COLUMN, AND THE COLUMN IS WIDE ENOUGH FOR IT. An earlier attempt
+   pulled the table outside the wrapper with a negative margin, which widened the page's scroll
+   area and left every other block sitting off-centre - the fix for one column pushed the entire
+   document to the left. The wrapper is 1100px instead, cells wrap, and nothing escapes it. */
+.tablewrap{overflow-x:auto;border:1px solid var(--rule);border-radius:10px;margin:18px 0}
 table{border-collapse:collapse;width:100%;font-size:.86rem}
 th,td{text-align:left;padding:9px 13px;border-bottom:1px solid var(--rule);vertical-align:top}
 td:first-child{min-width:22ch}
@@ -228,7 +228,6 @@ td.sys{color:var(--muted);min-width:12ch}
   padding:1px 7px;font-size:.78rem;margin-left:6px}
 
 footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--rule);color:var(--faint);font-size:.85rem}
-@media (max-width:1280px){ .tablewrap{width:calc(100vw - 40px);margin-left:calc((100% - (100vw - 40px))/2)} }
 @media (max-width:600px){ header{padding-top:36px} h1{font-size:1.6rem} }
 """
 
