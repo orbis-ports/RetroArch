@@ -457,6 +457,20 @@ static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_GL;
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_METAL;
 #endif
 #endif
+#elif defined(ORBIS) && defined(HAVE_VULKAN)
+/* ⚠ ORBIS COMES BEFORE THE OPENGL BRANCH ON PURPOSE. This port builds with HAVE_OPENGLES for
+ * the sake of cores that need a GL context, and the generic chain below tests OpenGL before
+ * Vulkan - so a fresh install came up on "gl" when nothing had asked for it.
+ *
+ * On this console that is strictly more layers for the same picture: the GL driver is Mesa's
+ * zink, which translates to Vulkan and hands it to RADV, which is what the vulkan driver talks
+ * to directly. The menu and any software core pay for a translation nobody needed.
+ *
+ * It costs those cores nothing. video_driver_find_driver() FORCES the driver to match a core's
+ * hardware context - RETRO_HW_CONTEXT_OPENGL switches to gl, RETRO_HW_CONTEXT_VULKAN to vulkan -
+ * and remembers the previous one as the cached driver. This default decides the menu and the
+ * software cores; the hardware ones decide for themselves. */
+static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_VULKAN;
 #elif defined(HAVE_D3D11) || defined(__WINRT__) || (defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP)
 /* Default to D3D11 in UWP, even when its compiled with ANGLE, since ANGLE is just calling D3D anyway.*/
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_D3D11;
