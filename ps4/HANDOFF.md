@@ -1454,17 +1454,306 @@ Content staged on the console: NES, SNES, GBA, Mega Drive, Neo Geo (with `neogeo
 OutRun, Cave Story, Dinothawr, xrick, and Freedoom + `prboom.wad` for PrBoom. Of the untested,
 about eight need no content at all; the rest want systems nothing on this machine has.
 
-### The GL arm exists in mesa-ps4 and does not run
+### ⚠ CORRECTION, 2026-08-25: the GL arm runs, and it is no longer an arm
 
-`--gl` builds gallium + EGL + GLES2 through **zink over RADV** - the route that needs no new
-kernel work. Its own comment is the status: *"THIS IS A GATE, NOT A PRODUCT. It builds and it
-LINKS; it does not run."* Open on the driver side: zink's `util_dl_open("libvulkan.so.1")` on a
-console with no dlopen, kopper's per-platform surface arms, and an EGL platform that is not
-`surfaceless`.
+This entry first recorded GL as *"a gate, not a product - it builds and it LINKS; it does not
+run"*, quoting `build-support/orbis/build.sh`. **That comment was false when it was written**, and
+mesa-ps4 has since deleted it (`62902e9a229`). GL runs on hardware: a frame, a triangle with
+shaders, and Vulkan alive beside it in the same process.
 
-⚠ **And the other half is ours.** This frontend has `orbis_vk_ctx.c` and nothing for
-`RETRO_HW_CONTEXT_OPENGL`. A GL core asks the frontend for a context through that mechanism, so
-even a working zink would draw nothing here until that driver exists. Worth starting when the
-driver renders something, not before - the eight GL-blocked cores mostly have working software
-siblings, and the real prize (`parallel_n64`, `mupen64plus_next`, `ppsspp`) is the heaviest thing
-this console would be asked to do.
+The `--gl` flag is gone with it. `COMMON_OPTS` now carries zink, EGL and GLES2 beside RADV,
+everything lands in one `build-orbis`, and the GL link probe runs on every build and fails it if
+`libEGL.a` is missing. Two halves compiled separately are two halves that were never compiled
+against each other, and this port needs both in one eboot with the core chosen at run time.
+
+    build-orbis/src/amd/vulkan/libvulkan_radeon.a   36 MB
+    build-orbis/src/egl/libEGL.a                     5.7 MB
+    build-orbis/src/mesa/glapi/es2api/libGLESv2.a
+    build-orbis/src/gallium/drivers/zink/libzink.a
+    build-orbis/src/gallium/targets/dri/libgallium-*.a
+
+⚠ **Vulkan-only consumers pay nothing** - they link `libvulkan_radeon.a` and the gallium archives
+go unreferenced. So this frontend's current link line keeps working untouched.
+
+Two things the GL link probe learned that any consumer will meet, both found on binaries an
+earlier probe had passed:
+
+    Mesa's dispatch tables reference their entry points WEAKLY, and a weak undefined reference
+    does not extract an archive member - it resolves to zero. Without --whole-archive on the ICD
+    the executable linked with vk_common_GetPhysicalDeviceProperties2 still undefined and jumped
+    to address 0 on the first dispatch. (Same shape as the ZSTD_trace_* stubs in build-cores.sh:
+    a weak undefined symbol never pulls an archive member.)
+
+    .tdata.* is an orphan section under the SDK's own link.x, which cost the RW segment its page
+    alignment and made the console refuse the file outright.
+
+### What is still ours to do for GL
+
+⚠ **This frontend has `orbis_vk_ctx.c` and nothing for `RETRO_HW_CONTEXT_OPENGL`.** A GL core asks
+the frontend for a context through that mechanism; a working zink underneath changes nothing
+until that driver exists. That half was always ours and still is.
+
+What it would unblock, and what it would not: the eight cores the sweep listed as OpenGL-blocked
+mostly have working software siblings (`desmume` against `desmume2015`). The real prize is
+`parallel_n64`, `mupen64plus_next` and `ppsspp` - which are also the heaviest things this console
+would be asked to run, on a port where Beetle PSX already spends a saturated core on the
+interpreter. Worth starting now that the driver renders; worth expecting the frame rate to be the
+next problem rather than the last one.
+
+## Nintendo 64: what the frame is actually spent on
+
+`mupen64plus_next` runs Shadows of the Empire at 22-25 fps. Everything below was measured on
+hardware on 2026-08-25 with `ps4/orbis_profile.c`, which is linked into every core the harness
+builds and turns itself on when `/data/retroarch-profile` exists. It reports every five seconds:
+
+    129 frames in 5043 ms = 25.57 fps
+      retro_run total  38.65 ms/f  98% of wall
+      guest            37.44 ms/f  95%
+      rsp-lle          33.94 ms/f  86%     <- rdp-submit is NESTED inside this
+      rdp-submit       10.13 ms/f  25%
+      rdp-enqueue       5.18 ms/f  13%
+      rdram-h2g         0.48 ms/f   1%
+      present           1.20 ms/f   3%
+
+Unnested, per frame: **LLE RSP 24 ms, RDP command building 10 ms, R4300 dynarec 4.7 ms, scanout
+1.2 ms.** The recompiler this port spent a day giving executable memory to is 12% of the frame.
+
+⚠ **THE GPU IS NOT THE BOTTLENECK AND NEVER WAS.** `present` is one millisecond. A core sold as
+"ParaLLEl-RDP on Vulkan" puts only the RASTERISER on the GPU; the RSP is a programmable vector DSP
+running the game's own microcode, recompiled by GNU lightning onto the CPU, and it is the largest
+single cost by a factor of two. Anyone reading "Vulkan" as "the graphics are free" will optimise
+the wrong half.
+
+### The thirteen milliseconds that were handshake
+
+ParaLLEl-RDP processes its command stream on a worker thread, and `CommandRing::enqueue_command`
+takes a mutex and signals a condition variable **once per RDP command** - thousands of round trips
+a frame. Measured before the change:
+
+    rdp-enqueue   17.08 ms/f    emulation thread blocked in the ring
+    rdp-worker     7.09 ms/f    what the worker actually did
+
+The consumer was busy for seven milliseconds and the producer waited seventeen. Setting
+`single_threaded_processing` took the frame from 51.9 ms to 38.7 ms - **19 fps to 25.6** - and
+`rdp-enqueue` from 17.08 to 5.18.
+
+⚠ **THIS IS A FACT ABOUT THIS MACHINE, NOT ABOUT THE DESIGN.** The ring is right where a spare core
+is cheap to reach; here the cores are 1.6 GHz Jaguars and **nothing in this port sets thread
+affinity**, so a handoff can be a context switch on the same core. If affinity is ever set up,
+re-enable the ring and measure again before believing this entry.
+
+### A direction that was measured and abandoned
+
+parallel-RDP warns at startup:
+
+    VK_EXT_external_memory_host is not supported by this device. Application might run slower
+    ... falling back to a slower path.
+
+That message reads like the explanation for everything above, and it is not. The fallback path is
+`Renderer::resolve_coherency_host_to_gpu`, page-granular memcpy of dirty RDRAM into a GPU-visible
+buffer, and it costs **0.5 ms a frame**. Importing RDRAM as host memory - whether by re-enabling
+`has_userptr` in mesa-ps4 or by allocating RDRAM from `vkAllocateMemory` - would buy half a
+millisecond out of thirty-nine. Both were planned in detail before anyone measured them.
+
+⚠ The driver's own comment (`ac_gpu_info.c`, "nothing on this console can use it either way") is
+still correct in outcome, for a reason it does not give: something does want the extension, and
+would gain almost nothing from it.
+
+### What is left, and what it is worth
+
+    LLE RSP           24 ms    only HLE removes this, and HLE needs a graphics plugin that
+                               accepts display lists - GLideN64, which needs RETRO_HW_CONTEXT_OPENGL
+    RDP commands      10 ms    CPU-side command building; the ring may return here with affinity
+    R4300              4.7 ms  the recompiler, working as intended
+    scanout            1.2 ms  the GPU
+
+ParaLLEl-RDP implements `ProcessRDPList` and leaves `ProcessDList` empty, so the HLE RSP draws
+nothing with it - tried on hardware, the log said `Plugins in use: RDP=ParaLLEl RSP=HLE` and the
+screen stayed black. **N64 at full speed on this console is a GL context driver away, not a
+tuning exercise away.**
+
+## OpenGL, and Nintendo 64 at full speed
+
+`gfx/drivers_context/orbis_gl_ctx.c` gives this frontend a `RETRO_HW_CONTEXT_OPENGL` context.
+Built with `make -f Makefile.orbis HAVE_VULKAN=1 HAVE_OPENGLES=1 ...`; the Vulkan flag is not
+optional, because there is no GL hardware path here at all:
+
+    eglSwapBuffers -> kopper -> vkQueuePresentKHR -> VK_EXT_headless_surface -> wsi_orbis -> flip
+
+On hardware, 2026-08-25: `OpenGL ES 3.1 Mesa 26.3.0-devel`, renderer `zink Vulkan 1.3 (RADV
+ORBIS)`. mupen64plus-next with GLideN64 and the HLE RSP, Shadows of the Empire:
+
+    303 frames in 5015 ms = 60.41 fps
+      retro_run total  16.88 ms/f
+      guest             5.18 ms/f  31%    <- all of the emulation
+      present          11.68 ms/f  70%    <- idle, waiting for the flip
+
+Five milliseconds of work in a 16.7 ms frame, against 43 ms on ParaLLEl-RDP. The arithmetic in
+the section above said full speed was unreachable without this, and it was right about both
+halves.
+
+### Three things that each cost a round, and all three were the same mistake
+
+⚠ **A statically linked Mesa does not make `__rglgen_` pointers into direct calls.** gl2.c guards
+`rglgen_resolve_symbols()` with `#if !defined(RARCH_CONSOLE)`, on the reasoning that a console
+links GL statically. This one does, and it changes nothing: the entry points glsym turns into
+POINTERS stay pointers. Unresolved they are null, and the symptom was "Couldn't find any
+supported shader backend" followed by SIGSEGV with `rip = 0`. Neither line says "unresolved".
+
+⚠ **A context driver that reports no shader flags is not neutral.** `gl2_get_fallback_shader_type`
+asks the CONTEXT driver which shader languages exist - "for gl2, shader support is completely
+defined by the context driver shader flags" - and `gl2_shader_init` then logs an error and
+returns TRUE. The driver comes up fully initialised with `gl->shader` NULL and presents empty
+frames: black screen, no menu, and GoldHEN's counter reading a steady 60 fps.
+
+⚠ **A core's GLES entry points must be THUNKS into the frontend's context, never a second copy of
+Mesa's dispatch.** libGLESv2.a is the mapi dispatch table; the context is current in the
+frontend's copy, so a copy inside the module would be empty. `ps4/orbis_gl_forward.c` forwards
+133 entry points, resolved once from `context_reset` through the frontend's proc address. The
+thunks are assembly because a C forwarder needs the exact prototype of all 133 and a wrong one
+is not a compile error - it is arguments in the wrong registers, silently.
+
+### Open: framebuffer emulation and depth
+
+With `Framebuffer Emulation` ON the depth is wrong - geometry behind the camera draws in front.
+Turning it off fixes it and is the current recommendation. That localises the fault to GLideN64's
+own FBOs on this driver rather than to the context, and leaves `EnableFragmentDepthWrite` and
+`EnableCopyDepthToRDRAM` as the next two things to bisect. Untested, and it is the first time
+GLideN64 has run over zink on this GPU - the fault could be in any of GLideN64, zink, RADV or
+these thunks.
+
+## The toolchain's own bugs, and the instruments built to find them
+
+Three defects this week were in the SDK rather than in any core, and all three presented as a core
+crashing. They are recorded together because the shape repeats: **a prebuilt library compiled for a
+different platform's constants, shipped for this one.**
+
+### ⚠ libc++.a compares against LINUX'S ETIMEDOUT on a FreeBSD target
+
+Observed loading a ROM in mupen64plus-next:
+
+    libc++abi: terminating with uncaught exception of type std::__1::system_error:
+               condition_variable timed_wait failed: Operation timed out
+
+"Operation timed out" IS errno 60, ETIMEDOUT, and a timeout is the ordinary outcome of a timed wait -
+`wait_for` returns `cv_status::timeout` and does not throw. It threw because the comparison that
+filters that case out was compiled against a different number. Disassembling
+`condition_variable.cpp.o` out of the SDK's `libc++.a`:
+
+    322: 83 7d 94 6e    cmpl $0x6e, -0x6c(%rbp)     ; 0x6e = 110
+
+110 is Linux's ETIMEDOUT. This console is FreeBSD underneath, its pthread returns 60, and the SDK's
+own `bits/errno.h` agrees with 60. **Every timed wait that has ever expired on this platform threw.**
+
+⚠ **AND IT IS NOT LIMITED TO condition_variable.** `std::future::wait_for`, `shared_timed_mutex` and
+everything else with a deadline goes through `__do_timed_wait`. The call site that killed the N64
+core is `CommandRing::thread_loop`, which does `cond.wait_for(holder, 500us, …)` whenever the RDP
+worker has nothing to do - so the core died the first moment it went idle.
+
+`ps4/orbis_cv_fix.cpp` rebuilds `condition_variable`'s four strong symbols from libc++ 11's own
+source against this platform's headers. ⚠ All four, not just the broken one: an archive member is
+all-or-nothing, so providing `__do_timed_wait` alone would leave `notify_one`, `notify_all` and
+`wait` undefined. `notify_all_at_thread_exit` is deliberately absent - it needs libc++'s private
+per-thread bookkeeping and no core here has referenced it.
+
+⚠ **Fixing it at `pthread_cond_timedwait` instead would have been wrong**, and the reasoning is worth
+keeping: everything compiled in this workshop sees ETIMEDOUT as 60 through the SDK's headers and
+tests for 60. Only the prebuilt library expects 110. Translating the return value would fix libc++ by
+breaking every honest caller. The mismatch belongs where it was introduced.
+
+The real fix is a libc++ rebuilt against the target's headers, which is an OpenOrbis change.
+
+### A core's dying words now reach a channel someone reads
+
+`assert()`, libc++abi's `abort_message()` and `__cxa_pure_virtual` all say exactly what went wrong and
+then call `abort()`. All of it goes to stderr, and on this kernel fd 2 goes nowhere.
+
+⚠ **AND POINTING fd 2 SOMEWHERE IS NOT AVAILABLE:** `dup2` onto 1 or 2 returns **EPERM**. The
+descriptor table is not ours to rearrange, so the message has to be caught before it is written
+rather than after.
+
+`ps4/orbis_abort_report.c` defines `abort_message`, `__assert_fail` and `abort` itself, overriding the
+toolchain's by definition order - each lives in an archive member of its own defining that one symbol,
+so a definition reaching the linker first means the member is never pulled. It reports through
+`sceKernelDebugOutText` (synchronous; a UDP datagram needs the process to survive its own send) and
+appends to `/data/retroarch-abort.log`.
+
+⚠ **The one that matters most is `abort()` itself, and what it must produce is the RETURN ADDRESS.**
+Plenty of code aborts without a message - libunwind's `_LIBUNWIND_ABORT`, GNU lightning, paraLLEl-RSP's
+allocator. Those arrive as a bare SIGABRT with `abort` as the only frame, because a core is built
+`-fomit-frame-pointer` and the console's backtracer cannot walk through it. The return address is on
+the stack whether or not there is a frame pointer. It found `RSP::JIT::CPU::init_jit_thunks` in one
+step, after two rounds of guessing had found nothing.
+
+⚠ **`-DNDEBUG` IS PER TRANSLATION UNIT.** A core built with it still links libretro-common,
+orbis-compat and vendored dependencies that were not. An assertion in one of those is
+indistinguishable from a C++ runtime failure from the outside.
+
+### Measuring instead of arguing
+
+`ps4/orbis_profile.c` is linked into every core the harness builds and turns itself on when
+`/data/retroarch-profile` exists - a file rather than an environment variable, because each image
+carries its own static musl and `setenv` in the frontend is invisible to a `.prx`.
+
+It exists because three performance stories in one day turned out to be wrong before it was written.
+The section above on the N64 frame is entirely its output.
+
+## Networking: what the SDK gives us and what it does not
+
+`HAVE_NETWORKING` is still 0. What follows was measured to size the work, not to do it.
+
+⚠ **`libretro-common/include/net/net_compat.h` HAS NO ORBIS ARM.** It has Vita, PS3, PSL1GHT and
+Windows; this platform falls through to the generic POSIX branch and calls `connect()`, `select()`,
+`setsockopt()` like any Unix. Checked at symbol level across `libc.a`, `libkernel.a`, `libpthread.a`:
+
+    present   socket send recv getaddrinfo freeaddrinfo inet_pton inet_ntop
+              gethostbyname fcntl
+
+    missing   connect bind listen accept sendto recvfrom shutdown
+              setsockopt getsockopt getpeername select poll close
+
+⚠ **DO NOT FILL THE GAPS ONE AT A TIME.** musl's `socket()` returns a file descriptor from a syscall;
+`sceNetSocket()` returns an `OrbisNetId`. Implementing the missing dozen over `sceNet*` while keeping
+musl's `socket()` puts two descriptor namespaces in one program, and handing one to a function
+expecting the other compiles cleanly. Take the whole set, `socket()` included, as an archive-member
+override in orbis-compat - the same technique `orbis_abort_report.c` and `orbis_cv_fix.cpp` use.
+
+Three details the wrapper absorbs: `sceNetSocket` takes a NAME as its first argument that POSIX has no
+place for; there is **no `sceNetSelect`** and the epoll family is declared in this SDK as
+`void sceNetEpollWait();` - the symbol without a signature; and `sceNetInit()` already works, proven
+by the log channel, so TCP is the untested part rather than the stack coming up.
+
+For TLS: `time()`, `getrandom` and `getentropy` are all present in libc. BearSSL and mbedTLS are
+vendored under `deps/` and wired to `HAVE_SSL`. Sony's own `libSceSsl.so` and `libSceHttp.so` are
+present as stubs - `orbis/Ssl.h` exists but declares `void sceSslConnect();`, names without
+signatures. Using `libSceHttp` would make the whole socket layer above unnecessary and is the
+interesting fallback, at the price of establishing those signatures.
+
+## Distribution: mesa as a release, and where orbis-compat sits
+
+The full plan for building and publishing all of this from GitHub Actions lives outside this file.
+Two findings from it belong here because they are facts about the tree.
+
+**A Mesa bundle is 87 MB and 15 MB compressed** - `libvulkan_radeon.a` 35 MB, `libgallium-*.a` 41 MB,
+`libEGL.a` 5.5 MB, the GLES dispatch 228 KB, `include/` 5.5 MB. Building Mesa in every consumer's
+pipeline pays for the same work repeatedly; it is the one input both expensive and slow-changing.
+
+⚠ **AND MESA IS LINK-TIME COUPLED TO orbis-compat, not merely compile-time.** Its archives carry
+undefined references only the overlay satisfies:
+
+    libvulkan_radeon.a  ->  clock_gettime fstat open unlink pthread_create
+                            orbis_sysconf  _Znam _Znwm _ZnwmRKSt9nothrow_t
+
+`orbis_sysconf` is the tell: orbis-compat's `unistd.h` defines `sysconf` as a macro renaming it, so
+every Mesa object that asks how many CPUs the machine has imports a symbol that exists nowhere else.
+
+That settles two questions that will be asked again. **The direction cannot invert** - orbis-compat is
+the base layer and Mesa its consumer, so publishing Mesa out of orbis-compat's repository would have
+the base release the thing built on top of it, and every overlay change would drag a full Mesa build
+behind it. **And the overlay does not belong inside the Mesa tarball** - those references resolve at
+the FINAL link where `-lorbis-compat` is already on the line, and bundling a copy would freeze the
+layer that changes most often inside the artifact meant to change least.
+
+The proportionate check is the import list itself: assert that every symbol Mesa's archives import
+from orbis-compat is still defined by the orbis-compat about to be linked. ⚠ It catches presence, not
+meaning - a changed return value or a constant inlined at Mesa's compile time leaves nothing to check.

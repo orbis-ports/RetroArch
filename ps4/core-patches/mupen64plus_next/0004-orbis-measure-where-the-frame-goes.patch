@@ -1,0 +1,235 @@
+diff --git a/mupen64plus-rsp-paraLLEl/parallel.cpp b/mupen64plus-rsp-paraLLEl/parallel.cpp
+index 57cb1a7..c9ffc9e 100644
+--- a/mupen64plus-rsp-paraLLEl/parallel.cpp
++++ b/mupen64plus-rsp-paraLLEl/parallel.cpp
+@@ -21,8 +21,31 @@ RSP::JIT::CPU cpu;
+ #endif
+ short MFC0_count[32];
+ int SP_STATUS_TIMEOUT;
++
++
+ } // namespace RSP
+ 
++#ifdef __ORBIS__
++/* RetroArch/ps4/orbis_profile.c - off unless /data/retroarch-profile exists. */
++extern "C" {
++	unsigned long long orbis_profile_now(void);
++	int  orbis_profile_enabled(void);
++	void orbis_profile_add(int slot, const char *name, unsigned long long us);
++}
++namespace {
++struct OrbisSlotTimer {
++	int slot; const char *name; unsigned long long t0; bool on;
++	OrbisSlotTimer(int s, const char *n) : slot(s), name(n), t0(0), on(orbis_profile_enabled() != 0)
++	{ if (on) t0 = orbis_profile_now(); }
++	~OrbisSlotTimer() { if (on) orbis_profile_add(slot, name, orbis_profile_now() - t0); }
++};
++}
++#define ORBIS_TIME(s, n) OrbisSlotTimer orbis_timer_(s, n)
++#else
++#define ORBIS_TIME(s, n) do {} while (0)
++#endif
++
++
+ extern "C"
+ {
+ 	// Hack entry point to use when loading savestates when we're tracing.
+@@ -52,6 +75,11 @@ extern "C"
+ 
+ 	EXPORT unsigned int CALL parallelRSPDoRspCycles(unsigned int cycles)
+ 	{
++		/* ⚠ THE RSP RUNS ON THE CPU. It is a programmable vector DSP executing the game's own
++		 * microcode, recompiled here by GNU lightning, and it runs beside the recompiled R4300
++		 * with no GPU in the path at all - which is the thing most easily misread about a core
++		 * advertised as "ParaLLEl-RDP on Vulkan". Only the RDP half is on the GPU. */
++		ORBIS_TIME(3, "rsp-lle");
+ 		if (*RSP::rsp.SP_STATUS_REG & (SP_STATUS_HALT | SP_STATUS_BROKE))
+ 			return 0;
+ 
+diff --git a/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/command_ring.cpp b/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/command_ring.cpp
+index 5220cbc..95ae676 100644
+--- a/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/command_ring.cpp
++++ b/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/command_ring.cpp
+@@ -26,6 +26,21 @@
+ #include "thread_id.hpp"
+ #include <assert.h>
+ 
++
++#ifdef __ORBIS__
++/* RetroArch/ps4/orbis_profile.c - off unless /data/retroarch-profile exists. */
++extern "C" {
++	unsigned long long orbis_profile_now(void);
++	int  orbis_profile_enabled(void);
++	void orbis_profile_add(int slot, const char *name, unsigned long long us);
++}
++#define ORBIS_T0()      (orbis_profile_enabled() ? orbis_profile_now() : 0ull)
++#define ORBIS_T1(s,n,t) do { if (t) orbis_profile_add(s, n, orbis_profile_now() - (t)); } while (0)
++#else
++#define ORBIS_T0()      0ull
++#define ORBIS_T1(s,n,t) do { (void)(t); } while (0)
++#endif
++
+ namespace RDP
+ {
+ void CommandRing::init(
+@@ -123,7 +138,16 @@ void CommandRing::thread_loop()
+ 		if (tmp_buffer.empty())
+ 			break;
+ 
+-		processor->enqueue_command_direct(tmp_buffer.size(), tmp_buffer.data());
++		/* ⚠ THE WORKER'S OWN WORK, measured against the producer's wait on the ring. If this is
++		 * as large as rdp-enqueue, the RDP command processing is genuinely compute-bound and the
++		 * emulation thread is waiting for real work. If it is much smaller, the difference is
++		 * handshake - this ring takes its mutex and signals its condition variable once per RDP
++		 * COMMAND, which is thousands of round trips a frame between two threads. */
++		{
++			unsigned long long orbis_t = ORBIS_T0();
++			processor->enqueue_command_direct(tmp_buffer.size(), tmp_buffer.data());
++			ORBIS_T1(9, "rdp-worker", orbis_t);
++		}
+ 		if (!is_idle)
+ 		{
+ 			std::lock_guard<std::mutex> holder{lock};
+diff --git a/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/rdp_renderer.cpp b/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/rdp_renderer.cpp
+index fc4651c..affe0d5 100644
+--- a/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/rdp_renderer.cpp
++++ b/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/rdp_renderer.cpp
+@@ -34,6 +34,27 @@
+ #include "shaders/slangmosh.hpp"
+ #endif
+ 
++
++#ifdef __ORBIS__
++/* RetroArch/ps4/orbis_profile.c - off unless /data/retroarch-profile exists. */
++extern "C" {
++	unsigned long long orbis_profile_now(void);
++	int  orbis_profile_enabled(void);
++	void orbis_profile_add(int slot, const char *name, unsigned long long us);
++}
++namespace {
++struct OrbisSlotTimer {
++	int slot; const char *name; unsigned long long t0; bool on;
++	OrbisSlotTimer(int s, const char *n) : slot(s), name(n), t0(0), on(orbis_profile_enabled() != 0)
++	{ if (on) t0 = orbis_profile_now(); }
++	~OrbisSlotTimer() { if (on) orbis_profile_add(slot, name, orbis_profile_now() - t0); }
++};
++}
++#define ORBIS_TIME(s, n) OrbisSlotTimer orbis_timer_(s, n)
++#else
++#define ORBIS_TIME(s, n) do {} while (0)
++#endif
++
+ namespace RDP
+ {
+ Renderer::Renderer(CommandProcessor &processor_)
+@@ -2553,6 +2574,7 @@ void Renderer::lock_pages_for_gpu_write(uint32_t base_addr, uint32_t byte_count)
+ 
+ void Renderer::resolve_coherency_gpu_to_host(CoherencyOperation &op, Vulkan::CommandBuffer &cmd)
+ {
++	ORBIS_TIME(6, "rdram-g2h");
+ 	cmd.begin_region("resolve-coherency-gpu-to-host");
+ 	if (!incoherent.staging_readback)
+ 	{
+@@ -2698,6 +2720,10 @@ const Vulkan::Buffer *Renderer::get_upscaled_hidden_rdram_buffer() const
+ 
+ void Renderer::resolve_coherency_host_to_gpu(Vulkan::CommandBuffer &cmd)
+ {
++	/* The page-granular copy of dirty RDRAM into GPU-visible memory - the "slower path"
++	 * VK_EXT_external_memory_host would remove entirely. Whether it is actually where the
++	 * time goes is the question this slot answers. */
++	ORBIS_TIME(5, "rdram-h2g");
+ 	// Now, ensure that the GPU sees a coherent view of the CPU memory writes up until now.
+ 	// Writes made by the GPU which are not known to be resolved on the timeline waiter thread will always
+ 	// "win" over writes made by CPU, since CPU is not allowed to meaningfully overwrite data which the GPU
+diff --git a/mupen64plus-video-paraLLEl/parallel.cpp b/mupen64plus-video-paraLLEl/parallel.cpp
+index 3d408a1..9ec148f 100644
+--- a/mupen64plus-video-paraLLEl/parallel.cpp
++++ b/mupen64plus-video-paraLLEl/parallel.cpp
+@@ -40,6 +40,16 @@ int parallelInitiateGFX(GFX_INFO Gfx_Info)
+ 	return true;
+ }
+ 
++
++#ifdef __ORBIS__
++/* RetroArch/ps4/orbis_profile.c - off unless /data/retroarch-profile exists. */
++extern "C" {
++   unsigned long long orbis_profile_now(void);
++   int  orbis_profile_enabled(void);
++   void orbis_profile_add(int slot, const char *name, unsigned long long us);
++}
++#endif
++
+ void parallelMoveScreen(int xpos, int ypos)
+ {
+ }
+@@ -50,6 +60,18 @@ void parallelProcessDList(void)
+ 
+ void parallelProcessRDPList(void)
+ {
++#ifdef __ORBIS__
++	/* This is the RDP half, and it is the half people assume is "on the GPU". Building and
++	 * submitting the command stream is CPU work; whether a GPU wait lands here too depends on
++	 * the synchronous-RDP option. Measuring it settles both. */
++	if (orbis_profile_enabled())
++	{
++		unsigned long long t0 = orbis_profile_now();
++		RDP::process_commands();
++		orbis_profile_add(2, "rdp-submit", orbis_profile_now() - t0);
++		return;
++	}
++#endif
+ 	RDP::process_commands();
+ }
+ 
+diff --git a/mupen64plus-video-paraLLEl/rdp.cpp b/mupen64plus-video-paraLLEl/rdp.cpp
+index 0131759..2b201dc 100644
+--- a/mupen64plus-video-paraLLEl/rdp.cpp
++++ b/mupen64plus-video-paraLLEl/rdp.cpp
+@@ -45,6 +45,21 @@ static const unsigned cmd_len_lut[64] = {
+ 	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,  1,  1,  1,  1,  1,
+ };
+ 
++
++#ifdef __ORBIS__
++/* RetroArch/ps4/orbis_profile.c - off unless /data/retroarch-profile exists. */
++extern "C" {
++	unsigned long long orbis_profile_now(void);
++	int  orbis_profile_enabled(void);
++	void orbis_profile_add(int slot, const char *name, unsigned long long us);
++}
++#define ORBIS_T0()      (orbis_profile_enabled() ? orbis_profile_now() : 0ull)
++#define ORBIS_T1(s,n,t) do { if (t) orbis_profile_add(s, n, orbis_profile_now() - (t)); } while (0)
++#else
++#define ORBIS_T0()      0ull
++#define ORBIS_T1(s,n,t) do { (void)(t); } while (0)
++#endif
++
+ void process_commands()
+ {
+ 	const uint32_t DP_CURRENT = *GET_GFX_INFO(DPC_CURRENT_REG) & 0x00FFFFF8;
+@@ -105,13 +120,25 @@ void process_commands()
+ 		}
+ 
+ 		if (command >= 8 && frontend)
++		{
++			/* Command building, with the coherency resolves nested inside it. Subtracting
++			 * rdram-h2g from this says how much is the copy and how much is everything else. */
++			unsigned long long orbis_t = ORBIS_T0();
+ 			frontend->enqueue_command(cmd_length * 2, &cmd_data[2 * cmd_cur]);
++			ORBIS_T1(7, "rdp-enqueue", orbis_t);
++		}
+ 
+ 		if (RDP::Op(command) == RDP::Op::SyncFull)
+ 		{
+ 			// For synchronous RDP:
+ 			if (synchronous && frontend)
++			{
++				/* Expected to be zero: this port defaults synchronous RDP off. A number here
++				 * means the option did not take, and the whole reading changes. */
++				unsigned long long orbis_t = ORBIS_T0();
+ 				frontend->wait_for_timeline(frontend->signal_timeline());
++				ORBIS_T1(8, "rdp-syncwait", orbis_t);
++			}
+ 			*gfx_info.MI_INTR_REG |= DP_INTERRUPT;
+ 			gfx_info.CheckInterrupts();
+ 		}
