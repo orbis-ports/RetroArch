@@ -307,6 +307,7 @@ static void frontend_orbis_init(void *data)
    sceSystemServiceHideSplashScreen();
 
    verbosity_enable();
+
    ps4_log("frontend up, build %s", PS4_APP_STAMP);
 }
 

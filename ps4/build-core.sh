@@ -41,11 +41,19 @@
 # comments there and in orbis-compat/cmake/ps4-openorbis.cmake.
 set -euo pipefail
 
-TOOLCHAIN="${OO_PS4_TOOLCHAIN:-$HOME/.local/opt/openorbis}"
-# create-fself reads this from the environment and refuses to run without it, whatever it
-# was passed on the command line.
-export OO_PS4_TOOLCHAIN="$TOOLCHAIN"
-ORBIS_COMPAT="${ORBIS_COMPAT_DIR:-$HOME/src-ps4/orbis-compat}"
+# ⚠ The six lines that cannot be shared - see orbis-compat/scripts/ps4/orbis-env.sh. Sibling
+# directory first, because that is what a fresh clone of the orbis-ports organisation looks like.
+for _c in "${ORBIS_COMPAT_DIR:-}" "$(dirname "${BASH_SOURCE[0]}")/../../orbis-compat" "$HOME/src-ps4/orbis-compat"; do
+  [[ -n "$_c" && -f "$_c/scripts/ps4/orbis-env.sh" ]] && { ORBIS_COMPAT_DIR="$_c"; break; }
+done
+[[ -n "${ORBIS_COMPAT_DIR:-}" ]] || {
+  echo "build-core: orbis-compat not found - clone https://github.com/orbis-ports/orbis-compat" >&2
+  echo "            next to this repository, or set ORBIS_COMPAT_DIR" >&2
+  exit 1
+}
+. "${ORBIS_COMPAT_DIR}/scripts/ps4/orbis-env.sh"
+TOOLCHAIN="$OO_PS4_TOOLCHAIN"
+ORBIS_COMPAT="$ORBIS_COMPAT_DIR"
 CORE_DIR=""
 OUT=""
 COMMON_DIR=""

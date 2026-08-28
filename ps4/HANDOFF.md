@@ -458,10 +458,12 @@ SPIRV-Cross -> RADV/ACO -> GCN ISA on Liverpool, compiled at run time on the con
 exports. Three things had to be settled to get there, and each is general rather than specific to
 this core:
 
-* ⚠ **A dynarec needs a mirrored-mapping story this platform does not have.** Lightrec maps the
-  same PSX RAM pages at several addresses through `memfd_create`/`MAP_SHM`; neither exists here
-  (`libretro.c:2345-2574`). Built with `HAVE_LIGHTREC=0`, so the MIPS interpreter. Any dynarec core
-  will hit the same wall, and it is its own piece of work.
+* ~~⚠ **A dynarec needs a mirrored-mapping story this platform does not have.**~~ **SUPERSEDED
+  2026-08-23 - see the section at the end of this file.** Lightrec maps the same PSX RAM pages at
+  several addresses through `memfd_create`/`MAP_SHM`; neither exists here (`libretro.c:2345-2574`),
+  and that part is still true. **The conclusion drawn from it was not.** The platform's own
+  direct-memory API makes mirrored mappings, and it was measured doing so. `HAVE_LIGHTREC=0` is
+  still what the shipped core is built with, and the reason recorded for it no longer holds.
 * ⚠ **A core must use the Vulkan headers it was written against, not the driver's.** Forcing
   Mesa's current `vulkan_core.h` broke it on `VK_IMAGE_TYPE_RANGE_SIZE`, an enum removed from the
   spec years after this core started using it. The rule that the loader shim needs the exact
@@ -514,6 +516,14 @@ Each of these cost one experiment and each removed a whole class of cause.
 3. **Doubling the internal resolution changes nothing.** Different resolutions mean different
    pipeline variants; a shader miscompile would have moved. It did not, so ACO is not the first
    suspect.
+
+### ~~Where that leaves it: the vertex attribute path~~ SOLVED 2026-08-23
+
+⚠ **Read the correction at the end of this file before spending time on anything below.** The
+suspect named here was right in its neighbourhood and wrong in its name: the variable is not that
+the formats are integer, it is that their ELEMENTS ARE LARGER THAN FOUR BYTES. The driver was
+fetching them from addresses that are not multiples of their size, silently getting the wrong bytes,
+and it is fixed. Spyro 3 draws correctly now.
 
 ### Where that leaves it: the vertex attribute path
 
@@ -577,3 +587,625 @@ extension filter.
   relative path RetroArch opens - and it does open some, `Main Menu.png` among them - lands in
   another title's directory. Flagged on 2026-08-21 as harmless; it is not.
 * Assets, shaders and cores are hand-copied, and nothing tells a user when they are missing.
+
+---
+
+## 2026-08-23 — both open questions answered, from the driver side
+
+Written into this file by the Mesa workshop (`~/src-ps4/mesa-ps4`, `~/src-ps4/ps4-mesa-docs`)
+because both answers were measured there and both contradict something this file states as fact.
+The full account, with every log line, is `ps4-mesa-docs/docs/HANDOFF.md` from
+"The integer-attribute suspect has a name" onwards.
+
+### 1. The shredded models: SOLVED, and it was alignment rather than integers
+
+The suspect was one step off. Not "integer vertex formats are a thinly travelled path" - the
+variable is **element size**. `src/amd/common/ac_shader_util.c`'s `is_fetch_size_safe()` exempts
+GFX7-GFX9 from every alignment requirement: on those parts it declares any typed vertex fetch safe
+at any address. That is a claim about silicon, inherited from upstream, and **it is false on
+Liverpool.** A multi-byte element read from an address that is not a multiple of its size returns
+the wrong bytes, with no fault and no log.
+
+Measured with the Vulkan CTS, 1853 cases of `dEQP-VK.pipeline.monolithic.vertex_input`, same case
+list and same binary, one environment line apart:
+
+    believing the exemption   Passed 1657   Failed 98
+    splitting the fetches     Passed 1754   Failed  1
+
+97 Fail→Pass, 0 Pass→anything, 0 other verdict changes. The one survivor is a geometry-shader case
+and a different defect.
+
+**Why Beetle's picture looked the way it did:** formats built from 32-bit channels are immune,
+because dword alignment IS element alignment there. So the three `R32G32B32A32_SFLOAT` attributes
+were always correct and the three `R16G16B16A16_*` were not. ⚠ And the prediction this makes, which
+"integer formats are less travelled" does not: **attribute 2, `R8G8B8A8_UINT`, was never affected** -
+a 4-byte element is aligned wherever a dword is.
+
+Fixed in the driver, `ORBIS_VS_STRICT_ALIGN`, **on by default on this platform** and only this one.
+`ORBIS_VS_STRICT_ALIGN=0` restores the old behaviour and logs a warning, because the off state is now
+the dangerous one. Nothing is needed on the RetroArch side except a rebuild against a driver from
+2026-08-23 or later — the log line to check is
+
+    orbis: vertex fetches are split to natural alignment
+
+Its absence means the binary predates the fix. **Every title links `libvulkan_radeon.a` statically,
+so an installed build carries whatever driver it was linked with.**
+
+### 2. Where Spyro's frame actually goes, and it is not the GPU
+
+From the driver's own BUDGET instrumentation during a Beetle PSX HW session, 97 five-second windows:
+
+    menu           0.05 cores    60.0 fps
+    3D scene       1.00 cores    40 fps, and 1.00 cores at 23 fps
+    time waited for the GPU, in EVERY window without exception: 0 ms
+    the whole Vulkan API, per frame:  263 us against a frame of 43967 us  = 0.6%
+    23 draws, 4 render passes, 1.68 screenfuls of 1920x1080, 2 dispatches
+
+One CPU thread saturated, the GPU never waited on, the graphics driver at 0.1-0.4% of the window.
+⚠ **The audio running slow is the same fact, not a second one:** the core is at ~38% of realtime, so
+the samples come out at ~38% of the rate. Precaching the disc does not help because the bottleneck is
+not I/O. Internal resolution and renderer settings will not move it either - that is now measured
+rather than assumed.
+
+The interpreter is the entire cost, and the dynarec is the only lever.
+
+### 3. Lightrec's wall does not exist. All three mechanisms measured on hardware
+
+    mirrored RAM       sceKernelMapDirectMemory called repeatedly with the SAME phys gives EIGHT
+                       simultaneous views - the probe's own cap, not the kernel's; it had not
+                       refused. Coherent in BOTH directions at two offsets 2 MiB apart, and
+                       unmapping one leaves the rest intact.
+    fixed placement    ORBIS_MAP_FIXED puts a mapping at an address of our choosing. Not new -
+                       ac_orbis_drm.c:6464 does it in production every time a buffer moves bus.
+    executable code    map READ|WRITE, then sceKernelMprotect to 0x07, then EXECUTE. Six bytes of
+                       x86-64 (b8 ee ff c0 00 c3) were written and CALLED; it returned 0x00c0ffee
+                       and the process carried on.
+
+⚠ **THE OBVIOUS FORM OF THE LAST ONE IS REFUSED.** `sceKernelMapDirectMemory` asked for
+READ|EXECUTE up front returns `0x8002000d` = EACCES - understood and declined, not malformed. The
+policy lives at map time, not at protect time. **Anyone who tries the direct form first will conclude
+this is impossible**, which is exactly what the probe concluded one rung before it turned out true.
+
+⚠ **Only the mprotect route was actually EXECUTED.** `sceKernelMapFlexibleMemory` and
+`sceKernelMmap` both granted 0x07 as well and neither was called. On this console a granted
+protection is not an honoured one - it has charged for that distinction three times now.
+
+⚠ **`MAP_PRIVATE|MAP_ANON` is `0x1002` here, not `0x0022`.** The SDK's `sys/mman.h` is musl's and
+carries Linux's value; orbis-compat sits ahead of it in the include path and corrects it to the
+FreeBSD one. Passing the wrong value makes the kernel treat the mapping as file-backed, validate
+`fd = -1`, and return EBADF - which reads as a refusal of the protection and is nothing of the kind.
+`orbis-compat/src/orbis_mmap.cpp:53` has a `static_assert` for this. **Ask the compiler for
+constants (`clang -dM`), not a header you found with grep.**
+
+The probe is `orbis_test_mirror_mapping()` in `ac_orbis_drm.c`, behind `ORBIS_TEST_MIRROR=1` for the
+safe rungs and `=exec` for the jump. It runs once at device init in any title, takes 2 MiB and gives
+it back. If the port hits a wall, that ladder re-establishes the ground truth in one run.
+
+### What this does and does not promise
+
+It removes the reason recorded for not building Lightrec, and that reason was the whole of the case.
+**It does not say the port is short.** Lightrec brings its own code emitter, its own build system and
+its own assumptions about the host; the platform blockers are gone and the size of the remaining work
+is unmeasured.
+
+⚠ And one trap already in this file, worth re-reading before starting: turning `HAVE_LIGHTREC` back
+on needs `find -name '*.o' -delete` first. The core's Makefile has the stale-object problem, and
+switching the flag the other way already cost a link failure on `lightrec_destroy`.
+
+### ⚠ And the build line, because this file never wrote it down and that cost a package
+
+The frontend needs **three** flags, not one. `Makefile.orbis`'s own comments put only
+`HAVE_VULKAN=1` in a command line, and a rebuild made with just that shipped, installed, booted,
+drew — and showed **no cores at all**:
+
+    make -f Makefile.orbis HAVE_VULKAN=1 HAVE_STATIC_DUMMY=0 HAVE_DYNAMIC=1 -j$(nproc) pkg
+
+⚠ **Changing any of them needs a `clean` first.** They are `-D` defines and this Makefile has no
+header dependencies, so objects built under the other setting are silently reused.
+
+⚠ **Nothing in the artefact says which configuration it is.** The ELF is the same size either way and
+the `.pkg` has come out 41680896 bytes for four days running. The grep that answers it:
+
+    sceKernelLoadStartModule    static build 0    dynamic build 3
+    libretro_dummy              25 either way, so NOT the marker to look for
+
+The link step now prints the configuration every time (`cores:`, `dummy:`, `vulkan:`, and the driver
+archive's build date), so this should not be able to recur silently.
+
+⚠ **A static build also POISONS `/data/retroarch/info/core_info.cache`** — it writes 65 bytes
+decompressing to `{"version": "1.2", "items": []}`, and that empty cache keeps the menu empty across
+every later install until somebody deletes it by hand. If the core list is empty after a good build,
+delete that file first.
+
+Two defects in `Makefile.orbis` were fixed while finding this, both uncommitted for review:
+
+    the eboot.bin recipe did not pass OO_PS4_TOOLCHAIN, which create-fself reads from the
+    environment and refuses without - although it is invoked by absolute path out of that very
+    toolchain. The `pkg` target passes it; this one did not. The build linked a new .elf, failed at
+    status 255, and left the PREVIOUS DAY'S eboot.bin and .pkg beside it, ready to be uploaded as
+    "the rebuild". It had only ever worked because the shell that ran make happened to export it.
+
+    the link step now prints what it built, as above.
+
+### How everything here is compiled, so it is not rediscovered
+
+Verified against the trees on 2026-08-23. Every path is a real entry point that was run that day.
+
+**Order matters.** The overlay is what the driver and the frontend both compile against, and the
+driver is what the frontend links, so a change low down means rebuilding upward:
+
+    1  orbis-compat   ./build.sh                      -> build/liborbis-compat.a
+    2  mesa-ps4       ./ps4/build.sh                  -> build-orbis/src/amd/vulkan/libvulkan_radeon.a
+    3  RetroArch      make -f Makefile.orbis ... pkg  -> eboot.bin, IV0000-RTRA00001_*.pkg
+    3b cores          ps4/build-core.sh               -> <name>_libretro.prx + .info
+
+⚠ **Nothing rebuilds anything below it automatically.** The frontend links whatever
+`libvulkan_radeon.a` is sitting there; it does not check whether the driver sources are newer. The
+link step prints the archive's build date for exactly that reason - **read it, and ask whether that
+is the driver you meant.**
+
+    orbis-compat/build.sh
+        Consumers need exactly two things, and both matter:
+          -isystem <orbis-compat>/include   AHEAD of the SDK's include directory
+          build/liborbis-compat.a           with --whole-archive
+        ⚠ The include order is not a preference. The SDK ships musl's headers behind a FreeBSD
+        triple, and the overlay corrects the constants that differ - MAP_ANON among them. Put the
+        SDK first and you get Linux values for a FreeBSD kernel, silently.
+
+    mesa-ps4/ps4/build.sh   [--host-too] [--host-orbis] [--sdk <dir>] [--work <dir>]
+        no arguments   cross-build the driver for the console. This is the one that matters.
+        --host-too     also build a plain Linux RADV, for the drm-shim probes
+        --host-orbis   build THIS arm as an ordinary Linux ICD and run its self-tests. Catches
+                       anything structural without a console trip.
+        ⚠ It prints the driver path and modification time every run because a path that looks
+        right pointing at another day's build has cost this workshop an evening.
+
+    RetroArch  make -f Makefile.orbis HAVE_VULKAN=1 HAVE_STATIC_DUMMY=0 HAVE_DYNAMIC=1 -j$(nproc) pkg
+        The three flags and the `clean` rule are in the section above. `make ... info` dumps the
+        whole flag set if something looks wrong.
+
+    RetroArch  ps4/build-core.sh --core <dir> --out <path> [--prx] [--name <label>] [--common <dir>]
+        --prx     a loadable module rather than a static archive
+        --name    also writes the minimal <out>.info RetroArch needs to show a readable name
+        --common  use the FRONTEND's libretro-common instead of the core's own vendored copy,
+                  which for anything predating this platform still has the orbisdev-era ORBIS
+                  branch and will not compile
+
+**All four resolve the toolchain and the overlay the same way**, through
+`orbis-compat/scripts/ps4/orbis-env.sh`: `ORBIS_COMPAT_DIR` if set, else a sibling directory, else
+`~/src-ps4/orbis-compat`; and `OO_PS4_TOOLCHAIN` or `~/.local/opt/openorbis`. A fresh clone of the
+`orbis-ports` organisation with the repositories side by side needs no environment at all.
+
+    deploy   orbis-compat/scripts/ps4/deploy.sh --pkg <file> --name <short>
+                                                [--also <local>:<remote>]... [--host <ip>]
+        Uploads to /data/pkg/<name>-YYYYMMDD.pkg - ⚠ this console installs from /data/pkg and
+        nowhere else. Verifies by READING BACK: sizes for packages, byte-for-byte for anything
+        under a megabyte. It ends by saying INSTALL + RUN or RUN, no install, and that line is
+        the answer to "do I need to reinstall".
+
+    configuration on the console
+        /data/tempest-env.txt    read first, by every title
+        /data/retroarch-env.txt  read second, ours, and only the log destination belongs in it
+        Both are plain KEY=VALUE, applied with setenv() before anything touches Vulkan.
+
+⚠ **The Beetle PSX HW source is NOT in this workshop.** The built `.prx` and its `.info` are on the
+console under `/data/retroarch/cores/` and `/data/retroarch/info/`, and the checkout they came from
+is not on the machine - a search on 2026-08-23 found nothing. Anyone picking up the Lightrec work
+starts by fetching the core again, and the `orbis` platform arm its Makefile grew is not upstream.
+
+### Where the Lightrec work goes: one fork, and probably only one
+
+    orbis-ports/beetle-psx-libretro, branch ps4-support
+
+Upstream is `beetle-psx-libretro`; the binary it produces here is `mednafen_psx_hw_libretro.prx`.
+Same shape as the other eight repositories in the organisation.
+
+**Why one fork and not two.** Lightrec is a separate project (pcercuei's) vendored into the core, so
+the instinct is that a platform change belongs upstream in Lightrec. ⚠ **The evidence in this file
+says otherwise:** the citation for the mirrored-mapping code is `libretro.c:2345-2574`, and that is
+**Beetle's own file, not Lightrec's**. The recompiler is handed pointers; arranging the host mappings
+is the core's job. If that holds, the whole change is one fork and Lightrec is untouched.
+
+⚠ **UNVERIFIED - the core's source is not in this workshop and this was not checked.** After
+cloning, two greps settle it:
+
+    rg -n "memfd_create|MAP_SHM|mmap" --glob '!deps/lightrec/**' libretro.c
+    rg -rn "memfd_create|MAP_SHM" deps/lightrec/
+
+Hits only in the first: one fork. Hits in the second as well: Lightrec maps for itself, that is a
+general "platform without POSIX shared memory" problem rather than ours, and it belongs upstream in
+Lightrec rather than in a PS4 fork of the core.
+
+⚠ **And the port work may not all be recoverable from a fresh clone.** The `orbis` platform arm this
+file records the core's Makefile growing is **not upstream**, and the checkout it was written in is
+gone. Look for a patch or a stashed tree before starting from zero; if there is none, that arm has to
+be written again, and this file's own note that its `libretro-common` is too old to compile here
+applies from the first build.
+
+### ⚠ Do not switch cores to get a better recompiler
+
+`pcsx_rearmed` has a mature x86-64 dynarec and is far lighter than Beetle, which makes it look like
+the shorter road. **It has no Vulkan hardware renderer.** Beetle PSX HW is the only thing in this
+port where foreign graphics code builds its own pipelines on our RADV, and it is what found the
+vertex-fetch defect that had been silently corrupting every title. Moving to a software-rendered core
+would trade the whole diagnostic value of this arrangement for a frame rate, and would throw away the
+port work already spent on Beetle.
+
+The core is right. The recompiler is what is missing from it.
+
+---
+
+## 2026-08-23 (evening) — Lightrec built, and the fork it lives in
+
+The Mesa side's entry above removes the reason this file recorded for not building the dynamic
+recompiler. This is the other half: the recompiler is built, it is on by default here, and the
+core is on the console. **It has not been run on hardware yet** - what follows is what was
+written and why, not what was measured.
+
+### ⚠ First: the checkout this file said was gone is not gone
+
+The entry above records the Beetle PSX HW source as unrecoverable - "a search on 2026-08-23
+found nothing" - and tells whoever picks the work up to re-fetch it and rewrite the platform
+arm. It was in the previous session's **scratchpad** (`/tmp/claude-1000/.../scratchpad/`), with
+the `orbis` arm uncommitted in its working tree, exactly as it had been left.
+
+The search was of `~` and `~/src-ps4`. A scratchpad is where a session is *told* to put
+working files, so it is the first place to look for a missing one and it was not looked at.
+The tree is now `~/src-ps4/beetle-psx-libretro`, branch `ps4-support`, origin
+`git@github.com:orbis-ports/beetle-psx-libretro.git` (not yet pushed - the repository may not
+exist yet), upstream `libretro/beetle-psx-libretro`. The recovered arm is its first commit, so
+the Lightrec work reads as a diff against it rather than as one lump.
+
+### The fork is one fork, and the grep the entry above asked for has been run
+
+    rg "memfd_create|MAP_SHM|mmap" libretro.c        53 hits
+    rg "memfd_create|shm_open" deps/lightrec/         0 hits
+
+Confirmed: arranging host mappings is **Beetle's** job, not Lightrec's. The recompiler is
+handed pointers. Nothing goes upstream to pcercuei; the whole change is in this fork.
+
+### What the platform arm actually needed
+
+`libretro.c` builds the maps behind five macros and a descriptor - `MAP`, `MAP_SHM`,
+`MAP_CODE`, `UNMAP`, `MFAILED`, and a `MEMFDTYPE`. Every existing arm fills them with POSIX
+shared memory, ashmem or Win32 file mappings. The PS4 arm fills them with Sony's allocator, and
+the shapes line up one for one:
+
+    memfd_create + ftruncate    ->  sceKernelAllocateDirectMemory   (physical pages, an off_t)
+    mmap(MAP_SHARED, memfd)     ->  sceKernelMapDirectMemory        (a view of those pages)
+    mmap(MAP_ANON|MAP_PRIVATE)  ->  the same call on its own allocation
+    PROT_EXEC at mmap time      ->  REFUSED - map RW, then sceKernelMprotect
+
+`MEMFDTYPE` is `off_t` here and the "memfd" is not a descriptor: it is the offset into the
+console's physical memory. New files: `ps4/orbis_lightrec_mem.{c,h}` in the core.
+
+### ⚠ Three things that differ from every other arm, and all three are load-bearing
+
+**MAP_FIXED here has no `_NOREPLACE` form.** The Linux arm asks for an address and checks what
+came back; on this kernel the check runs after the frontend's heap has already been replaced.
+Every fixed mapping asks whether the range is empty first.
+
+**The range check walks a granule at a time, deliberately.** The natural call is
+`sceKernelVirtualQuery(addr, 1, ...)` - "the first mapping at or above" - one call for a whole
+range. Nothing in this workshop has ever passed 1. The only established value is 0, from
+`ac_orbis_drm.c`, where a nonzero return means nothing is mapped there. ⚠ **The two ways of
+being wrong are not the same size:** a guessed flag that makes the call fail reports every
+address as free, MAP_FIXED lands on the heap, and the result is a corrupted process rather than
+a refusal. Being too conservative only loses the recompiler. ~18,000 queries per content load
+buys that, which is nothing against the load itself. If flags=1 is ever established, it
+collapses to one call.
+
+**Direct memory is not reclaimed when a mapping goes away**, and `lightrec_init_mmap` is called
+*twice* on the way in (hugetlb, then without). Released explicitly on both the failing and the
+succeeding path, or it is 2 MiB of unswappable memory per content load.
+
+### The code buffer is mandatory here, unlike everywhere else
+
+Without one, Lightrec lets GNU lightning allocate its own with `mmap(PROT_EXEC)`
+(`deps/lightning/lib/lightning.c:2516-2531`). This kernel refuses execute at map time. ⚠ **A
+block emitted into non-executable pages does not fail, it ends the process** - so if the
+promotion to RWX is refused, `psx_dynarec` is clamped to `DYNAREC_DISABLED` and the interpreter
+runs, with a line saying why.
+
+The guard is in two places because the core reads its options *before* it maps anything:
+`check_variables` sees "refused", `InitCommon` sees "not available". "Not tried yet" must not
+read as "refused", or the recompiler switches itself off on the way in every time.
+
+### The option default is flipped on this platform only
+
+Upstream defaults `beetle_psx_cpu_dynarec` to `disabled` and hides it under **Hacks**. Given
+the measurement in the entry above - one CPU thread saturated, the GPU waited on for 0 ms in
+every window, the whole Vulkan API at 0.6% of the frame - an interpreter default here is an
+unplayable default. `#ifdef __ORBIS__` -> `"execute"`, everywhere else unchanged.
+
+⚠ **A saved `.opt` file wins over a default.** `/data/retroarch/config/Beetle PSX/Beetle
+PSX.opt` on the console has no `cpu_dynarec` line, because the core that wrote it had no such
+option - so the new default does apply. Delete the line, not the file, if this ever needs
+re-testing.
+
+### ⚠ The build is reproducible now, which it was not
+
+The `.prx` that ran for a day could not be rebuilt from the repository: the arm was
+uncommitted and the link was a shell command nobody wrote down. `ps4/build.sh` in the fork is
+that link. Two things it exists to prevent:
+
+    make platform=orbis           tries to LINK, with $(LD) = $(CXX) = the host driver, and
+                                  fails on host libstdc++. The previous route was to run make,
+                                  let the link fail, and pick .o files out of the tree.
+    make platform=orbis objects   a new target: compile and stop. This is what build.sh uses.
+
+`STATIC_LINKING` is not the escape - it is a `-D` define about whether the core is built INTO a
+frontend, not a link mode.
+
+⚠ **`HAVE_LIGHTREC` needs a clean when it changes.** It is a `-D` define with no header
+dependency, so objects built the other way are silently reused - which already cost a link
+failure on `lightrec_destroy`. `build.sh` keeps a `.ps4-lightrec` stamp and cleans itself.
+
+### On the console now
+
+    /data/retroarch/cores/mednafen_psx_hw_libretro.prx   18903168 bytes, mode 777
+    /data/retroarch/info/mednafen_psx_hw_libretro.info   mode 666
+    /data/retroarch/info/core_info.cache                 DELETED, as it must be after any change
+
+Nothing on the frontend side changed and no RetroArch rebuild is needed - the whole change is
+inside the core.
+
+### What the first run should say
+
+The lines to look for, in order. `[PS4] lightrec:` is the prefix throughout.
+
+    <addr> is taken (...)              one per rejected io_base, with what is there. This is
+                                       the only account of where this process's address space
+                                       is, and it is worth reading even on a successful run.
+    N KiB code buffer at <addr>, writable and executable
+                                       the promotion worked. Absent means it did not.
+    no executable code buffer ...      the clamp fired; the interpreter is running.
+
+Then the frame rate. The interpreter measured ~38% of realtime on Spyro 3 (40 fps in scene, 23
+fps in the worst window). ⚠ **Audio pitch is the same fact as the frame rate here**, not a
+second problem: the core runs slow, so samples come out slow.
+
+### Still open, unchanged from the entry above
+
+* The close-hang every title on this Mesa has.
+* `orbis_paths.cpp:19` hard-codes `/data/OpenGothic/` as the relative-path anchor.
+* `ORBIS_TILE_MODE` has no reader in mesa-ps4 and `tempest-env.example.txt` documents it.
+* The temporary ORBIS instrumentation in `vfs_implementation.c` and `core_info.c` - both carry
+  "Remove once ps4/HANDOFF.md has the answer", and both answers are in this file now.
+
+### And one upstream defect found on the way, not fixed
+
+`libretro.c`'s generic no-shared-memory arm does not compile, and has not for as long as the
+mman deps have been there:
+
+    #define MAP_SHM(addr,size,fd,offset)\
+    #define MAP_CODE(addr,size,fd,offset)\
+            MAP(addr,size,fd,offset)
+
+The first `#define` ends in a backslash with nothing after it, so it swallows the `#define`
+below it and `MAP_SHM` becomes an empty macro that is then called as a function. Any platform
+falling into that arm gets four errors. Left alone here - the PS4 arm sits above it and fixing
+it invites a conflict with upstream - but it is why nobody has exercised that path.
+
+---
+
+## 2026-08-23 (late) — the recompiler runs, and what was actually slowing it down
+
+Measured on hardware, not predicted. Beetle PSX HW, Spyro 3, Vulkan renderer, 2x internal.
+
+    [PS4] lightrec: calling 0x10800000 to see whether it executes...
+    [PS4] lightrec: 0x10800000 returned 0x00c0ffee - the code buffer executes
+    [PS4] lightrec: 8192 KiB code buffer at 0x10800000, writable and executable
+    Lightrec map addresses: M=0x10000000, P=0x899a9c020, R=0x2fc00000, H=0x2f800000
+    [Lightrec]: Using 32-bit LUT
+
+The io_base search took the FIRST 32-bit candidate, 0x10000000, so the mirrors, the BIOS at
++0x1fc00000 and the scratch pad at +0x1f800000 all placed on the first try and the 32-bit LUT
+is available. `mirrors_mapped` is true; the map is not "perfect" only because that requires the
+guest's RAM at host address 0, which libretro.c deliberately refuses (psx_mem == NULL would be
+indistinguishable from failure).
+
+### ⚠ The first run failed, and the defect was in the check rather than the platform
+
+    lightrec: sceKernelMprotect returned 0 for 0x10800000 but the range reads back as
+              prot 0x03, without execute. Not using it.       (x16, one per base address)
+
+**`sceKernelQueryMemoryProtection` reports the protection a range was MAPPED with, not the one
+`sceKernelMprotect` has just set.** The pages were executable throughout; mesa-ps4's probe had
+already established that by CALLING a stub in exactly this arrangement (`MIRROR rung 7 OK`,
+same day). It never asked the query API, so nothing had caught it.
+
+⚠ **This is the fifth call on this console that answers, and answers about something else** -
+after GB_ADDR_CONFIG, the three tessellation registers, and the readerless env knobs. The rule
+this workshop keeps re-learning has a sharper form now: **on this platform, a query API is not
+a measurement of the thing it names.** The check was not deleted, it was replaced with the
+probe's own: write `b8 ee ff c0 00 c3` into the buffer and call it, expect 0x00c0ffee.
+
+⚠ **And the pair of log lines around that jump are BOTH at RARCH_ERR on purpose.** This
+frontend puts everything below ERR on UDP alone (ps4/ps4_log.h). The warning before the jump
+was at ERR and the confirmation after it was at INFO, so a klog reader saw "calling %p" and
+then nothing - which is exactly what the death that line warns about looks like.
+
+### Where the frame really went, and it was a core option
+
+With the recompiler running the driver's BUDGET instrumentation still said, in twelve
+consecutive five-second windows:
+
+    1.00 cores busy    exactly one thread saturated
+    GPU waited 0 ms    every window, no exception
+    submit path        12-18 ms out of 5000 = 0.3%
+
+The saved options carried **`beetle_psx_pgxp_mode = "memory only"`**. That is not cosmetic:
+`mednafen/psx/cpu.c` in PGXP memory mode sets
+
+    lightrec_map[PSX_MAP_KERNEL_USER_RAM].ops = &pgxp_nonhw_regs_ops;
+    lightrec_map[PSX_MAP_BIOS].ops            = &pgxp_nonhw_regs_ops;
+    lightrec_map[PSX_MAP_SCRATCH_PAD].ops     = &pgxp_nonhw_regs_ops;
+
+Without PGXP those three are NULL and recompiled code reads memory directly. With it, **every
+load and store to main RAM becomes a C function call**, which is the most expensive single
+thing that can be switched on in a PSX dynarec. The whole benefit is geometry precision.
+
+The set that made it smooth, all live-togglable (cpu.c:2890 watches pgxpMode, invalidate and
+spgp and re-inits Lightrec without a reload):
+
+    PGXP Operation Mode                 Memory Only -> Disabled     the big one
+    Dynarec SP GP Hit RAM Optimization  Disabled    -> Enabled
+    Dynarec Code Invalidation           Full        -> DMA Only
+    Dynarec …Event Cycles               128         -> 512
+    GTE Overclock                       Enabled     -> Disabled     an overclock costs host time
+    Software Framebuffer                Enabled     -> Disabled     the only visual risk
+
+⚠ **Internal resolution is NOT a lever here and raising it is nearly free** - the GPU waited
+0 ms in every window measured, both before and after.
+
+### ⚠ A stub that returns -1 is not a neutral stub
+
+    [Lightrec]: Threaded recompiler started with 1 workers.
+
+on six cores. `orbis-compat/include/sys/sysctl.h` answered every sysctl with -1, and **every
+caller's fallback for "how many CPUs" is one** - the answer that switches parallelism off
+rather than degrading it. Lightrec's `recompiler.c` takes the `__FreeBSD__` arm,
+`sysctlbyname("hw.ncpu", ...) ? 1 : count`; Mesa's `u_cpu_detect.c` asks the same question with
+a `{CTL_HW, HW_NCPU}` mib, in every title.
+
+Fixed in the overlay, both spellings, six cores, `ORBIS_NCPU` to override. Six and not a guess
+at seven: `sceKernelGetCpumode()` exists and reportedly separates the two modes, but this SDK
+ships no constants for its return values and six against seven is a rounding error beside six
+against one.
+
+⚠ **Mesa does not get this until it is rebuilt**, and whether it should is an open question
+rather than an oversight: more util threads in a driver the GPU never waits on could contend
+with the emulation thread. That is a measurement somebody should make deliberately.
+
+### Two console-facing traps found while doing this
+
+⚠ **FTP hands back a `.prx` DECRYPTED.** A file uploaded as 18903088 bytes of self reads back
+as 19807720 bytes starting `7F 45 4C 46`. md5 can never match, and an upload that worked looks
+like an upload that silently failed. Verify by SIZE and MTIME. (`deploy.sh` dodges this only
+because its byte-for-byte check is limited to files under a megabyte.)
+
+⚠ **Two UDP log receivers were bound to 18194** - one from that day and one left over from
+2026-08-21. `log-receiver.py` sets `SO_REUSEADDR` and not `SO_REUSEPORT`, so Linux delivers a
+unicast datagram to exactly one of them and which one is not defined. "The log says nothing"
+can mean "it went to a file from two days ago". Check with `ss -ulnp | grep 18194` before
+reading silence as evidence.
+
+### Confirmed on hardware, same evening
+
+    [Lightrec]: Threaded recompiler started with 5 workers.
+
+⚠ **The first attempt at this reported `1 workers` from a correct fix**, and that is its own
+entry above: `-MMD` omits `-isystem` headers, so nothing rebuilt and the `.prx` came out
+byte-identical in size. `beetle-psx-libretro/ps4/build.sh` now stamps the overlay's newest
+mtime alongside HAVE_LIGHTREC and cleans when either moves.
+
+What the driver's BUDGET saw, gameplay windows only:
+
+    before (PGXP on, 1 worker)     1.00 cores flat    152-189 presents / 5 s   ~31-38 fps
+    after  (options + 5 workers)   0.80-0.95 cores    197-260 presents / 5 s   ~39-52 fps
+
+⚠ **That delta does NOT separate the core options from the worker count** - both changed
+between the two measurements, and the frontend was never run with one without the other. If
+the split matters, `ORBIS_NCPU=1` in `/data/retroarch-env.txt` isolates the workers without a
+rebuild.
+
+Audio, which is the other thing five compile threads on six cores could have wrecked:
+
+    1 worker    warm-up burst to 1145 underruns, then FLAT - no new underruns for two minutes
+    5 workers   warm-up burst to  879 underruns, then FLAT from 40 s after load
+
+So the burst is recompilation warm-up in both cases and it got *shorter*, not longer. No
+starvation. One window did show 70 submissions and 61 presents at 0.95 cores - about 12 fps -
+which is a genuinely heavy moment rather than a regression.
+
+The GPU still waited 0 ms. Internal resolution remains free, and the remaining cost is
+Beetle's own C++ (GPU command translation, SPU) plus the recompiled code itself.
+
+### ⚠ The isolation run first measured nothing, and found something larger
+
+`ORBIS_NCPU=1` was written into `/data/retroarch-env.txt`, the console relaunched, and the core
+reported **five** workers. Not a parse error, not a stale build.
+
+**The SDK's `libc.a` is a real static musl archive** - 1481 objects, `getenv` and `setenv` as
+defined text rather than stubs into a shared libc module. So the eboot and every `.prx` it
+loads link their own copy, each with its own `environ`. `platform_orbis.c`'s reader setenv()s
+into the *executable's*; a core calling `getenv()` reads its own, which nothing ever wrote.
+
+⚠ **EVERY ENV KNOB THIS WORKSHOP HAS IS EXPOSED TO THIS, and none of them showed it.**
+ORBIS_3D_LINEAR, ORBIS_NO_TESS, MESA_LOG_FILE, RADV_DEBUG, all of tempest-env.example.txt - all
+read by Mesa, and Mesa is linked INTO the executable. The first knob that had to reach a
+loadable module was the first to fail, and it failed by looking exactly like a knob with no
+reader: a clean run that reads as a measurement. That is the shape tempest-env.example.txt
+spends half its length warning about, and it had a second cause nobody had named.
+
+Fixed in the overlay: `orbis_env_get()` (`orbis-compat/src/orbis_env.cpp`, `include/orbis_env.h`)
+answers from the image's own environment first and falls back to parsing the env files itself.
+`sys/sysctl.h` uses it. ⚠ **Anything in a `.prx` that reads a knob must use it rather than
+`getenv()`.** The file list naming "retroarch" is a seam, not a design - the honest mechanism is
+a loader handing its module what it applied, and libretro has no channel for that.
+
+### What the workers are actually worth
+
+With the fix in, `ORBIS_NCPU=1` took, and the comparison is:
+
+    warm-up underruns before the count goes flat, two runs each
+      1 worker    1145, 1124     mean 1134   spread  21  (1.9%)     flat at ~45 s
+      5 workers    879,  831     mean  855   spread  48  (5.6%)     flat at ~38 s
+    steady state  both FLAT afterwards - zero new underruns, held for two minutes
+    frame rate    NOT distinguishable; presents per window overlap and the scenes differ
+
+**24.6% shorter warm-up, and nothing at all afterwards** - which is what the workers should
+buy: they compile blocks, and once the blocks are compiled there is no work left. The two
+groups do not overlap - the worst 5-worker run (879) is comfortably below the best 1-worker run
+(1124), and the 245-underrun gap is five times either group's internal spread.
+
+⚠ **THE SMOOTHNESS WAS THE CORE OPTIONS, PRINCIPALLY PGXP** - not the worker count. Both changed
+in the same interval earlier and the entry above said the delta could not separate them. It can
+now, and the answer is that the part which felt like the win was the part that was not being
+tested.
+
+⚠ **The metric is warm-up underruns, and it is only comparable across runs that BOOT THE DISC.**
+Loading a save state skips the code the first run had to compile, which is the whole quantity
+being measured.
+
+`ORBIS_NCPU` has been removed from the console's env file. The default of 6 stands, because a
+shorter warm-up for free is still worth having.
+
+### Where the frame goes inside the core - and the target it is already hitting
+
+⚠ **The per-thread route is closed.** `sceKernelGetCpuUsage` links and returns `0x8002004e`,
+ENOSYS - this kernel does not offer it to this process. `ps4/ps4_threads.c` keeps the attempt
+and the return code so nobody spends an evening on it again.
+
+The split therefore comes from inside the core (`ORBIS_CORE_PROFILE=1`, beetle's `retro_run`).
+Twelve consecutive five-second windows, Spyro 3, hardware renderer, 2x internal:
+
+    249 frames every window, without exception   = 49.78 fps
+    CPU_Run              9.8-12.3 ms/f   49-61%   emulated machine + everything it schedules
+    rest of retro_run    7.8-10.3 ms/f   38-51%   parallel-psx building the frame, audio batch
+    outside the core                       0.1%   the frontend itself
+
+⚠ **THE DISC IS PAL AND THE CORE IS AT 100% OF TARGET.**
+
+    [Core] Geometry: 320x240, FPS: 50.0000, Sample rate: 44100 Hz
+    SET_SYSTEM_AV_INFO: FPS: 49.7610
+
+49.76 requested, 49.78 delivered. There is no deficit left to recover in steady state - but the
+thread is 99.9% busy doing it, so there is also no slack. Anything gained from here buys margin
+against the dips rather than frames.
+
+⚠ **HALF THE FRAME IS NOT THE RECOMPILER**, which is the answer to "can the JIT be optimised
+further": at most half of a frame that is already meeting its target. And `rest` is not the
+software framebuffer - that option is already off - nor the driver, whose submit path BUDGET
+puts at 0.3% of wall. It is parallel-psx's own command building, above the driver.
+
+⚠ **AND THERE IS A PACING PROBLEM NO AMOUNT OF SPEED FIXES:**
+
+    [Video] Timings deviate too much. Will not adjust. (Target = 59.94 Hz, Game = 50.00 Hz)
+
+A 50 Hz game on a 59.94 Hz output judders by construction, and this console does not output 50
+Hz. An NTSC copy of the same title would match the display exactly. Worth knowing before
+anyone reads uneven pacing as a performance problem and optimises at it.
+
+`beetle_psx_dynarec_spgp_opt` is still `disabled` - the one recommended knob not applied.

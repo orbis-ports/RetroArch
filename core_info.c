@@ -37,10 +37,6 @@
 #include "retroarch.h"
 #include "verbosity.h"
 
-#if defined(ORBIS)
-#include "ps4/ps4_log.h"
-#endif
-
 #include "core_info.h"
 #include "file_path_special.h"
 
@@ -2207,18 +2203,6 @@ static core_info_list_t *core_info_list_new(const char *path,
    const char *info_dir                         = libretro_info_dir;
    core_path_list_t *path_list                  = core_info_path_list_new(
          path, exts, dir_show_hidden_files);
-
-#if defined(ORBIS)
-   /* ⚠ TEMPORARY. "No cores available" with a core visibly loaded says the scan found
-    * nothing, and there are three ways to find nothing: the wrong directory, the wrong
-    * extension filter, or a listing that came back empty. Nothing distinguishes them from
-    * the outside. Remove once ps4/HANDOFF.md has the answer. */
-   ps4_rarch_log("[INFO]", "[PS4] core scan: dir=\"%s\" ext=\"%s\" -> %u entr%s\n",
-         path ? path : "(null)", exts ? exts : "(null)",
-         (unsigned)(path_list && path_list->core_list ? path_list->core_list->size : 0),
-         (path_list && path_list->core_list && path_list->core_list->size == 1)
-            ? "y" : "ies");
-#endif
 
    if (!path_list)
       return NULL;

@@ -90,6 +90,7 @@ typedef struct ps4_audio
     * frontend not keeping up. */
    uint64_t       grains;
    uint64_t       underruns;
+   uint64_t       underruns_said;
    int32_t        last_rc;
 } ps4_audio_t;
 
@@ -119,12 +120,20 @@ static void ps4_audio_thread(void *data)
       ps4->last_rc = sceAudioOutOutput(ps4->handle, ps4->grain);
       ps4->grains++;
 
-      if (ps4->grains <= 3
-            || (ps4->grains % (PS4_AUDIO_RATE * 10 / PS4_AUDIO_GRAIN)) == 0)
-         RARCH_LOG("[PS4] audio: %llu grains, %llu underruns, rc=%d\n",
+      /* ⚠ ONLY WHEN SOMETHING IS WRONG, and the counter is why. This used to report every
+       * ten seconds unconditionally, which is what a bring-up wants and what a shipped
+       * frontend should not do: a hundred identical lines an hour hide the one line that
+       * differs. Underruns are still worth a line each time the count MOVES - that is the
+       * one audio symptom this port has, and silence now means the ring is keeping up. */
+      if (ps4->underruns != ps4->underruns_said
+            && (ps4->grains % (PS4_AUDIO_RATE * 10 / PS4_AUDIO_GRAIN)) == 0)
+      {
+         RARCH_WARN("[PS4] audio: %llu underruns in %llu grains, rc=%d\n",
+               (unsigned long long)(ps4->underruns - ps4->underruns_said),
                (unsigned long long)ps4->grains,
-               (unsigned long long)ps4->underruns,
                (int)ps4->last_rc);
+         ps4->underruns_said = ps4->underruns;
+      }
    }
 }
 
