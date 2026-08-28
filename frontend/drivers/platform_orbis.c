@@ -159,7 +159,12 @@ static void frontend_orbis_get_env(int *argc, char *argv[],
       }
    }
 
-   dir_check_defaults("host0:app/custom.ini");
+   /* ⚠ THIS SAID "host0:app/custom.ini", WHICH IS A VITA PATH. It is the opt-out: if the
+    * file exists, RetroArch skips creating its default directories and assumes the user
+    * laid them out. A path that can never exist here made the opt-out unreachable rather
+    * than wrong, so first boot did create the directories under /data/retroarch -- by
+    * accident rather than by decision. Named for this platform now. */
+   dir_check_defaults("/app0/custom.ini");
 #endif
 }
 

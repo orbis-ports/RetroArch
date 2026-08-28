@@ -25,8 +25,12 @@ GRIFFIN_BUILD      ?= 0
 HAVE_STATIC_DUMMY  ?= 1
 WHOLE_ARCHIVE_LINK ?= 0
 
-PS4_TITLE_ID       := RETROARCH
+# TITLE_ID is AAAA00000 - four letters, five digits - because param.sfo and the content id
+# both embed it and make-pkg.sh rejects anything else. CONTENT_LABEL is <=16 chars.
+PS4_TITLE_ID       := RTRA00001
 PS4_TITLE_NAME     := RetroArch
+PS4_CONTENT_LABEL  := RETROARCH0000000
+PS4_PKG_VERSION    := 01.00
 
 # ---------------------------------------------------------------------------
 # Toolchain and the platform overlay.
@@ -301,7 +305,49 @@ eboot.bin: $(TARGET).elf
 	$(Q)$(OO_BINDIR)/create-fself -in=$(TARGET).elf -out=$(TARGET).oelf \
 		--eboot $@ --paid 0x3800000000000011 >/dev/null
 
-clean:
-	$(Q)rm -f $(OBJ) $(TARGET).elf $(TARGET).oelf eboot.bin
+# ⚠ THE .pkg IS THE ONLY THING A CONSOLE CAN INSTALL. eboot.bin alone is what unemups4
+# loads; hardware wants a fake-signed package around it. The recipe is not reimplemented
+# here - orbis-compat/scripts/ps4/make-pkg.sh is the same sequence the CMake consumers use
+# (PkgTool.Core sfo_new/sfo_setentry -> create-gp4 -> pkg_build), and it is deliberately
+# usable standalone.
+#
+# Nothing but the executable goes in. RGUI draws its own bitmap font and needs no assets,
+# there is no core to ship yet, and everything writable resolves under /data, which the
+# frontend creates on first boot. A package that shipped assets it could not use would
+# only make the first hardware run slower to copy.
+PS4_MAKE_PKG := $(ORBIS_COMPAT_DIR)/scripts/ps4/make-pkg.sh
 
-.PHONY: all clean info
+pkg: eboot.bin
+	@$(if $(Q), $(shell echo echo PKG $(PS4_TITLE_ID)),)
+	$(Q)OO_PS4_TOOLCHAIN=$(TOOLCHAIN) $(PS4_MAKE_PKG) \
+		--eboot eboot.bin --out-dir . \
+		--title-id $(PS4_TITLE_ID) --title "$(PS4_TITLE_NAME)" \
+		--version $(PS4_PKG_VERSION) --content-label $(PS4_CONTENT_LABEL) \
+		--sdk $(TOOLCHAIN)
+
+# Upload to the console over GoldHEN's FTP. lftp rather than curl: it is what the packages
+# in /data/pkg were put there with, and it retries a stalled transfer instead of leaving a
+# truncated .pkg that the installer accepts and then fails on.
+#
+#   make -f Makefile.orbis send PS4=192.168.100.2
+#
+# Install afterwards ON THE CONSOLE: Settings -> Debug Settings -> Package Installer ->
+# /data/pkg/retroarch.pkg. Nothing here can do that half.
+PS4        ?= 192.168.100.2
+PS4_FTP_PORT ?= 2121
+PKG_REMOTE ?= /data/pkg
+PKG_NAME   ?= retroarch.pkg
+PKG_FILE   := IV0000-$(PS4_TITLE_ID)_00-$(PS4_CONTENT_LABEL).pkg
+
+send: pkg
+	@echo "FTP $(PKG_FILE) -> $(PS4):$(PKG_REMOTE)/$(PKG_NAME)"
+	$(Q)lftp -c "set net:timeout 10; set ftp:passive-mode on; \
+		open -p $(PS4_FTP_PORT) $(PS4); mkdir -p $(PKG_REMOTE); \
+		put -O $(PKG_REMOTE) $(PKG_FILE) -o $(PKG_NAME)"
+	@echo "uploaded. Install via Debug Settings -> Package Installer on the console."
+
+clean:
+	$(Q)rm -f $(OBJ) $(TARGET).elf $(TARGET).oelf eboot.bin pkg.gp4
+	$(Q)rm -rf sce_sys
+
+.PHONY: all clean info pkg send
