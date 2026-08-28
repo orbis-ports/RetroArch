@@ -152,6 +152,9 @@ static const gfx_ctx_driver_t *gfx_ctx_gl_drivers[] = {
 #if defined(HAVE_LIBNX) && defined(HAVE_OPENGL)
    &switch_ctx,
 #endif
+#if defined(ORBIS) && defined(HAVE_EGL) && defined(HAVE_OPENGLES)
+   &gfx_ctx_orbis_gl,
+#endif
 #if defined(HAVE_VIDEOCORE)
    &gfx_ctx_videocore,
 #endif

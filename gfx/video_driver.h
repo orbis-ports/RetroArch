@@ -1547,6 +1547,7 @@ extern video_driver_t video_gcm;
 extern video_driver_t video_switch;
 extern video_driver_t video_ps4;
 extern const gfx_ctx_driver_t gfx_ctx_orbis_vk;
+extern const gfx_ctx_driver_t gfx_ctx_orbis_gl;
 extern video_driver_t video_d3d8;
 extern video_driver_t video_d3d9_cg;
 extern video_driver_t video_d3d9_hlsl;
