@@ -46,8 +46,14 @@ name: CI PS4 cores
 on:
   workflow_dispatch:
     inputs:
+      cores:
+        description: >
+          Space-separated core names to build instead of the whole recipe. One shard, no
+          release. For chasing a single core's build failure without an hour of runner time.
+        required: false
+        default: ""
       shards:
-        description: How many parallel core shards.
+        description: How many parallel core shards. Ignored when `cores` is set.
         required: false
         default: "8"
       frontend-run-id:
@@ -108,6 +114,7 @@ env:
   MESA_RELEASE: ${{ github.event.inputs.mesa-release || 'orbis-mesa-c42aa135f234' }}
   OPENORBIS_SDK_TAG: v0.5.4
   SHARDS: ${{ github.event.inputs.shards || '8' }}
+  CORES_SUBSET: ${{ github.event.inputs.cores }}
   RECIPE: .libretro-super/recipes/linux/cores-linux-x64-generic
 
 jobs:
@@ -142,6 +149,21 @@ jobs:
         id: plan
         run: |
           set -euo pipefail
+
+          # ⚠ A NAMED SUBSET IS ONE SHARD AND NO RELEASE. Chasing why one core fails to build
+          # should not cost 163 builds and an hour of wall clock - and it did, twice, before
+          # this existed. The shard job reads the same variable and passes the names straight
+          # to ps4/build-cores.sh, so what runs here is what runs in a full matrix.
+          if [ -n "${CORES_SUBSET:-}" ]; then
+            echo "== subset: $CORES_SUBSET"
+            echo "### PS4 cores: named subset" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "$CORES_SUBSET" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo 'shards=["0"]' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           n="${SHARDS}"
           case "$n" in ''|*[!0-9]*) echo "!! shards must be a number, got '$n'" >&2; exit 1 ;; esac
           [ "$n" -ge 1 ] || { echo "!! shards must be at least 1" >&2; exit 1; }
@@ -254,6 +276,22 @@ jobs:
           orbis-compat-ref: ${{ env.ORBIS_COMPAT_REF }}
           mesa-release: ${{ env.MESA_RELEASE }}
 
+      # ⚠ nasm, BECAUSE A DYNAREC IS WRITTEN IN ASSEMBLY. mupen64plus_next's x86_64 recompiler
+      # assembles mupen64plus-core/src/device/r4300/new_dynarec/x64/linkage_x64.o with nasm, and
+      # a runner has none: `make: nasm: No such file or directory`, Error 127, and the core
+      # then failed at link time on a symbol whose object had never been built. It is on this
+      # project's development machine, which is why nobody noticed.
+      - name: nasm, for cores with an assembler-written dynarec
+        run: |
+          set -euo pipefail
+          if command -v nasm >/dev/null 2>&1; then
+            echo "== nasm already present: $(nasm -v)"
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq nasm
+            echo "== $(nasm -v)"
+          fi
+
       # The other half of the edge in this file's header. The artifact is named
       # frontend-common-objects-<sha8>, so it is matched by pattern rather than by name, and
       # upload-artifact rooted it at libretro-common/ - so it restores straight back into place.
@@ -281,7 +319,13 @@ jobs:
           WORK: ${{ steps.work.outputs.work }}
         run: |
           set -euo pipefail
-          mapfile -t cores < <(ps4/shard-cores.sh --recipe "$RECIPE" "${{ matrix.shard }}" "$SHARDS")
+          if [ -n "${CORES_SUBSET:-}" ]; then
+            # Named on the dispatch. Deliberately NOT filtered against the recipe: a core the
+            # recipe skips is exactly the kind you want to try by hand.
+            read -r -a cores <<< "$CORES_SUBSET"
+          else
+            mapfile -t cores < <(ps4/shard-cores.sh --recipe "$RECIPE" "${{ matrix.shard }}" "$SHARDS")
+          fi
           [ "${#cores[@]}" -gt 0 ] || { echo "!! shard ${{ matrix.shard }} is empty" >&2; exit 1; }
           echo "== ${#cores[@]} cores: ${cores[*]}"
           # ⚠ --drop-clones EXPLICITLY, even though CI=true already selects it. The plan's rule
@@ -366,6 +410,75 @@ jobs:
             echo "   That is the harness or the toolchain, not $bad unrelated core(s)." >&2
             exit 1; }
 
+      # ⚠ THE LOGS OF WHAT DID NOT BUILD, BECAUSE WITHOUT THEM A FAILURE IS ONLY A WORD.
+      # ps4/build-cores.sh writes <core>.log (the make output), .link, .clone, .patch and
+      # .fself per core, and the manifest carries only the first 46 characters of one error.
+      # For mupen64plus_next that word was "glsm_ctl" - true, and not enough to act on: make
+      # runs with -k, so a compile that failed early surfaces as a missing symbol at link
+      # time, and the compile error itself was in a file nobody kept. An investigation then
+      # has to reproduce the whole build locally and still cannot see what the runner saw.
+      #
+      # Only for the cores that failed. A green shard's logs are 20 MB of nothing.
+      - name: Keep the logs of the cores that did not build
+        if: always()
+        # ⚠ WORK IS A STEP-LEVEL VARIABLE, NOT A JOB-LEVEL ONE. Without this the step died on
+        # `WORK: unbound variable` under set -u - and said so only inside its own log, which is
+        # the log nobody reads when the interesting failure is two steps earlier.
+        env:
+          WORK: ${{ steps.work.outputs.work }}
+        # ⚠ DIAGNOSTICS MUST NEVER REDDEN A BUILD, and the first version of this step did.
+        # GitHub runs `run:` under `bash -e`, so `[ -f x ] && cp x y && kept=1` returning 1
+        # because the file was absent killed the job - in the shards where every core built,
+        # which is to say the healthy ones. continue-on-error is the belt; the conditionals
+        # below are the braces.
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          mkdir -p out/logs
+
+          # ⚠ THE MANIFEST IS NOT ALWAYS THERE, and the first version of this step keyed on it.
+          # ps4/build-cores.sh treats "not one core produced a module" as systemic and exits
+          # before merging the manifest - which is precisely the single-core diagnostic run.
+          # The step then reported success and kept nothing, twice.
+          #
+          # So: the manifest narrows the selection when it exists, and its absence means take
+          # everything. A shard's worth of build logs is a few megabytes.
+          man="$WORK/out/cores.manifest"
+          if [ -f "$man" ]; then
+            while IFS=$'\t' read -r core result rest; do
+              [ -n "${core:-}" ] || continue
+              [ "$result" = "OK" ] && continue
+              for ext in log link clone patch fself; do
+                [ -f "$WORK/$core.$ext" ] && { cp -f "$WORK/$core.$ext" out/logs/ || true; }
+              done
+            done < "$man" || true
+          else
+            echo "== no manifest: the build did not get that far. Keeping every log."
+            for f in "$WORK"/*.log "$WORK"/*.link "$WORK"/*.clone "$WORK"/*.patch "$WORK"/*.fself; do
+              [ -f "$f" ] && { cp -f "$f" out/logs/ || true; }
+            done
+          fi
+
+          n="$(ls out/logs 2>/dev/null | wc -l)"
+          if [ "$n" -eq 0 ]; then
+            echo "== every core in this shard built; no logs kept"
+            exit 0
+          fi
+          echo "== kept $n log file(s):"
+          ls out/logs | sed 's/^/   /'
+
+          # ⚠ AND PRINT THEM HERE, not only into an artifact. An artifact costs a download and
+          # a second round trip to read; the errors are a few dozen lines and the run log is
+          # where somebody is already looking.
+          for f in out/logs/*.log; do
+            [ -f "$f" ] || continue
+            echo
+            echo "---------- $(basename "$f") : first errors ----------"
+            grep -nE 'error:|Error [0-9]|No such file' "$f" | head -25 || true
+            echo "---------- $(basename "$f") : last 25 lines ----------"
+            tail -25 "$f" || true
+          done
+
       # Zips and the index fragment, computed from the exact bytes about to be uploaded.
       # The fragment is named per shard: eight files called .index-extended would collide the
       # moment the publish job merges them into one directory.
@@ -394,6 +507,22 @@ jobs:
             out/index-fragment-${{ matrix.shard }}.txt
             out/cores-manifest-${{ matrix.shard }}.tsv
           if-no-files-found: error
+          retention-days: 7
+
+      # ⚠ THE LOGS TRAVEL SEPARATELY, AND THAT IS THE WHOLE POINT. The artifact above carries
+      # the built cores and refuses to upload nothing (if-no-files-found: error), which is
+      # right for cores and exactly wrong for diagnostics: a shard where NOTHING built has no
+      # .prx.zip, so the upload fails and takes the logs with it - the one case where the logs
+      # are the only thing worth having. Measured: a single-core run for mupen64plus_next
+      # produced no artifact at all.
+      - name: Upload the logs, whatever else happened
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: cores-logs-${{ matrix.shard }}
+          path: out/logs/**
+          if-no-files-found: ignore
           retention-days: 7
 
       # ⚠ A GREEN SHARD THAT QUIETLY DROPPED TWO CORES IS THE FAILURE THIS WHOLE CHANGE IS
@@ -549,8 +678,12 @@ jobs:
   # fails on its own is a different thing entirely and must not stop the other seven shipping.
   publish:
     needs: [plan, shard, fork]
+    # ⚠ NEVER PUBLISH A SUBSET. A run of two named cores would otherwise cut an index listing
+    # two cores and prune the other ninety-nine out of the bucket - the diagnostic run would
+    # take the release down with it.
     if: >-
       !cancelled()
+      && github.event.inputs.cores == ''
       && needs.plan.result == 'success'
       && needs.fork.result == 'success'
     runs-on: ubuntu-latest

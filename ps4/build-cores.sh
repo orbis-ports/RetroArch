@@ -124,8 +124,25 @@ fi
 
 mkdir -p "$WORK" "$OUT"
 
+# ⚠ -nostdsysteminc: THE BUILD HOST'S HEADERS ARE NOT PART OF THIS PLATFORM.
+# -isysroot does NOT stop clang searching /usr/include. Measured directly:
+#
+#     clang --target=x86_64-pc-freebsd12-elf -isysroot $TOOLCHAIN ... -E
+#       -> # 1 "/usr/include/GLES3/gl3.h"
+#
+# So a header the SDK, the overlay and Mesa all lack is silently taken from the machine doing
+# the building - this Linux desktop - and the result compiles, links and runs. That is how
+# mupen64plus_next built here for weeks and never once in CI, where there is no libgles-dev to
+# fall back to. The accident held only because those particular headers are Khronos's and
+# near-identical; nothing guarantees the next one will be.
+#
+# ⚠ -nostdinc, NOT -nostdsysteminc. The latter is a -cc1 flag the driver rejects, and
+# `-Xclang -nostdsysteminc` is accepted while doing nothing - measured, the host GLES header
+# still resolved through it. -nostdinc also drops clang's own builtin directory, so that one is
+# added back explicitly, and LAST: ahead of the SDK it would answer <stddef.h> from clang's copy
+# instead of the SDK's and quietly change what this port is built against.
 ORBIS_ARCH=(--target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables
-            -isysroot "$TOOLCHAIN"
+            -isysroot "$TOOLCHAIN" -nostdinc
             -DORBIS -D__ORBIS__ -D__PS4__ -DPS4 -D_BSD_SOURCE=1)
 
 # ⚠ THE INCLUDE ORDER IS NOT A PREFERENCE, AND C++ NEEDS A DIFFERENT ONE FROM C.
@@ -138,9 +155,38 @@ ORBIS_ARCH=(--target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables
 # library's abs into std:: and needs the C headers underneath it. This file had c++/v1 appended
 # LAST on its first draft, which is the trap Makefile.orbis and ps4/HANDOFF.md both already
 # describe. Writing a new tool next to a documented trap is not protection from it.
-C_INCLUDES=(-isystem "$ORBIS_COMPAT_DIR/include" -isystem "$TOOLCHAIN/include")
+# ⚠ THE GL HEADERS COME FROM MESA, AND WITHOUT THEM clang QUIETLY USES THE BUILD HOST'S.
+#
+# GLES3/gl3.h and its EGL neighbours live in the Mesa tree - $(ORBIS_MESA_SRC)/include, the same
+# path Makefile.orbis:392 gives the frontend. They are NOT in the SDK and NOT in the overlay.
+#
+# Leaving them out does not fail on a developer machine, which is the whole problem. Measured:
+#
+#     clang --target=x86_64-pc-freebsd12-elf -isysroot $TOOLCHAIN ... -E
+#       -> # 1 "/usr/include/GLES3/gl3.h"
+#
+# -isysroot does not stop clang falling back to /usr/include, so every GL core built here has
+# been compiling against this Linux desktop's GLES headers. It works, because those headers are
+# Khronos's and largely identical - it is an accident that happens to hold. On a runner with no
+# libgles-dev there is nothing to fall back to and the core fails with 'GLES3/gl3.h' file not
+# found, which is how mupen64plus_next has never once been in a release while building fine
+# on this machine.
+MESA_INCLUDES=()
+if [[ -n "${ORBIS_MESA_SRC:-}" && -f "$ORBIS_MESA_SRC/include/GLES3/gl3.h" ]]; then
+  MESA_INCLUDES=(-isystem "$ORBIS_MESA_SRC/include")
+else
+  echo "build-cores: ⚠ ORBIS_MESA_SRC is unset or has no GLES headers - GL cores will fall back" >&2
+  echo "             to whatever this machine has in /usr/include, or fail on a machine that" >&2
+  echo "             has none. Point it at a Mesa tree or bundle." >&2
+fi
+
+CLANG_RESOURCE_INC="$(clang -print-resource-dir)/include"
+
+C_INCLUDES=(-isystem "$ORBIS_COMPAT_DIR/include" "${MESA_INCLUDES[@]}"
+            -isystem "$TOOLCHAIN/include" -isystem "$CLANG_RESOURCE_INC")
 CXX_INCLUDES=(-isystem "$TOOLCHAIN/include/c++/v1"
-              -isystem "$ORBIS_COMPAT_DIR/include" -isystem "$TOOLCHAIN/include"
+              -isystem "$ORBIS_COMPAT_DIR/include" "${MESA_INCLUDES[@]}"
+              -isystem "$TOOLCHAIN/include" -isystem "$CLANG_RESOURCE_INC"
               -include orbis_prefix.h)
 CC_ORBIS="clang ${ORBIS_ARCH[*]} ${C_INCLUDES[*]}"
 CXX_ORBIS="clang++ ${ORBIS_ARCH[*]} ${CXX_INCLUDES[*]}"
@@ -245,16 +291,28 @@ fi
 # ⚠ SOME CORES NEED FLAGS THE RECIPE DOES NOT CARRY, and one needs its build type overruled.
 #
 # The recipe's build type is about the machine libretro-super was written for, not about this one.
-# mupen64plus_next is GENERIC_GL there because GLideN64 is its default renderer - but it also ships
-# paraLLEl-RDP over Vulkan, which is the renderer this console can actually run, and the core's
-# patch tree makes that the only one it offers. Skipping it on the recipe's say-so would have
-# skipped a Vulkan core for being an OpenGL one.
+# mupen64plus_next is GENERIC_GL there, and that turned out to be right for this console too -
+# but only after the frontend grew an OpenGL context driver. Until then the flags below asked for
+# paraLLEl-RDP over Vulkan, which was the only renderer that could run at all.
+#
+# ⚠ THAT IS NO LONGER TRUE AND THE FLAGS OUTLIVED IT. Measured on hardware, Shadows of the
+# Empire: GLideN64 with the HLE RSP is 60.41 fps and 5.2 ms of work in a 16.7 ms frame;
+# paraLLEl-RDP is 43 ms a frame. And the paraLLEl configuration does not even link here -
+# HAVE_PARALLEL_RDP=1 drops libretro-common/glsm from the build while GLideN64's sources, which
+# are compiled either way, still call glsm_ctl. It built on this machine only because a clone
+# from an earlier GLideN64 run still had glsm.o lying in it; a fresh clone in CI reported
+# "undefined symbol: glsm_ctl" and mupen64plus_next has never been in a release.
+#
+# So: no HAVE_PARALLEL_RDP, which is also what makes the patch tree's fallback choose
+# RDP_PLUGIN_GLIDEN64 (see 0002, guarded on that same define), and no LLE, because the HLE RSP is
+# what GLideN64 draws from - paraLLEl-RDP implements only the low-level entry point and pairs
+# with an HLE RSP as a black screen.
 #
 # Anything listed here is built whatever its build type says. The flags are the recipe's own for
 # that core, minus the ones platform=unix already sets.
 core_make_flags() {
   case "$1" in
-    mupen64plus_next) echo "HAVE_PARALLEL_RDP=1 HAVE_PARALLEL_RSP=1 HAVE_THR_AL=1 LLE=1 WITH_DYNAREC=x86_64 FORCE_GLES3=1" ;;
+    mupen64plus_next) echo "HAVE_THR_AL=1 WITH_DYNAREC=x86_64 FORCE_GLES3=1" ;;
     parallel_n64)     echo "HAVE_PARALLEL=1 HAVE_PARALLEL_RSP=1 HAVE_THR_AL=1 WITH_DYNAREC=x86_64" ;;
     *)                echo "" ;;
   esac
