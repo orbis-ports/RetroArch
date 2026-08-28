@@ -1209,3 +1209,153 @@ Hz. An NTSC copy of the same title would match the display exactly. Worth knowin
 anyone reads uneven pacing as a performance problem and optimises at it.
 
 `beetle_psx_dynarec_spgp_opt` is still `disabled` - the one recommended knob not applied.
+
+### Scan Directory: "Scanning unsuccessful, no database found"
+
+Two causes, both present, and neither is a defect in this port:
+
+`/data/retroarch/database/rdb/` was **empty**. `tasks/task_database.c:3447` reports exactly that
+message when the database list comes back size 0 and the scan is in LOOSE or STRICT mode. The
+file wanted is `Sony - PlayStation.rdb` from libretro-database (7709655 bytes).
+
+The core's `.info` declared **no `database` field**, so even with the .rdb present nothing
+associates a scanned disc with this core. `ps4/build.sh` in the core's fork now writes
+`database = "Sony - PlayStation"`, and the name must match the .rdb's filename exactly.
+
+⚠ **AND THE FILE-MODE RULE IS NOT ONLY ABOUT FILES.** The directories RetroArch creates come out
+`drwxr-x---`, which the FTP daemon cannot write into - so the upload "succeeded" and the
+directory stayed empty, twice, with no error anywhere. The writable ones (`cores`, `info`,
+`assets`, `shaders`, `system`, `roms`) are 777 only because they were chmod'ed by hand at some
+point. `chmod 777` the directory before putting anything in a fresh one.
+
+Both were fixed on the console by hand. For a shippable package the `.rdb` belongs in `/app0`
+alongside the core and its `.info`.
+
+## 2026-08-23 (late) — how many cores exist, and how many build
+
+`ps4/build-cores.sh` clones cores from a libretro-super recipe, builds them with this toolchain
+and links each into a `.prx`. **It does not patch their Makefiles** - Beetle PSX HW needed a
+hand-written `orbis` arm and there are 99 more candidates, which is 99 more of those.
+
+The trick that makes it work: the toolchain flags go INSIDE `$(CC)` and `$(CXX)`, not into
+`CFLAGS`. A libretro Makefile routinely does `CFLAGS := ...` and throws away what the caller
+passed; almost none of them rewrite CC. `platform=unix` then gives the core a sane arm, its own
+link fails (host driver, `-shared`), and the objects are collected and linked here.
+
+### The field
+
+    184   cores in libretro-super's cores-linux-x64-generic
+    162     plain Makefile (GENERIC)          the tractable class
+     17     CMAKE                             needs a toolchain file
+      5     GENERIC_GL                        ⚠ IMPOSSIBLE HERE - no OpenGL, only Vulkan
+     99   of the 184 also appear in the Vita recipe - already ported to a fixed console once
+
+### First sweep: 20 of 29
+
+    OK       fceumm gambatte snes9x2010 quicknes mednafen_ngp mednafen_wswan mednafen_vb
+             mednafen_lynx gme handy prosystem stella2014 tyrquake prboom race pokemini
+             snes9x2005 vba_next fmsx freeintv numero
+    LINK     genesis_plus_gx mednafen_pce_fast nestopia gearboy gearsystem picodrive vecx
+    COMPILE  mgba
+
+### ⚠ Three things the sweep found that no single core would have
+
+**LTO throws the whole libretro API away and the link reports success.** Several cores compile
+with `-flto` under `platform=unix`, so their `.o` files are bitcode - `llvm-nm` prints dashes
+where the address belongs. ld.lld links bitcode, runs LTO, and internalises everything
+unreachable from an entry point; a module has no entry point. `snes9x2010` linked to a 915 KiB
+ELF containing **zero** `retro_*` symbols, exit code 0. Fixed by naming all 25 libretro entry
+points with `-u`. The harness's "linked without retro_run" guard is what caught it and it earned
+its place on the first batch.
+
+**A .prx cannot borrow the frontend's libretro-common.** Cores call `retro_vfs_*_impl`,
+`cdrom_*` and friends without building them, because a shared object resolves them lazily
+against the frontend at load time. A module has its own symbol table. The harness archives the
+frontend's 116 libretro-common objects plus 138 it compiles itself (35 will not build here) and
+puts the **archive** after the core's own objects - so a core that did build its own copy keeps
+it, and nothing is duplicated.
+
+**FIONREAD was a trap, not an absence.** The SDK defines no `FION*` at all. Taking musl's would
+have been the obvious fix and would have been wrong: musl carries LINUX request numbers
+(`0x541B`) and this kernel encodes direction, length and group into the number
+(`FIONREAD = 0x4004667f`). Same shape as `MAP_ANON` being `0x0020` in the SDK's header and
+`0x1002` in the kernel. `orbis-compat/include/sys/ioctl.h` now derives them rather than copying
+them. ⚠ **Nothing in this workshop has yet called ioctl() on this console**, so these are
+reasoned, not measured.
+
+### The remaining failure classes, each with a shape
+
+    cdrom_lba_to_msf            libretro-common/cdrom/cdrom.c needs HAVE_CDROM, which CHANGES
+    (genesis_plus_gx,           the layout of libretro_vfs_implementation_file. Forcing it into
+     mednafen_pce_fast)         the shared archive would mix two struct layouts in one link -
+                                silent and worse than the missing symbol. Per-core work.
+
+    missing C++ class symbols   Their Makefiles compile straight from sources to the .so in ONE
+    (gearboy, gearsystem)       command and never write a .o, so there is nothing to collect.
+                                STATIC_LINKING=1 does not change it. Needs a real platform arm.
+
+    nestopia                    12 objects only; its own vendored code fails earlier.
+    picodrive                   dr_mp3.h: duplicate case value - a source/compiler disagreement.
+    vecx                        glIsEnabled. Correctly impossible: this port has no OpenGL.
+    mgba                        no objects and no errors - wrong makefile for the recipe entry.
+
+⚠ **A core that builds is not a core that works.** This harness reports what compiled. Every one
+of the twenty is unrun; the console is the only thing that can tell a working core from a
+linking one.
+
+### The whole recipe, built: 100 of 162
+
+Every `GENERIC` core in `cores-linux-x64-generic`, one at a time. **453 MB of `.prx` in
+`~/.cache/ps4-cores/out`**, with `cores.manifest` recording core, verdict, size and the upstream
+commit each was built from.
+
+⚠ **NOT IN /tmp, AND THAT IS NOT A DETAIL.** The first sweep's output lived in the session
+scratchpad; a cold reboot cleared tmpfs and took 52 built cores, every clone and the manifest
+with it. `build-cores.sh` already defaulted to `~/.cache/ps4-cores` and the default was being
+overridden on every call.
+
+    100  OK
+     45  LINK       an undefined symbol, named in the manifest
+     10  COMPILE    no objects at all
+      6  NO-ABI     linked, but without retro_run
+      1  CLONE      submodule fetch failed
+
+### Two classes closed during the sweep, worth 7 cores
+
+**`HAVE_CDROM=0`.** It gates passthrough to a *host CD device* - a real drive opened by path -
+which this console does not have, so the feature could not work here whatever it linked. It also
+adds a member to `libretro_vfs_implementation_file`, so the flag decides a **struct layout shared
+between objects**. Satisfying the resulting `cdrom_lba_to_msf` from the shared archive would have
+put two layouts of one struct into a single link: silent, and far worse than a missing symbol.
+
+**`ZSTD_trace_*` are undefined WEAK.** ld.lld leaves them undefined, which is what weak means.
+create-fself will not: it maps every remaining undefined symbol to a library NID, finds none, and
+refuses the module - ⚠ **with exit status 0**, so a script trusting the exit code sees success and
+no file. Fixed with real no-op definitions (`ps4/orbis_weak_stubs.c`).
+
+⚠ **And the first attempt at that fix did nothing, instructively:** the stubs went into the
+fallback *archive*, and **an archive member is never extracted to satisfy a weak undefined
+symbol**. They have to be passed as a plain object.
+
+### What is left, by cause rather than by core
+
+     8  OpenGL / X11        ⚠ NOT FIXABLE HERE and should not be listed as work. boom3, boom3_xp,
+                            craft, desmume, kronos, vecx, vitaquake2, vitaquake3. Note desmume2015
+                            (same system, software renderer) builds fine - several of these have a
+                            sibling that already works.
+     8  no .o at all        blastem, higan_sfc, higan_sfc_balanced, mame2016, mgba, rustynes,
+                            scummvm, squirreljme. Their Makefiles go from sources to the shared
+                            object in ONE command and never write an object. STATIC_LINKING=1 does
+                            not change it. Each needs a real platform arm - a patch.
+     7  vice_*              562 objects each, then undefined `log_cb`, `pix_bytes`, `opt_vkbd_alpha`.
+                            One family, one TU failing, one patch away from seven cores.
+     6  NO-ABI              bsnes2014, freej2me, hbmame, mame, openlara, stella. Built something,
+                            not a libretro core.
+     2  FLAC                yabasanshiro, yabause - vendored libFLAC not in the source list.
+     2  hiro::              bsnes, bsnes_hd_beta - byuu's GUI toolkit pulled into a libretro build.
+    12  one-offs            SDL_GetTicks, unzOpen2, sk_num, JS_ToInt32, wasm_rt_trap, mp3dec_start,
+                            osd_malloc, BurnDrvCps1944j, BurnSampleReset, inet_htons, ace::ace,
+                            ARMJIT_Memory, AMeteor, cEmuSCV, GetKeyState, inflateInit2_.
+
+⚠ **NONE OF THE HUNDRED HAS BEEN RUN.** The harness reports what compiled. A core that links and
+draws nothing is a pass here and a failure on the console, and only the console knows.

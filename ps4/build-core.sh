@@ -9,6 +9,14 @@
 #   --source   a source file, relative to --core, or absolute
 #   --common   a libretro-common directory to use INSTEAD of the core's own
 #   --name     display name; also writes a minimal <out>.info beside the output
+#   --no-content  this core runs with no content loaded (a game rather than an emulator)
+#
+# ⚠ --no-content IS WHAT PUTS A CORE IN THE MAIN MENU'S "Standalone Cores" ROW, and its absence
+# is why that row said "No Cores Available" with two perfectly good contentless cores installed.
+# The row is filtered by content_show_contentless_cores, which defaults to 2 =
+# MENU_CONTENTLESS_CORES_DISPLAY_SINGLE_PURPOSE (config.def.h:919), and that filter demands BOTH
+# supports_no_game AND single_purpose (menu/menu_contentless_cores.c:433). This template wrote
+# neither, so every core built by it was excluded from a list it belonged in.
 #
 # ⚠ THE .info IS WHAT MAKES THE MENU READABLE. RetroArch's core list shows the FILENAME
 # until it finds <core>.info in the core-info directory (/data/retroarch/info here); the
@@ -58,6 +66,7 @@ CORE_DIR=""
 OUT=""
 COMMON_DIR=""
 DISPLAY_NAME=""
+NO_CONTENT=0
 PRX=0
 EXTRA_SOURCES=()
 
@@ -69,6 +78,7 @@ while [[ $# -gt 0 ]]; do
     --source) EXTRA_SOURCES+=("$2"); shift 2 ;;
     --common) COMMON_DIR="$2"; shift 2 ;;
     --name)   DISPLAY_NAME="$2"; shift 2 ;;
+    --no-content) NO_CONTENT=1;   shift ;;
     *) echo "build-core: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -153,6 +163,8 @@ corename = "$DISPLAY_NAME"
 systemname = "$DISPLAY_NAME"
 manufacturer = ""
 categories = "Game"
+supports_no_game = "$([[ $NO_CONTENT -eq 1 ]] && echo true || echo false)"
+single_purpose = "$([[ $NO_CONTENT -eq 1 ]] && echo true || echo false)"
 authors = ""
 supported_extensions = ""
 license = ""

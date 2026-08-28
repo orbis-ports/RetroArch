@@ -916,7 +916,17 @@
 #if defined(HAVE_LIBRETRODB)
 #define DEFAULT_MENU_CONTENT_SHOW_EXPLORE true
 #endif
+#if defined(ORBIS)
+/* ⚠ OFF ON THIS PORT, BECAUSE THE ROW CAN ONLY EVER BE EMPTY HERE. Cores are hand-installed
+ * .prx modules and the package ships one emulator, so the "Standalone Cores" row has nothing
+ * to list and says "No Cores Available" on every boot - which reads as a broken core list
+ * rather than as an empty category, and sends whoever sees it looking for a fault that is not
+ * there. It cost exactly that once already. Anyone who installs a contentless core can turn
+ * the row back on in Settings -> User Interface -> Menu Item Visibility. */
+#define DEFAULT_MENU_CONTENT_SHOW_CONTENTLESS_CORES MENU_CONTENTLESS_CORES_DISPLAY_NONE
+#else
 #define DEFAULT_MENU_CONTENT_SHOW_CONTENTLESS_CORES MENU_CONTENTLESS_CORES_DISPLAY_SINGLE_PURPOSE
+#endif
 
 /* Shared with the Ozone driver. */
 #if defined(HAVE_XMB) || defined(HAVE_OZONE)
