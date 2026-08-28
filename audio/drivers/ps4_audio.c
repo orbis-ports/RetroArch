@@ -171,16 +171,46 @@ static void *ps4_audio_init(const char *device, unsigned rate,
    if (!(ps4 = (ps4_audio_t*)calloc(1, sizeof(*ps4))))
       return NULL;
 
-   ps4->handle = sceAudioOutOpen(ORBIS_USER_SERVICE_USER_ID_SYSTEM,
-         ORBIS_AUDIO_OUT_PORT_TYPE_MAIN,
-         0,
-         PS4_AUDIO_GRAIN,
-         PS4_AUDIO_RATE,
-         ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO);
+   /* ⚠ ONE PORT FOR THE LIFE OF THE PROCESS, BECAUSE THE SYSTEM DOES NOT GIVE THEM BACK.
+    *
+    * Measured on hardware across eight core switches: eight opens, eight closes, EVERY close
+    * returning 0x00000000 - and the ninth open failing with PORT_FULL. The handles counted
+    * down 0x20000007, 0x20000006 ... 0x20000000 and were never reissued. So the port is not
+    * being leaked by this driver; sceAudioOutClose reports success and the port stays spent.
+    *
+    * The port's parameters never vary - PS4_AUDIO_RATE, PS4_AUDIO_GRAIN and S16 stereo are
+    * constants here, and RetroArch is told the rate through *new_rate and resamples to it - so
+    * there is nothing a reopen could change. Hold the first one and hand it out again.
+    *
+    * ⚠ Deliberately never closed. A port that cannot be reused is worth nothing back, and the
+    * process exiting returns it anyway. */
+   {
+      static int32_t             shared_handle = -1;
+      static bool                shared_opened = false;
+
+      if (!shared_opened)
+      {
+         shared_handle = sceAudioOutOpen(ORBIS_USER_SERVICE_USER_ID_SYSTEM,
+               ORBIS_AUDIO_OUT_PORT_TYPE_MAIN,
+               0,
+               PS4_AUDIO_GRAIN,
+               PS4_AUDIO_RATE,
+               ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO);
+         if (shared_handle >= 0)
+            shared_opened = true;
+      }
+      ps4->handle = shared_handle;
+   }
 
    if (ps4->handle < 0)
    {
-      RARCH_ERR("[PS4] sceAudioOutOpen failed: 0x%08x\n", (unsigned)ps4->handle);
+      /* ⚠ 0x80260005 IS PORT_FULL, AND IT SHOULD NO LONGER BE REACHABLE. The port above is
+       * opened once per process precisely so this cannot happen; seeing it again means either
+       * something else in the process is opening MAIN ports, or the singleton is being
+       * defeated - not that this driver has started leaking. */
+      RARCH_ERR("[PS4] sceAudioOutOpen failed: 0x%08x%s\n", (unsigned)ps4->handle,
+            (unsigned)ps4->handle == 0x80260005u
+               ? " (PORT_FULL - a previous port was not closed)" : "");
       free(ps4);
       return NULL;
    }
@@ -344,8 +374,9 @@ static void ps4_audio_free(void *data)
       ps4->thread = NULL;
    }
 
-   if (ps4->handle >= 0)
-      sceAudioOutClose(ps4->handle);
+   /* ⚠ THE PORT IS NOT CLOSED HERE - see the note in ps4_audio_init(). Closing it returns
+    * success and consumes it permanently, which is how audio died after eight core switches. */
+   ps4->handle = -1;
    if (ps4->fifo)
       fifo_free(ps4->fifo);
    if (ps4->cond)
