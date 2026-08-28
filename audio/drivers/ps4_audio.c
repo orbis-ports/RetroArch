@@ -29,6 +29,18 @@
  *
  * ⚠ AND THE PORT OPENS SILENT. The volume after sceAudioOutOpen can be 0 on every channel,
  * so a driver that skips sceAudioOutSetVolume works perfectly and is inaudible.
+ *
+ * ⚠ AND IT NEEDS A THREAD OF ITS OWN. sceAudioOutOutput blocks until the grain it was given
+ * has been CONSUMED, so by the time it returns the port has nothing queued behind it. Fed
+ * from RetroArch's main loop that is a guaranteed underrun: the loop also blocks on vsync,
+ * so between the last write of one frame and the first of the next the port runs dry, and
+ * what a dry port sounds like is a click on every frame boundary. That is exactly what the
+ * first working build did.
+ *
+ * The fix is the shape ~/src/ps4doom uses and the one switch_thread_audio.c uses in this
+ * tree: a dedicated thread sitting in sceAudioOutOutput permanently, pulling from a ring
+ * buffer that write() fills. There is always a grain in flight, the frontend never blocks
+ * on the port, and an empty ring plays silence instead of stuttering.
  */
 
 #include <stdlib.h>
@@ -36,6 +48,8 @@
 
 #include <boolean.h>
 #include <retro_miscellaneous.h>
+#include <queues/fifo_queue.h>
+#include <rthreads/rthreads.h>
 
 #include <orbis/AudioOut.h>
 #include <orbis/UserService.h>
@@ -56,14 +70,65 @@
 
 typedef struct ps4_audio
 {
-   int32_t  handle;
-   /* One grain under construction. RetroArch writes whatever size it likes; the port
-    * accepts exactly one grain, so this is where the two meet. */
-   int16_t  grain[PS4_AUDIO_GRAIN * PS4_AUDIO_CHANNELS];
-   size_t   grain_fill;      /* samples, not frames */
-   bool     nonblock;
-   bool     running;
+   int32_t        handle;
+
+   fifo_buffer_t *fifo;
+   slock_t       *lock;
+   scond_t       *cond;
+   sthread_t     *thread;
+
+   /* The thread's own staging grain. Only the thread touches it, so it needs no lock. */
+   int16_t        grain[PS4_AUDIO_GRAIN * PS4_AUDIO_CHANNELS];
+
+   volatile bool  quit;
+   bool           nonblock;
+   bool           running;
+
+   /* ⚠ DIAGNOSTIC, AND DELIBERATELY BOUNDED. underruns is the number that says whether the
+    * thread is winning: it counts grains the ring could not fill, which is what a click
+    * used to be. A handful at startup is the pipeline filling; a rising count is the
+    * frontend not keeping up. */
+   uint64_t       grains;
+   uint64_t       underruns;
+   int32_t        last_rc;
 } ps4_audio_t;
+
+/* ⚠ SILENCE ON UNDERRUN, NOT A SHORT WRITE. The port takes exactly one grain and will not
+ * take a partial one, so an empty ring has to hand it something. Silence costs a click;
+ * skipping the call costs the port its continuity, which costs every following frame. */
+static void ps4_audio_thread(void *data)
+{
+   ps4_audio_t *ps4 = (ps4_audio_t*)data;
+
+   while (!ps4->quit)
+   {
+      size_t want = sizeof(ps4->grain);
+
+      slock_lock(ps4->lock);
+      if (FIFO_READ_AVAIL(ps4->fifo) >= want)
+         fifo_read(ps4->fifo, ps4->grain, want);
+      else
+      {
+         memset(ps4->grain, 0, want);
+         ps4->underruns++;
+      }
+      /* Whatever was waiting for room now has some. */
+      scond_signal(ps4->cond);
+      slock_unlock(ps4->lock);
+
+      ps4->last_rc = sceAudioOutOutput(ps4->handle, ps4->grain);
+      ps4->grains++;
+
+      if (ps4->grains <= 3
+            || (ps4->grains % (PS4_AUDIO_RATE * 10 / PS4_AUDIO_GRAIN)) == 0)
+         RARCH_LOG("[PS4] audio: %llu grains, %llu underruns, rc=%d\n",
+               (unsigned long long)ps4->grains,
+               (unsigned long long)ps4->underruns,
+               (int)ps4->last_rc);
+   }
+}
+
+static void ps4_audio_free(void *data);
 
 static void *ps4_audio_init(const char *device, unsigned rate,
       unsigned latency, unsigned block_frames, unsigned *new_rate)
@@ -76,9 +141,19 @@ static void *ps4_audio_init(const char *device, unsigned rate,
    sceUserServiceInitialize(NULL);
 
    rc = sceAudioOutInit();
-   /* Already initialised is not a failure - something else in this process got there
-    * first, which on a frontend that restarts its audio driver is the normal case. */
-   if (rc != 0 && rc != (int32_t)0x8026000d /* ALREADY_INIT */)
+
+   /* ⚠ ALREADY_INIT IS NOT A FAILURE, AND THE MAGIC NUMBER THIS USED WAS THE WRONG ONE.
+    * RetroArch initialises its audio driver twice - once at startup and again when content
+    * loads - so the second sceAudioOutInit in a process ALWAYS returns ALREADY_INIT. This
+    * tolerated 0x8026000d, copied verbatim from ~/src/ps4doom together with a comment
+    * calling it ALREADY_INIT. The SDK says otherwise: 0x8026000D is OUT_OF_MEMORY and
+    * ALREADY_INIT is 0x8026000E. So the driver tolerated an allocation failure and treated
+    * "already up" as fatal - exactly backwards - and audio died on the second init with
+    * "Failed to initialize audio driver. Will continue without audio."
+    *
+    * ps4doom has the same wrong constant and never noticed, because it initialises once.
+    * The named constant is used here so the question cannot come up again. */
+   if (rc != 0 && rc != (int32_t)ORBIS_AUDIO_OUT_ERROR_ALREADY_INIT)
    {
       RARCH_ERR("[PS4] sceAudioOutInit failed: 0x%08x\n", (unsigned)rc);
       return NULL;
@@ -107,53 +182,88 @@ static void *ps4_audio_init(const char *device, unsigned rate,
       vol[i] = 32768;
    sceAudioOutSetVolume(ps4->handle, 0xff, vol);
 
-   ps4->running = true;
+   /* The ring holds `latency` milliseconds. RetroArch's default is 64 ms, which at 48 kHz
+    * stereo s16 is 12288 bytes - twelve grains of headroom for the thread to draw on while
+    * the frontend is busy drawing a frame. A floor of four grains keeps a caller that asks
+    * for a very low latency from producing a ring the thread empties instantly. */
+   {
+      size_t fifo_size = (size_t)PS4_AUDIO_RATE * PS4_AUDIO_CHANNELS
+         * sizeof(int16_t) * (latency ? latency : 64) / 1000;
+      size_t floor_sz  = sizeof(ps4->grain) * 4;
 
-   if (new_rate)
-      *new_rate = PS4_AUDIO_RATE;
+      if (fifo_size < floor_sz)
+         fifo_size = floor_sz;
 
-   RARCH_LOG("[PS4] Audio up: %u Hz, S16 stereo, %u-frame grain.\n",
-         PS4_AUDIO_RATE, PS4_AUDIO_GRAIN);
+      ps4->fifo = fifo_new(fifo_size);
+      ps4->lock = slock_new();
+      ps4->cond = scond_new();
+
+      if (!ps4->fifo || !ps4->lock || !ps4->cond)
+      {
+         RARCH_ERR("[PS4] Could not create the audio ring.\n");
+         ps4_audio_free(ps4);
+         return NULL;
+      }
+
+      ps4->running = true;
+      ps4->thread  = sthread_create(ps4_audio_thread, ps4);
+
+      if (!ps4->thread)
+      {
+         RARCH_ERR("[PS4] Could not start the audio thread.\n");
+         ps4_audio_free(ps4);
+         return NULL;
+      }
+
+      if (new_rate)
+         *new_rate = PS4_AUDIO_RATE;
+
+      RARCH_LOG("[PS4] Audio up: %u Hz, S16 stereo, %u-frame grain, %u-byte ring.\n",
+            PS4_AUDIO_RATE, PS4_AUDIO_GRAIN, (unsigned)fifo_size);
+   }
    return ps4;
 }
 
 static ssize_t ps4_audio_write(void *data, const void *s, size_t len)
 {
-   ps4_audio_t   *ps4  = (ps4_audio_t*)data;
-   const int16_t *src  = (const int16_t*)s;
-   size_t         left = len / sizeof(int16_t);   /* samples */
-   size_t         done = 0;
+   ps4_audio_t *ps4  = (ps4_audio_t*)data;
+   size_t       done = 0;
 
-   if (!ps4 || !src)
+   if (!ps4 || !s || !ps4->fifo)
       return -1;
 
-   while (left > 0)
+   if (!ps4->running)
+      return (ssize_t)len;   /* stopped: consumed and discarded, not an error */
+
+   slock_lock(ps4->lock);
+
+   while (done < len)
    {
-      size_t room = (PS4_AUDIO_GRAIN * PS4_AUDIO_CHANNELS) - ps4->grain_fill;
-      size_t take = (left < room) ? left : room;
+      size_t avail = FIFO_WRITE_AVAIL(ps4->fifo);
 
-      memcpy(ps4->grain + ps4->grain_fill, src + done, take * sizeof(int16_t));
-      ps4->grain_fill += take;
-      done            += take;
-      left            -= take;
+      if (avail == 0)
+      {
+         /* ⚠ IN NON-BLOCKING MODE THE REST IS DROPPED, ON PURPOSE. That is fast-forward
+          * asking to run faster than real time; waiting for room would throttle it back to
+          * 1x, which is not a fast-forward. */
+         if (ps4->nonblock)
+            break;
 
-      if (ps4->grain_fill < PS4_AUDIO_GRAIN * PS4_AUDIO_CHANNELS)
-         break;
-
-      ps4->grain_fill = 0;
-
-      /* ⚠ sceAudioOutOutput BLOCKS until the grain has been consumed, and that is what
-       * paces the frontend when vsync is not doing it. In non-blocking mode - which is
-       * what fast-forward asks for - blocking here would throttle the run loop to real
-       * time, so the grain is dropped instead. Silence while fast-forwarding is what every
-       * other frontend does; a fast-forward that runs at 1x is not. */
-      if (!ps4->running || ps4->nonblock)
+         /* The thread signals every time it takes a grain, so this wakes within one grain
+          * period rather than spinning. */
+         scond_wait(ps4->cond, ps4->lock);
          continue;
+      }
 
-      sceAudioOutOutput(ps4->handle, ps4->grain);
+      if (avail > len - done)
+         avail = len - done;
+
+      fifo_write(ps4->fifo, (const uint8_t*)s + done, avail);
+      done += avail;
    }
 
-   return (ssize_t)(done * sizeof(int16_t));
+   slock_unlock(ps4->lock);
+   return (ssize_t)done;
 }
 
 static bool ps4_audio_stop(void *data)
@@ -167,6 +277,9 @@ static bool ps4_audio_stop(void *data)
     * pause, and the grain in flight would be lost either way. Writes are discarded while
     * stopped, which is what "stopped" has to mean for a port that only accepts whole
     * grains. */
+   /* The thread keeps running and keeps the port fed with silence. Tearing it down and
+    * standing it back up on every pause would mean an open/close cycle per menu entry, and
+    * a port that stops being written is a port that has to be primed again. */
    ps4->running = false;
    return true;
 }
@@ -178,9 +291,12 @@ static bool ps4_audio_start(void *data, bool is_shutdown)
    if (!ps4)
       return false;
 
-   ps4->running    = true;
-   /* Anything half-collected belongs to the audio from before the pause. */
-   ps4->grain_fill = 0;
+   slock_lock(ps4->lock);
+   /* Whatever is still in the ring belongs to the audio from before the pause. */
+   fifo_clear(ps4->fifo);
+   slock_unlock(ps4->lock);
+
+   ps4->running = true;
    return true;
 }
 
@@ -204,8 +320,29 @@ static void ps4_audio_free(void *data)
    if (!ps4)
       return;
 
+   if (ps4->thread)
+   {
+      ps4->quit = true;
+      /* The thread may be waiting for the port rather than for us, so it can take up to one
+       * grain period to notice. sthread_join waits for exactly that. */
+      if (ps4->lock)
+      {
+         slock_lock(ps4->lock);
+         scond_signal(ps4->cond);
+         slock_unlock(ps4->lock);
+      }
+      sthread_join(ps4->thread);
+      ps4->thread = NULL;
+   }
+
    if (ps4->handle >= 0)
       sceAudioOutClose(ps4->handle);
+   if (ps4->fifo)
+      fifo_free(ps4->fifo);
+   if (ps4->cond)
+      scond_free(ps4->cond);
+   if (ps4->lock)
+      slock_free(ps4->lock);
 
    free(ps4);
 }
@@ -226,15 +363,19 @@ static size_t ps4_audio_write_avail(void *data)
    if (!ps4)
       return 0;
 
-   /* What can be taken without blocking: the rest of the grain being filled. Anything
-    * beyond that reaches sceAudioOutOutput and waits. */
-   return ((PS4_AUDIO_GRAIN * PS4_AUDIO_CHANNELS) - ps4->grain_fill)
-      * sizeof(int16_t);
+   {
+      size_t avail;
+      slock_lock(ps4->lock);
+      avail = FIFO_WRITE_AVAIL(ps4->fifo);
+      slock_unlock(ps4->lock);
+      return avail;
+   }
 }
 
 static size_t ps4_audio_buffer_size(void *data)
 {
-   return PS4_AUDIO_GRAIN * PS4_AUDIO_CHANNELS * sizeof(int16_t);
+   ps4_audio_t *ps4 = (ps4_audio_t*)data;
+   return (ps4 && ps4->fifo) ? ps4->fifo->size : 0;
 }
 
 audio_driver_t audio_ps4 = {
