@@ -176,12 +176,101 @@ The Megadrive collection is a 50-part RAR and `unrar` lists only the volume it i
 reaching past "A - F" means reading through the set. Aladdin came out of part 1 and is enough to
 prove three cores; anything later is a longer extraction whenever it is actually wanted.
 
+### ⚠ `.bin` is not a system, and matching on it produced a wrong test
+
+The starter corpus was matched to cores by file extension, and `.bin` belongs to half the
+industry. `smsplus` and `gearsystem` were listed under "Mega Drive" because both accept `.bin` -
+they are **Sega 8-bit** cores (Master System, Game Gear, SG-1000) and share no hardware with the
+Mega Drive at all. Fed `Aladdin (U) [!].bin` on the console, `smsplus` drew a black screen, which
+is correct behaviour toward data it cannot read.
+
+Of the three, only `clownmdemu` is a Mega Drive core.
+
+Nothing in `/mnt/multimedia/Gry` carries Master System or Game Gear content, so those cores stay
+untestable until an `.sms` or `.gg` file exists. A black screen from the wrong system is not a
+result about the core and must not be recorded as one.
+
+### ⚠ Seven cores need a BIOS they do not declare, and my check could not see it
+
+The firmware audit above matched each core's `firmwareN_path` fields against the repository. That
+was complete with respect to what the cores DECLARE - and the arcade cores declare nothing. All
+seven say it in prose instead:
+
+    fbalpha2012  fbalpha2012_cps1  fbalpha2012_cps3  fbalpha2012_neogeo
+    mame2000     mame2003          mame2003_plus
+
+    notes = "(!) The BIOS files must be inside the ROM directory."
+
+So `fbalpha2012_neogeo` refused Metal Slug with `NeoGeo BIOS missing` and a list of files nothing
+had told us to fetch. The repository had `neogeo.zip` all along - sixteen variants of it - and the
+selection criterion was the thing at fault, not the source.
+
+⚠ **AND THE BIOS DOES NOT GO IN `system/`.** It goes beside the games, in the ROM directory,
+because an arcade BIOS is another ROM set rather than firmware. Now in
+`/data/retroarch/roms/arcade/`: `neogeo.zip`, `qsound.zip` (CPS2), `pgm.zip`, `skns.zip`,
+`decocass.zip` - 4.8 MB.
+
+CPS1 needs no BIOS, so `1941.zip` failing with `Cannot find driver` is a different problem: the
+set is from 2001 (`4143.bin`, `41_19.rom`, dated 1997-2001) and FBA 2012 wants far newer naming
+and CRCs. ⚠ Not confirmed - "cannot find driver" is about the set NAME, so something else may be
+going on - but the age of the contents is the first suspect.
+
+### ⚠ "Optional" firmware is not optional, and that is the third time the .info under-declared
+
+`a5200` refused to start with "missing bios". Its `.info` says:
+
+    firmware0_path = "5200.rom"
+    firmware0_opt  = "true"
+
+The original selection fetched only files marked NOT optional, so it was skipped - and the core
+does not run without it. The md5 in the same file's `notes` matched the copy in the repository
+exactly (`281f20ea4320404ec820fb7ec0693b38`), so the source was right and the filter was wrong.
+
+All 131 optional firmware files the repository carries are now on the console (70.5 MB). Together
+with the arcade BIOS in the ROM directory and the required set fetched earlier, `system/` holds
+everything `Abdess/retrobios` has for these hundred cores.
+
+Three separate ways the `.info` files under-declare what a core needs, all found by running:
+
+    arcade cores    say it in `notes` prose, with no firmware fields at all
+    a5200           marks a mandatory BIOS `opt = "true"`
+    nxengine        needs a whole game data directory, described only in `notes`
+
+⚠ **The lesson is not "read notes too".** It is that a core's own metadata is a hint, and the only
+reliable statement about what it needs is the core refusing to start and saying so.
+
+### Dinothawr ships its own game, in its own repository
+
+`notes` says it wants `Dinothawr.zip` and the file `dinothawr.game`. The data is not something to
+find anywhere: the core's repository carries it, in `dinothawr/` beside the source - 6.6 MB of
+levels, tiles and assets. The harness had already cloned it.
+
+On the console at `/data/retroarch/roms/dinothawr/`; load `dinothawr.game`.
+
+### The Onion Ports collection: one useful file, and a gap it does not fill
+
+`OnionUI/Ports-Collection` is a set of standalone ports for the Miyoo Mini - native ARM binaries,
+not libretro cores - so almost none of it applies here. Of 6839 files, exactly one matters:
+`BIOS/prboom.wad`, PrBoom's own helper lump, which the core needs alongside a game.
+
+⚠ **It ships PWADs and no IWAD.** `blood.wad`, `goldeneye.wad`, `counterstrike.wad` and the rest
+are Doom *mods*: each needs a base game to load on top of, and the collection carries none. A
+PWAD alone will not start PrBoom.
+
+So the base came from **Freedoom 0.13.0**, which is free and drop-in - `freedoom1.wad` and
+`freedoom2.wad`, 55 MB together, in `roms/doom/` beside `prboom.wad`. Load `freedoom1.wad`.
+
+Nothing in the collection serves `tyrquake`, `ecwolf` or `reminiscence`: no `pak0.pak`, no
+`ecwolf.pk3`, no Wolfenstein or Flashback data.
+
 ## ⚠ Two things this list cannot tell you
 
-**A declared format is not a working format.** `supported_extensions` is what the core accepts on
-a working platform. Compressed formats (`.zip`, `.chd`, `.7z`) lean on code paths this port has
-never exercised, so if a core refuses a `.zip` try the bare file before concluding the core is
-broken.
+**A declared format is not a working format** - though `.zip` now is. That warning stood until
+`xrick` played straight out of `data.zip` on 2026-08-25: the core declares `zip` as its only
+extension and RetroArch read it, so libretro-common's archive reader works on this console. The
+starter corpus is still extracted, and `snes/Super Mario World.zip` still sits beside the `.smc`
+for the same reason - one proof is not the same as a tested path, and `.chd` and `.7z` remain
+unexercised.
 
 **Nothing here has been run.** Every core in this list built and linked and that is all that is
 known about it - see `ps4/CORE-STATUS.md`, where every row still says `untested`.
