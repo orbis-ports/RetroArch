@@ -1762,13 +1762,22 @@ static const char * const *font_renderer_stb_get_default_fonts(
       "vs0:data/external/font/pvf/n023055ms.ttf",
       "vs0:data/external/font/pvf/n023055ts.ttf",
 #elif defined(ORBIS)
-      "/preinst/common/font/c041056ts.ttf",
-      "/preinst/common/font/d013013ds.ttf",
-      "/preinst/common/font/e046323ms.ttf",
-      "/preinst/common/font/e046323ts.ttf",
-      "/preinst/common/font/k006004ds.ttf",
-      "/preinst/common/font/n023055ms.ttf",
-      "/preinst/common/font/n023055ts.ttf",
+      /* ⚠ THESE ARE THE FILES THE CONSOLE ACTUALLY HAS. The list here used to be the Vita's
+       * seven PVF names above with the directory swapped for /preinst/common/font -- not one
+       * of them exists on a PS4, so the system-font search always came back empty and
+       * anything that wanted a TTF got nothing. Read off a retail console's
+       * /preinst/common/font.
+       *
+       * ⚠ AND THE ORDER IS NOT ALPHABETICAL, IT IS BY WHAT stb_truetype CAN PARSE. The
+       * console's own UI font is SST, which ships as .otf with CFF outlines, and
+       * stb_truetype reads TrueType glyf outlines - it does not do CFF. DFHEI5-SONY.ttf is
+       * the one genuine TrueType file in that directory, so it goes first and the OTFs
+       * follow as a fallback that may well not load. If text is missing rather than
+       * mis-shaped, this is why. */
+      "/preinst/common/font/DFHEI5-SONY.ttf",
+      "/preinst/common/font/SST-Medium.otf",
+      "/preinst/common/font/SST-Roman.otf",
+      "/preinst/common/font/SST-Light.otf",
 #elif !defined(__WINRT__)
       "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
       "/usr/share/fonts/TTF/DejaVuSans.ttf",

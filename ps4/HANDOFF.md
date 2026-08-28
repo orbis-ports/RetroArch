@@ -190,8 +190,8 @@ Known gaps, written into the source at the point they matter rather than listed 
   why the menu is unaffected.
 * **The menu replaces the frame, it does not blend over it** - the scaler converts, it does not
   composite.
-* **The aspect-ratio setting is accepted and ignored** - the driver preserves the source's own
-  pixel ratio, so a core asking for 4:3 from a 256x224 buffer is drawn at 8:7.
+* ~~The aspect-ratio setting is accepted and ignored~~ - fixed once Vulkan ran beside it and
+  honoured the same config, which is how the divergence became visible at all.
 * **1080p is unmeasured.** Every frame is a scale into 2.07 million pixels on a Jaguar core. If
   60 Hz does not hold, 720p halves the fill; PLAN.md says settle this by measurement.
 * **Alpha is left as the scaler wrote it.** ps4doom ORed `0xFF000000` into every pixel and never
@@ -336,3 +336,244 @@ along, dated from an earlier boot; the evidence for the claim was an FTP listing
 `head -30` before it reached `retroarch/` alphabetically. The change that came out of it - passing
 `NULL`, and checking the result - is kept on its own merits, and its comment now says what actually
 happened.
+
+---
+
+## 2026-08-22 — Vulkan on RADV, and where the close-hang is not
+
+RetroArch draws through Mesa's RADV on the console. 19 456 frames in one run at `frame 16683 us`
+— the same 60 Hz the software driver holds — and the scan-out is the zero-copy path, not a copy:
+
+    wsi/orbis: scan-out up - 1920x1080 pitch 1920, 4 swapchain buffer(s), A8B8G8R8_SRGB linear
+               - ZERO COPY, the flip shows what the GPU rendered into
+    wsi/orbis: the scan-out copy took 0 us for 8100 KiB (worst 27 us over 19 456 frames)
+
+### ⚠ Vulkan teardown works, and this is the first evidence anywhere that it does
+
+Every title built against this Mesa hangs when the console closes it. Nothing had established
+whether the driver teardown was the thing that wedged, because **no capture from this console had
+ever contained `wsi/orbis: scan-out down`** — the titles that came before end by idling or by
+CE-34878-0, and both routes skip `vkDestroyInstance` entirely. The path had never run.
+
+Forcing it from a live process — load a core, then Close Content, which tears the video driver
+down and builds it again — gives:
+
+    15:19:26.718  wsi/orbis: scan-out down after 493 flip(s)
+    15:19:26.719  wsi/orbis: scan-out up - 1920x1080 ...
+    15:19:26.719  [PS4] Vulkan up: 1920x1080 swapchain on RADV.
+
+**One millisecond, clean, and it comes straight back up.** So the close-hang is not in destroying
+the driver. It is in terminating the process while RADV is live.
+
+That splits a problem this port did not create and cannot fix alone. And the next cut came back
+narrower than expected: **Close Content, then Quit, exits cleanly even on the Vulkan driver** — and
+Close Content re-initialises the driver, so RADV is live at that point. "RADV alive at kill time" is
+therefore NOT the condition. What is left is the combination with a loaded core; the .prx alone was
+fine for a whole session on the software driver, and Vulkan alone is fine here. Nobody has narrowed
+it further than that yet.
+
+Practically it also means the console no longer has to be restarted between tests, which is what
+made every experiment above expensive.
+
+⚠ RetroArch is a better instrument for this than the title that first hit it: the teardown is one
+menu entry rather than an exit, repeatable in a single session, with the log flowing throughout.
+
+### A side effect of the hang, worth knowing before it wastes an hour
+
+**The config is never saved.** RetroArch writes `retroarch.cfg` on a clean exit, and there are no
+clean exits yet — so a driver picked in the menu is forgotten on the next launch, every time. The
+file on the console was four hours stale while the menu showed the right thing. The Vulkan default
+now comes from `configuration.c` rather than from a file that does not get written.
+
+### The software scaler is much more expensive for RGB565 cores
+
+    XRGB8888 source:  scale  6 124 us/frame   (37% of a 16.67 ms budget)
+    RGB565   source:  scale 14 450 us/frame   (87%)
+
+Both at 320x240 into the same viewport, so the difference is the pixel format alone: an XRGB8888
+source is already the scaler's internal format, and RGB565 costs a whole extra pass — convert in,
+scale, convert out. 87% of the frame leaves almost nothing for a core, so on the software path a
+16-bit core is the demanding case and a 32-bit one is not. Untouched for now because Vulkan is the
+path that matters, but it is the number to remember if the software driver is ever the fallback for
+a real core.
+
+---
+
+## 2026-08-22 — Phase 7 is done: XMB on RADV, icons and text
+
+The GPU menus are back. XMB draws through the Vulkan driver's texture path with the monochrome
+icon theme and readable text, which is the visible half of what Phase 7 was for — the software
+build has RGUI and nothing else, because RGUI is the only menu driver that rasterises itself.
+
+Two things had to be true and only one of them was:
+
+* **The GPU menus need a driver that can carry them.** RADV provides it. They are enabled whenever
+  `HAVE_VULKAN=1` and off otherwise, so the software build is unchanged.
+* **They need assets, and the console had none.** `/data/retroarch/assets` was an empty directory
+  that `dir_check_defaults` had created and nothing had ever filled. 16 MB of
+  `libretro/retroarch-assets` — `xmb/monochrome`, `ozone`, and two fonts from `pkg` — copied over
+  FTP is enough for both drivers.
+
+⚠ **The system-font list was pointing at files that do not exist.** It was the Vita's seven PVF
+names with the directory swapped to `/preinst/common/font`; a retail console's own directory has
+`DFHEI5-SONY.ttf` and the SST family and none of those seven. Fixed, and ordered by what
+`stb_truetype` can parse rather than alphabetically: SST is `.otf` with CFF outlines and
+stb_truetype reads TrueType `glyf`, so the one real TTF goes first. In practice
+`assets/pkg/fallback-font.ttf` is what XMB uses, so the system list is now a spare rather than a
+requirement — but a spare that named seven absent files was worth nothing.
+
+### Where the port stands
+
+| | |
+|---|---|
+| build | 239 objects, no warnings, no libc shims written |
+| video, software | 1080p @ 60 Hz measured, 6.1 ms/frame for a 32-bit core |
+| video, Vulkan | RADV, 1080p @ 60 Hz, zero-copy scan-out |
+| menus | RGUI on software; XMB, Ozone, MaterialUI, widgets on Vulkan |
+| input | DualShock 4, digital and analog |
+| audio | 48 kHz, threaded, no underruns under load |
+| cores | static and `.prx`; saves survive across both |
+| packaging | `.pkg`, `make send` over lftp |
+
+### Still open
+
+* **The close-hang**, which this port did not create: every title on this Mesa has it. Narrowed
+  today — driver teardown is clean, and Close Content followed by Quit exits properly even on
+  Vulkan, so the condition involves a loaded core rather than RADV being live.
+* **Slang shaders** compile in and have never been run.
+* **Assets are hand-copied.** Nothing ships them and nothing tells a user they are missing; XMB
+  without them looks like a menu driver that failed to start.
+* **The RGB565 software path** costs 14.4 ms of a 16.7 ms frame, against 6.1 ms for XRGB8888.
+
+---
+
+## 2026-08-22 — slang shaders run, and Beetle PSX HW builds as a 17 MB module
+
+**Slang shaders work on hardware.** `crt/crt-geom.slangp` renders. That is the whole chain
+executing for the first time: `.slang` -> glslang (compiled into the eboot) -> SPIR-V ->
+SPIRV-Cross -> RADV/ACO -> GCN ISA on Liverpool, compiled at run time on the console. 12 MB of
+`libretro/slang-shaders` (crt, interpolation, misc) copied to `/data/retroarch/shaders`.
+
+**Beetle PSX HW is built and on the console** — 113 objects, a 17 MB `.prx` with 55 `retro_*`
+exports. Three things had to be settled to get there, and each is general rather than specific to
+this core:
+
+* ⚠ **A dynarec needs a mirrored-mapping story this platform does not have.** Lightrec maps the
+  same PSX RAM pages at several addresses through `memfd_create`/`MAP_SHM`; neither exists here
+  (`libretro.c:2345-2574`). Built with `HAVE_LIGHTREC=0`, so the MIPS interpreter. Any dynarec core
+  will hit the same wall, and it is its own piece of work.
+* ⚠ **A core must use the Vulkan headers it was written against, not the driver's.** Forcing
+  Mesa's current `vulkan_core.h` broke it on `VK_IMAGE_TYPE_RANGE_SIZE`, an enum removed from the
+  spec years after this core started using it. The rule that the loader shim needs the exact
+  headers RADV was built against does NOT generalise to consumers: a core is an ordinary Vulkan
+  client and the ABI is backward compatible. The frontend is the special case, not the core.
+* ⚠ **The core's Makefile has the stale-object problem too.** Turning `HAVE_LIGHTREC` off left
+  `cpu.o` compiled against the old flags, and the link failed on `lightrec_destroy` for a source
+  file that no longer referenced it. Same shape as the one fixed in `Makefile.orbis`; the fix
+  there was a flags stamp, the fix here was `find -name '*.o' -delete`.
+
+The core's own Makefile grew an `orbis` platform arm - the same shape as its `vita` one - which
+compiles the objects; the archive and the `create-fself --lib` step are done outside it, because a
+libretro module here is a PRX rather than a shared object.
+
+### D3's last unknown, answered
+
+The plan said 185 KB proves the mechanism and not the scale. 17 MB is the scale, and it links.
+Whether it LOADS at that size is still for the console to say.
+
+### What it needs before it can run
+
+A PlayStation BIOS in `/data/retroarch/system` (`scph5500/5501/5502.bin`) and a disc image. Neither
+is something this port can supply.
+
+---
+
+## 2026-08-22, close of day — hardware render works, and one core draws it wrong
+
+Beetle PSX HW runs Spyro 3 through RADV with the libretro hardware-render callback: the core is
+handed a Vulkan context and builds its own pipelines on this driver. Nothing about that path had
+ever run — until today RADV only drew what RetroArch told it to, and now foreign graphics code
+does. 40 fps on the MIPS interpreter, which is more than expected with no dynarec.
+
+The picture is wrong in a specific way: the static scene is correct — sky, terrain, castle,
+lighting, colours — and every animated model is shredded, with one quad showing stripes of garbage
+where a texture belongs.
+
+### What the elimination found, in order
+
+Each of these cost one experiment and each removed a whole class of cause.
+
+1. **The core's own software renderer draws the same content correctly.** So the geometry reaching
+   the GPU is right, and the GPU's reading of it is not. That rules out the CPU side entirely,
+   including the interpreter we are forced onto by `HAVE_LIGHTREC=0`.
+2. **`ORBIS_3D_LINEAR=1` and `ORBIS_NO_TESS=1` were not applied, and now are.** RetroArch never
+   read `/data/tempest-env.txt`, so it had been running the driver in a configuration no other
+   title runs in — see the commit; the file itself says those two "are not options". Applying them
+   did **not** change the picture, which is worth knowing on its own: this artefact is not the
+   tiling that file exists to avoid.
+3. **Doubling the internal resolution changes nothing.** Different resolutions mean different
+   pipeline variants; a shader miscompile would have moved. It did not, so ACO is not the first
+   suspect.
+
+### Where that leaves it: the vertex attribute path
+
+`rhi/rhi_lib_vulkan.c:6032-6038` declares seven vertex attributes, and **four of the seven are
+integer formats**:
+
+    0  R32G32B32A32_SFLOAT   position
+    1  R32G32B32A32_SFLOAT   color
+    2  R8G8B8A8_UINT         window      <-- integer
+    3  R16G16B16A16_SINT     pal_x       <-- integer
+    4  R16G16B16A16_SINT     u  (UV)     <-- integer
+    5  R16G16B16A16_UINT     min_u       <-- integer
+    6  R32G32B32A32_SFLOAT   fog
+
+Attributes 3 and 4 are palette and texture coordinates. A quad showing stripes of garbage instead
+of a texture is what wrongly fetched UVs look like. Integer vertex formats are a far less travelled
+path in any driver, and more so on GFX7.
+
+⚠ **This is answerable with the CTS already ported to this console, without RetroArch, without
+Spyro and without guessing:** `dEQP-VK.pipeline.*vertex_input*` tests attribute fetch per format
+and in combination. If one of those four fails, the cause is named to the format.
+`/data/deqp-cases.txt` currently holds 49 `api.object_management` cases from an earlier
+investigation and has not been touched.
+
+### ⚠ A fourth knob with no reader
+
+`ORBIS_TILE_MODE` was going to be the next experiment. It has exactly one occurrence in mesa-ps4:
+
+    src/amd/common/ac_orbis_drm.c:4412
+       getenv("ORBIS_TILE_MODE") ? getenv("ORBIS_TILE_MODE") : "unset",
+
+— printing its own value into a log line. Nothing acts on it. `tempest-env.example.txt` documents
+it as working and lists three other names that were found readerless on 2026-08-21; this is a
+fourth. Setting it would have produced exactly what that file warns about: "the run comes back
+clean and reads as a measurement."
+
+### What a console operator has to know
+
+Delivery over FTP is a two-user problem in both directions, and the modes are not uniform:
+
+    .prx  (modules)       777   must be executable; sceKernelLoadStartModule loads them as modules
+    data files            666   BIOS, discs, .info, fonts, shaders
+    directories           777
+
+Setting `666` on a core makes it fail to load with no useful message. `mkdir` on this platform now
+creates 0777 (`vfs_implementation.c`), but files written by the FTP daemon are its own and nothing
+on the RetroArch side controls them.
+
+Cores must be named `<name>_libretro.prx` with a matching `<name>_libretro.info`, and
+`/data/retroarch/info/core_info.cache` must be deleted after adding one — a cache built while the
+info directory was half-populated stays empty and the menu says "No cores available" for ever,
+which then presents as an empty content browser because a frontend with no core info has no
+extension filter.
+
+### Still open
+
+* The vertex-attribute question above.
+* **The close-hang**, which every title on this Mesa has. Narrowed: driver teardown is clean, and
+  Close Content followed by Quit exits properly, so the condition involves a loaded core.
+* **`orbis_paths.cpp:19` hard-codes `/data/OpenGothic/`** as the anchor for relative paths. Every
+  relative path RetroArch opens - and it does open some, `Main Menu.png` among them - lands in
+  another title's directory. Flagged on 2026-08-21 as harmless; it is not.
+* Assets, shaders and cores are hand-copied, and nothing tells a user when they are missing.

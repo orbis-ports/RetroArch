@@ -185,14 +185,102 @@ static void frontend_orbis_get_env(int *argc, char *argv[],
 
 static void frontend_orbis_deinit(void *data) { }
 
-/* â  DO NOT RETURN FROM main() ON THIS CONSOLE. Returning tears the process down outside
- * the system's expected path and pops CE-34878-0, which reads to a user as a crash.
- * ps4_idle_forever() holds the process on a slow heartbeat instead - and returns anyway
- * when the host left autoexit=1 in /app0/ps4-run.cfg, which is how an automated run
- * still gets an exit code out of the same bytes. */
+/* â  THIS IDLED FOREVER, AND THAT WAS THE WRONG POLICY FOR A FRONTEND.
+ *
+ * The rule it was copied from is real: returning from main() on a retail console tears the
+ * process down outside the system's expected path and pops CE-34878-0, which reads to a
+ * user as a crash. ps4_idle_forever() exists so a DEMO - something with no quit, that would
+ * otherwise fall off the end of main() - holds the screen instead of showing that dialog.
+ *
+ * A frontend is not a demo. It has a Quit entry, and the console has a close button, and
+ * both of them mean "end". Holding the process on a heartbeat turns either into a hang that
+ * only a console restart clears - which is exactly what this port did.
+ *
+ * â  AND IT IS THE SECOND HALF OF A PROBLEM THIS PORT DOES NOT OWN. Every title built
+ * against this workshop's Mesa hangs on close; OpenGothic hit it first and now dies visibly
+ * rather than hanging, which is the same trade being made here. The dialog is ugly and the
+ * process ends; idling is tidy and it does not. Until the driver-side question is answered,
+ * ending is the better half. */
 static void frontend_orbis_shutdown(bool unused)
 {
-   ps4_idle_forever("retroarch shutdown");
+   ps4_log("shutdown requested - ending the process rather than idling; expect CE-34878-0");
+}
+
+/* ⚠ THE DRIVER'S KNOBS, AND TWO OF THEM ARE NOT OPTIONAL.
+ *
+ * This workshop's RADV port reads its configuration from the environment, and the titles
+ * that came before it set that environment by reading a file at startup and setenv()ing
+ * every line - see ~/src-ps4/OpenGothic/ps4/tempest-env.example.txt, which is the normative
+ * description of the format and of what each knob does.
+ *
+ * RetroArch did not read it, and ran the driver in a configuration no title runs in. That
+ * file says, in as many words:
+ *
+ *     ⚠ TWO OF THESE ARE NOT OPTIONS. ORBIS_3D_LINEAR=1 and ORBIS_NO_TESS=1 are the
+ *     configuration this port runs on, and BOTH are off in the driver unless this file
+ *     turns them on. [...] the title then loads and crashes on entering 3D - measured
+ *     2026-08-19, twice, same binary, only this file different.
+ *
+ * The symptom here was not a crash but a picture: Beetle PSX HW's Vulkan renderer drew the
+ * static scene correctly and shredded every animated model, with one quad showing stripes
+ * of garbage where a texture belonged - which is what an image read with the wrong tiling
+ * looks like. The same content through the core's software renderer was correct, so the
+ * geometry reaching the GPU was fine and the GPU's reading of it was not.
+ *
+ * ⚠ SET BEFORE ANYTHING TOUCHES VULKAN. The driver reads these with getenv() when it first
+ * needs them, and by the time a swapchain exists it is too late. First statement of the
+ * frontend's life, right after the log channel.
+ *
+ * The file is the driver's rather than any title's, so the shared name is read as well as
+ * ours: a knob discovered while debugging one title belongs to whoever runs the driver
+ * next. */
+static void frontend_orbis_apply_env_file(const char *path)
+{
+   char  line[512];
+   FILE *f = fopen(path, "r");
+   int   applied = 0;
+
+   if (!f)
+      return;
+
+   while (fgets(line, sizeof(line), f))
+   {
+      char *eq, *key, *val, *end;
+
+      /* Comments and blanks. */
+      key = line;
+      while (*key == ' ' || *key == '\t')
+         key++;
+      if (*key == '#' || *key == '\n' || *key == '\r' || *key == '\0')
+         continue;
+
+      if (!(eq = strchr(key, '=')))
+         continue;
+      *eq = '\0';
+      val = eq + 1;
+
+      /* ⚠ TRIM BOTH SIDES. The format's own documentation warns that a trailing space in a
+       * value "would otherwise read as a different experiment" - a knob that silently means
+       * something else is worse than one that is absent. */
+      end = eq - 1;
+      while (end >= key && (*end == ' ' || *end == '\t'))
+         *end-- = '\0';
+      while (*val == ' ' || *val == '\t')
+         val++;
+      end = val + strlen(val) - 1;
+      while (end >= val && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r'))
+         *end-- = '\0';
+
+      if (!*key)
+         continue;
+
+      setenv(key, val, 1);
+      ps4_log("env: %s=%s  (from %s)", key, val, path);
+      applied++;
+   }
+
+   fclose(f);
+   ps4_log("env: %d line(s) applied from %s", applied, path);
 }
 
 static void frontend_orbis_init(void *data)
@@ -200,6 +288,11 @@ static void frontend_orbis_init(void *data)
    /* First thing the port does: bring up the log channel and read the run config.
     * ps4_log() and the termination policy both answer out of this call. */
    ps4_app_init("retroarch", PS4_APP_STAMP);
+
+   /* The driver's configuration, before anything can ask the driver for anything. The
+    * shared file first, so a per-title one can override it. */
+   frontend_orbis_apply_env_file("/data/tempest-env.txt");
+   frontend_orbis_apply_env_file("/data/retroarch-env.txt");
 
    /* Take the flexible-memory reading before the frontend has allocated anything much.
     * There is no way to ask this kernel for the flexible ceiling, so the first reading
