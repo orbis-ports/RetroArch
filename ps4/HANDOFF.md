@@ -852,8 +852,10 @@ the `orbis` arm uncommitted in its working tree, exactly as it had been left.
 The search was of `~` and `~/src-ps4`. A scratchpad is where a session is *told* to put
 working files, so it is the first place to look for a missing one and it was not looked at.
 The tree is now `~/src-ps4/beetle-psx-libretro`, branch `ps4-support`, origin
-`git@github.com:orbis-ports/beetle-psx-libretro.git` (not yet pushed - the repository may not
-exist yet), upstream `libretro/beetle-psx-libretro`. The recovered arm is its first commit, so
+`git@github.com:orbis-ports/beetle-psx-libretro.git`, upstream `libretro/beetle-psx-libretro`.
+(This said "not yet pushed - the repository may not exist yet"; checked 2026-08-28, the remote's
+`refs/heads/ps4-support` is `b0b759e`, the same commit as the local branch. The work is not
+stranded on one machine.) The recovered arm is its first commit, so
 the Lightrec work reads as a diff against it rather than as one lump.
 
 ### The fork is one fork, and the grep the entry above asked for has been run
@@ -1613,14 +1615,76 @@ frontend's copy, so a copy inside the module would be empty. `ps4/orbis_gl_forwa
 thunks are assembly because a C forwarder needs the exact prototype of all 133 and a wrong one
 is not a compile error - it is arguments in the wrong registers, silently.
 
-### Open: framebuffer emulation and depth
+### ~~Open: framebuffer emulation and depth~~ SOLVED 2026-08-28
 
-With `Framebuffer Emulation` ON the depth is wrong - geometry behind the camera draws in front.
-Turning it off fixes it and is the current recommendation. That localises the fault to GLideN64's
-own FBOs on this driver rather than to the context, and leaves `EnableFragmentDepthWrite` and
-`EnableCopyDepthToRDRAM` as the next two things to bisect. Untested, and it is the first time
-GLideN64 has run over zink on this GPU - the fault could be in any of GLideN64, zink, RADV or
-these thunks.
+⚠ **Read the two entries at the end of this file before anything below.** The cause was GLideN64
+throwing the depth attachment away over a one-pixel width difference, on GLES only; it is fixed in
+`ps4/core-patches/mupen64plus_next/0008` and confirmed on hardware. The suspects named below were
+in the wrong place, and the account of how that was narrowed is worth more than they are.
+
+With `Framebuffer Emulation` ON the depth is wrong. Turning it off fixes it and is the current
+recommendation. It is the first time GLideN64 has run over zink on this GPU, so the fault could be
+in any of GLideN64, zink, RADV or these thunks.
+
+⚠ **THE SYMPTOM WAS FIRST WRITTEN DOWN HERE AS "geometry behind the camera draws in front" AND
+THAT WAS AN INTERPRETATION, NOT AN OBSERVATION.** Re-tested on hardware on 2026-08-28, Shadows of
+the Empire: **the player's ship draws behind every other 3D object in the scene** - an enemy far
+away appears in front of it, and bases on the map draw over it. Collisions still fire at the right
+moment, so the game's own state is untouched and this is the renderer alone. That is a different
+statement from the first one and it points somewhere else: "behind the camera draws in front" reads
+as a clipping fault, and "the first thing drawn loses to everything drawn after it" reads as **no
+depth test at all**.
+
+**Read from the source, three candidates, ranked.** All three were found in the clone at `f275caf`
+and none has been measured yet.
+
+⚠ **1. GLideN64 can drop the depth attachment entirely, and only on GLES.**
+`FrameBufferList::attachDepthBuffer` (`FrameBuffer.cpp`) will only attach a depth buffer whose
+texture matches the colour buffer's width, and the test it uses is chosen by
+`Context::WeakBlitFramebuffer`, which **is `isGLESX`**:
+
+    GLES     goodDepthBufferTexture = depthTexture->width == colour->width     exact
+    desktop  goodDepthBufferTexture = depth >= colour || |m_width difference| < 2
+
+On a mismatch it sets `pCurrent->m_pDepthBuffer = nullptr` and the FBO is rendered into **with no
+depth buffer**: every fragment passes, and the picture is ordered by draw order. And a mismatch is
+reachable, because `DepthBuffer::initDepthBufferTexture` creates the texture once, sized to
+whichever colour buffer happened to be current, and returns early ever after - so a game pairing
+one depth buffer with colour buffers of two widths loses depth on the second. This is the only
+candidate that is simultaneously framebuffer-emulation-only, GLES-only, and silent.
+
+**2. The same thing from underneath: a `GL_DEPTH_COMPONENT24` texture attachment that zink or RADV
+does not honour.** Indistinguishable from 1 in the picture, distinguishable in one log line -
+either GLideN64 dropped the attachment or it did not. With framebuffer emulation off there is one
+screen-sized buffer and the widths always agree, which is why that path is unaffected either way.
+
+⚠ **3. A configuration this build splits that upstream treats as a pair.** `enableClipping` is
+forced to 1 for every GLES context (`opengl_GLInfo.cpp`), which makes the vertex shader emit
+`gl_Position.z /= 8.0` - deliberately, to stop the hardware clipping geometry the software clipper
+is about to handle. The only code that scales that back is in `writeDepth()`, and `writeDepth()` is
+compiled to `return 0.0;` when `enableFragmentDepthWrite == 0` **and** `N64DepthCompare` is
+disabled. That is exactly this build: mupen64plus-next defaults `EnableFragmentDepthWrite` to
+`False` under `HAVE_OPENGLES`, and it does not even expose `EnableN64DepthCompare` there. So the
+`/8` is never undone.
+
+⚠ **But candidate 3 predicts the wrong direction, which is why it is ranked last rather than first
+despite being the one provable defect.** The software clipper runs *only* with framebuffer
+emulation ON (`GraphicsDrawer::drawTriangles` calls `renderAndDrawTriangles` in that branch and a
+plain `drawTriangles` in the other), so the `/8` leaves near-plane geometry unclipped in the
+configuration the user says looks CORRECT. Depth ordering itself survives the `/8` because dividing
+by 8 is monotonic. It is worth fixing on its own account; it is probably not this.
+
+**The experiment that costs nothing runs first:** with framebuffer emulation ON, set
+`GPU shader depth write` to True in the core options. No rebuild, no upload. It re-enables the
+whole `writeDepth()` path and settles candidate 3 by itself.
+
+**And `ps4/core-patches/mupen64plus_next/0006` answers 1 against 2 on the next build.** ⚠ It exists
+because **GLideN64 is compiled with `LOG_LEVEL LOG_NONE`**, so every warning it writes - including
+`GLInfo`'s own "your GPU does not support the extensions needed for..." lines - is discarded before
+it is formatted. On this console that is silence by construction, and it is why none of the above
+could be read off a log. The patch reports one line of capabilities at context creation and one
+line per dropped depth attachment, through `orbis_report`, bounded at four because klog costs
+8-15 ms a line.
 
 ## The toolchain's own bugs, and the instruments built to find them
 
@@ -2145,3 +2209,696 @@ diagnostic run would have taken the other ninety-nine down with it.
 **Left open.** The host-header fallback is not specific to mupen: any core reaching for a header
 the SDK and overlay lack will silently take this machine's. `-nostdsysteminc` would close it and
 has not been tried.
+
+## Open on hardware after v0.1.4: a save state, an audio port, and two PSX cores
+
+**PrBoom crashes seconds after Load State, and the fault is inside the core.** Symbolized from a
+console klog dump against a local build of the same pinned commit:
+
+    signal 10 (SIGBUS), general protection fault
+    rip 0x8009acf98 -> /data/retroarch/cores/prboom_libretro.prx +0x154f98
+                    -> Z_Malloc +0x1d8
+
+The zone allocator walking a corrupted free list. Not the frontend, not Mesa, not the platform.
+⚠ The state loaded at 09:55:44 and the fault came at 09:55:47 - the load "succeeded" and the heap
+was already wrong. The state file was **351640 bytes while the core's current
+retro_serialize_size() reported 198200**: prboom sizes its state from live thinker, sector and
+line counts, so it changes with the situation. ⚠ And the core declares no
+RETRO_SERIALIZATION_QUIRK_CORE_VARIABLE_SIZE anywhere, so the frontend is never told - which also
+means rewind, run-ahead and netplay are being driven on an assumption that does not hold.
+retro_unserialize does bound its read by `size`, so it is not a naive overrun. **Not yet
+established** whether this reproduces off this platform; the A/B test that settles it is save and
+load at the same moment of play, where the two sizes agree.
+
+⚠ **Audio died on core switches, and the driver was not leaking - the system keeps the port.**
+FIXED. `sceAudioOutOpen failed: 0x80260005` is ORBIS_AUDIO_OUT_ERROR_PORT_FULL. The obvious
+reading is a missing close, and it was wrong. Instrumented and measured across eight switches:
+
+    eight opens, eight closes, EVERY close returning rc 0x00000000
+    handles counted down 0x20000007, 0x20000006 ... 0x20000000, never reissued
+    the ninth open failed
+
+So `sceAudioOutClose` reports success and the port stays spent. Eight per process, then silence.
+⚠ The fix is therefore not to close better but to stop reopening: `ps4_audio_init()` opens the
+MAIN port ONCE per process and hands the same handle to every later init, and `ps4_audio_free()`
+does not close it. Nothing is lost by holding it - the parameters are compile-time constants
+(PS4_AUDIO_RATE, PS4_AUDIO_GRAIN, S16 stereo) and RetroArch is told the rate through *new_rate
+and resamples - and a port that cannot be reused is worth nothing returned. Confirmed on hardware
+over a dozen-plus core switches with sound throughout.
+
+⚠ **The measurement overturned the hypothesis rather than confirming it.** Had the close been
+"fixed" without instrumenting first, the change would have added a close that was already there
+and the search would have gone on.
+
+⚠ **Two Beetle PSX cores shipped and only one was ours. The stock one is now withheld.**
+`mednafen_psx_hw` is the fork at `b0b759e`, ten commits ahead of upstream, with the ORBIS platform
+arm, `orbis_lightrec_mem.c` and the Vulkan renderer - PS4_CORE_FORKS protects it from being
+overwritten. `mednafen_psx` was built by an ordinary shard straight from upstream at `ef51860`:
+`HAVE_LIGHTREC=1` in its Makefile and none of the port's work behind it, so it has no executable
+code buffer, falls back to the MIPS interpreter, and runs at the ~38% of realtime this file
+measured on Spyro 3 - beside a fork that holds full speed, under a name one letter apart from it.
+
+The fix is a withdrawal, not a port. **Folding it into the fork was the other option and it buys
+nothing**: the fork already IS upstream plus the platform work, and `_hw` is the same core with
+the hardware renderer available. A second entry can only be the same emulator configured worse.
+
+`PS4_CORE_DROP` in `ps4/build-cores.sh` withholds it. ⚠ **It is a separate mechanism from
+`PS4_CORE_FORKS` because it answers a different question.** FORKS is about not overwriting a file;
+DROP is about what the Core Downloader offers. A core reaches the menu by being in the index and a
+user picks it by name, so every name in that list reads as a recommendation - and this is the only
+list a console owner sees. Everything else missing from the index failed to build; this one builds
+and is held back, which is why the verdict is `DROP` rather than a failure class.
+
+⚠ **Withholding does not remove what is already published.** The publish job prunes bucket objects
+the new index does not name, so `mednafen_psx_libretro.zip` goes on the next FULL run - a subset
+run publishes nothing and prunes nothing. Until then the object is still fetchable by URL; it is
+simply no longer named by anything a console reads.
+
+**The other PlayStation options, measured rather than assumed.** `pcsx_rearmed` fails at
+LINK on `lightrec_init_mmap` - the same executable-memory problem this port already solved for
+Beetle, so it is the cheapest of these to try. `duckstation` and `swanstation` are CMAKE in the
+recipe and the harness skips that build type for want of a toolchain file; they have never been
+attempted. PS2 is `play` and `pcsx2`, also CMAKE - and beyond the missing infrastructure, PCSX2
+wants an order of magnitude more CPU than this machine has, so treat it as arithmetic rather than
+porting.
+
+## 2026-08-28 — one core option, and the console had to be recovered from outside
+
+`GPU shader depth write` (`EnableFragmentDepthWrite`) was suggested in the entry above as the
+free experiment that would settle candidate 3 without a rebuild. **It is not free. Turning it on
+hangs the core before its first frame and then takes the whole console down**, and it is now
+clamped off on this platform and removed from the menu
+(`ps4/core-patches/mupen64plus_next/0007`).
+
+⚠ **THE SUGGESTION WAS MINE AND THE COST LANDED ON THE USER'S CONSOLE.** The reasoning behind it
+was sound - the option is exactly the other half of a pair this build splits - and the reasoning
+said nothing about what the option costs to *try*. A core option is not automatically a cheap
+experiment on a machine with no way to interrupt a wedged process.
+
+### What the log says, and it is not "lag"
+
+Same ROM, same build, same session, thirty minutes apart. `ps4-klog-20260828-092942.log`:
+
+    11:35:58.626  mupen64plus: Init new dynarec          option False
+    11:36:00.426  [Audio] sinc resampler active path: float
+    11:36:07.626  profile: 650 frames in 8972 ms = 72.44 fps
+
+    12:06:45.669  mupen64plus: Init new dynarec          option True
+    12:06:55.469  [WARN] [PS4] audio: 1772 underruns in 1875 grains
+    12:07:05..35  1875 underruns per 1875 grains, four windows running
+    12:07:41.070  [ScePthread/System] Internal Memory is running out.   x10851
+
+**Nothing at all between `Init new dynarec` and the pthread pool giving out** - no first frame, no
+profile window (and the profiler was on, `/data/retroarch-profile` exists and it reports every five
+seconds *of frames*), 100% audio underruns throughout. Every line before that point is identical
+between the two runs, down to EGL, the zink renderer string and `133 entry points resolved, 0
+missing`. So this is not a slow frame: **the core never completes one**, and something between
+dynarec init and the first `retro_run` allocates pthread objects without bound.
+
+⚠ **THE EXHAUSTION IS SYSTEM-WIDE, WHICH IS WHY THE CONSOLE DID NOT COME BACK.**
+`[ScePthread/System]` is the system's pool, not this process's heap - technote 235. Once it is
+gone the shell cannot get itself back either: the PS button did not return to Orbis, and Close
+Application from outside wedged the machine rather than freeing it. **A core option that can do
+that must not be reachable from a menu**, whatever it is worth when it works.
+
+### Where the clamp is, and why not at the option
+
+`custom/GLideN64/mupenplus/Config_mupenplus.cpp`, immediately before `config.validate()`, which is
+after every writer. ⚠ **Removing the core option alone would not have been enough:**
+`LoadCustomSettings()` parses `generalEmulation\enableFragmentDepthWrite` out of GLideN64's
+per-game ini, and with `GLideN64IniBehaviour == 0` that runs *last*. The core option is removed as
+well, so nothing offers the switch, but the clamp is what makes it safe.
+
+⚠ The removal produces one new line per content load, and it is not a fault:
+
+    [ERROR] [Environ] GET_VARIABLE: mupen64plus-EnableFragmentDepthWrite - Invalid value.
+
+`EnableN64DepthCompare` and `EnableShadersStorage` have printed exactly that on every GLES build
+since the port began - upstream compiles those two out under `HAVE_OPENGLES` and asks for them
+anyway. This is the third.
+
+### What it does NOT settle
+
+**Candidate 3 from the entry above is still open**, and now it cannot be tested the cheap way. The
+`/8` that `enableClipping` puts in the vertex shader is still never scaled back on this platform;
+the option that would scale it back is the one that hangs. If that pairing has to be tested, the
+route is a build with `enableClipping` forced to 0 instead - which costs a core build and leaves
+the software clipper doing the work it was always doing with framebuffer emulation on.
+
+**And the cause of the hang is unknown.** Writing `gl_FragDepth` defeats early-Z, which is a frame
+rate story, not a hang. The shape to chase is what creates pthread objects per shader variant when
+every fragment program suddenly writes depth - zink compiling a program set it has never built, on
+a driver where `orbis-compat` reports six CPUs to Mesa's `util_queue`. Nobody has looked.
+
+⚠ **AND THE PUBLISHED CORE STILL HAS THE OPTION.** `mupen64plus_next` in the index was built before
+this patch, so every installed copy can still be walked into this. It is fixed by the next cores
+run, not by anything already shipped.
+
+## 2026-08-28 — the depth bug reproduced on a laptop, and it is not this port's driver
+
+The framebuffer-emulation depth fault is **confirmed, off the console, in one run**, and the cause
+is candidate 1 from two entries above. `ps4/core-patches/mupen64plus_next/0008` fixes it.
+
+### What the host says
+
+mupen64plus-next built for Linux at the same commit `f275caf`, `FORCE_GLES3=1` so the flags are the
+console's exactly (`-DEGL -DHAVE_OPENGLES -DHAVE_OPENGLES3 -DGLES3`), RetroArch from this branch
+built `--enable-egl --enable-opengles --enable-opengles3`, and the same ROM - fetched over FTP and
+checked against the md5 the console's own log printed. GLideN64 announces the same state it
+announces on the console:
+
+    GL 3.1 ES | depthTexture 1 weakBlit(GLES) 1 noPerspective 0 imageTextures 1
+              | fbEmulation 1 fragDepthWrite 0 clipping 1 n64DepthCompare 0 copyDepthToRDRAM 2
+
+and then, five thousand six hundred and seventy-two times in twenty-five seconds - **every frame**:
+
+    depth attachment DROPPED for colour buffer 0000027f:
+    depth texture 640 wide, colour 639 (m_width 320 vs 320)
+
+⚠ **ONE PIXEL.** The colour texture is `m_width * m_scale` truncated, 639. The depth texture was
+created before its colour buffer existed, took the *window* width instead, and is 640. GLideN64's
+GLES branch tests `==`, so the depth buffer is thrown away and the FBO is rendered into with no
+depth attachment at all. Every triangle passes, and the picture is ordered by draw order - which is
+exactly "my ship draws behind everything, and the collisions are still right".
+
+### ⚠ IT IS NOT ZINK, NOT RADV, NOT LIVERPOOL AND NOT OUR THUNKS
+
+The same build on the host's **native radeonsi** - no zink in the process at all - drops just as
+often:
+
+    zink over RADV      26 000-32 000 drops / 25 s
+    native radeonsi     26 000 drops / 25 s
+    desktop-GL test     0 drops
+
+So this is upstream GLideN64 on any GLES3 machine with framebuffer emulation on. Desktop GL never
+sees it because the branch one line below tolerates a larger depth texture *or* an `m_width`
+difference under two pixels - and here **both** clauses pass. That branch is the fix; `0008` takes
+it on this platform and `depthWidthLoose=0` in the knob file puts upstream's back.
+
+⚠ **AND THE FIX INTRODUCES NO NEW GL ERROR.** The worry was that a lenient size test would make
+GLideN64's depth *blits* illegal, since ES3 will not scale a depth blit. Checked with `MESA_DEBUG=1`
+over both variants: the same two error classes appear either way and no new one -
+`GL_INVALID_FRAMEBUFFER_OPERATION` in `glReadPixels` and `glBlitFramebuffer`, plus three
+`GL_INVALID_ENUM in glFramebufferTexture2D(unknown textarget 0x8d65)`. **0x8d65 is
+`GL_TEXTURE_EXTERNAL_OES`** and those are a separate, pre-existing defect this port has never
+noticed, present with and without the fix. Worth its own look; not this.
+
+### The hang did NOT reproduce, and that was the right thing to doubt
+
+`EnableFragmentDepthWrite=True` on the host runs. Sixty seconds, frames throughout, no thread
+storm - where on the console the same option gives no first frame and then exhausts the system
+pthread pool. So that fault is genuinely console-side: Liverpool, our Mesa build, or the console's
+pthread pool, and the laptop cannot say which. **The user said so before the run and was right;
+the run was still worth it, because it is what turned the depth fault into a fixed bug.**
+
+### ⚠ Building this branch for the host found a defect of ours first
+
+`libretro-common/dynamic/dylib.c`'s ORBIS constructor walker - `dylib_orbis_run_init_array` and
+`dylib_orbis_forget` - was **outside every `#ifdef ORBIS`**, so it compiled on every platform and
+the Linux build stopped on `sceKernelDlsym`. It has been that way since 2026-08-24 and only a
+non-ORBIS build could see it. Fixed in `8cbea55517`. ⚠ Anything else this branch has added without a
+guard is in the same position, and the host build is now the thing that would say so.
+
+### ⚠ AND FTP DOES RETURN A DATA FILE FAITHFULLY
+
+This file says "any forensic based on a file pulled off this console is based on a corrupted copy",
+from a `.prx` that came back 900 KB larger. That reading was too broad: **a `.prx` is a signed
+module and FTP hands it back decrypted**, which is a fact about self files, not about the transfer.
+A 12 MB `.z64` pulled the same way came back at `c7b40352aad8d863d88d51672f9a0087`, the md5
+mupen64plus itself printed on the console. Verify by content and the question does not arise.
+
+### Where the workshop is
+
+    ~/.cache/ps4-hostrepro/RetroArch      git worktree of this branch, configured for GLES3 + EGL
+    ~/.cache/ps4-hostrepro/mupen-host     f275caf, FORCE_GLES3=1, with the instrumentation below
+    ~/.cache/ps4-hostrepro/roms/sote.z64  md5-checked against the console
+    ~/.cache/ps4-hostrepro/cfg/retroarch.cfg   video_driver gl, context x-egl, rgui, no audio
+
+    MESA_GLES_VERSION_OVERRIDE=3.1   the console reports ES 3.1; without this the host offers 3.2
+    MESA_LOADER_DRIVER_OVERRIDE=zink the console's stack; leave it out for the radeonsi control
+    MESA_DEBUG=1                     GL errors on stderr, with no code change
+
+⚠ **NOT in the session scratchpad and not in /tmp.** A cold reboot cleared tmpfs once and took
+fifty-two built cores with it; `/tmp` here is tmpfs with the whole build in RAM besides.
+
+The host clone carries three edits that are deliberately **not** patches in this repository, because
+they are an instrument rather than a port: `LOG_LEVEL LOG_WARNING` in `GLideN64/src/Log.h`,
+an `fprintf` in `attachDepthBuffer`'s drop branch, and one in `GLInfo::init` - the same two lines
+`0006` reports through `orbis_report` on the console. `HOSTREPRO_DEPTH_LOOSE=1` selects the fix at
+run time there.
+
+### Confirmed on hardware, same day
+
+The console now reports what the laptop reported, and reports it about a working picture:
+
+    [orbis] gliden64: GL 3.1 ES | depthTexture 1 weakBlit(GLES) 1 noPerspective 0 imageTextures 1
+                    | fbEmulation 0 fragDepthWrite 0 clipping 1 n64DepthCompare 0 copyDepthToRDRAM 2
+    [orbis] gliden64: GL 3.1 ES | ... | fbEmulation 1 ...
+
+    depth attachment DROPPED     ZERO, with framebuffer emulation on
+
+Two lines because the first load still had the old workaround in `Mupen64Plus-Next.opt`
+(`EnableFBEmulation = "False"`) and the second is after turning it back on. Shadows of the Empire
+draws correctly with framebuffer emulation enabled - the ship in front of the bases, which is what
+started this.
+
+⚠ **The capability line is IDENTICAL on the two machines**, field for field, which is the retrospective
+justification for the host reproduction: `depthTexture 1 weakBlit(GLES) 1 noPerspective 0
+imageTextures 1 | fragDepthWrite 0 clipping 1 n64DepthCompare 0 copyDepthToRDRAM 2` on a GFX7
+Liverpool under our Mesa and on a GFX11 Phoenix under Arch's. The fault was never in the half that
+differs.
+
+⚠ **AND THE PROOF CAME OFF /data/retroarch-abort.log, NOT OFF THE UDP OR klog CAPTURE.** The klog
+receiver's connection died at 12:10 when the console wedged and nothing reconnected it, so the log
+files on the workshop machine end there and read as if the console had stopped talking. `orbis_report`
+writes klog *and* appends to that file, which is why the measurement survived a dead receiver. Check
+the file before concluding a run produced nothing.
+
+**Still to ship.** The core in the index was built before any of this. Nothing a user has installed
+carries the fix until the next full cores run.
+
+## 2026-08-28 — /data/OpenGothic is no longer every title's junk drawer
+
+`orbis_paths.cpp:19` has been on the open list since 2026-08-22, first as "harmless" and then as
+"it is not". Closed.
+
+This process has no working directory - `getcwd` is ENOSYS and a relative `open` returns EINVAL,
+not ENOENT - so orbis-compat interposes `open`, `stat`, `unlink` and `rename` and rewrites every
+relative path under one root. That root was the string `/data/OpenGothic/` compiled into an overlay
+that four titles now link. RetroArch has been creating that directory on every boot and opening
+files inside it, because it does open relative paths - `Main Menu.png` among them.
+
+**The root is now decided in three steps, and the choice is logged once:**
+
+    1  orbis_set_anchor_root()          the application knows where its own data lives
+    2  /data/<TITLEID>/                 from sceKernelGetAppInfo
+    3  /data/orbis-compat/              neither of the above answered
+
+⚠ **STEP 2 IS UNPROVEN ON THIS FIRMWARE AND IS WRITTEN TO SAY SO.** `sceKernelGetAppInfo` is
+declared by the SDK, and this workshop has now been caught five times by a call that exists, links
+and is refused at run time - `sceKernelGetCpuUsage` (ENOSYS), `fcntl(F_SETFL)` (EACCES),
+`ioctl(FIONBIO)` (EACCES), `dup2` onto fd 2 (EPERM), `sceKernelQueryMemoryProtection` (answers about
+a different thing). So the log line reports what it returned **whichever route wins**, and one boot
+settles it without anyone arranging an experiment.
+
+⚠ **AND THE TITLE ID IS VALIDATED BEFORE IT BECOMES A DIRECTORY NAME.** `OrbisAppInfo::TitleId` is a
+fixed ten-byte field with no promise of a terminator. It is copied bounded, terminated here, and
+rejected unless it is one to nine characters of A-Z0-9 - a field of garbage would otherwise become a
+directory of garbage, and one containing '/' would become a directory somewhere else entirely.
+
+**Both existing consumers name their own anchor**, which is why nothing moves underneath them:
+RetroArch calls `orbis_set_anchor_root("/data/retroarch/")` in `frontend_orbis_init`, immediately
+after the stderr capture and before the first file is opened; OpenGothic calls it with
+`/data/OpenGothic/` as the first thing after `ps4_app_init`, so `save_slot_N.sav` stays where the
+saves already are. ⚠ A call that arrives after the anchor has been decided **cannot** take effect -
+the decision is made once because it sits inside `stat()` - and it logs that it was ignored rather
+than pretending.
+
+Confirmed by content, not by the build succeeding: `/data/OpenGothic` no longer appears anywhere in
+`retroarch_orbis.elf`, and `/data/orbis-compat/`, `paths: title id is` and `orbis_set_anchor_root`
+all do.
+
+⚠ **The overlay's header had to grow a C guard.** `orbis_paths.h` included `<string>` at the top,
+so a C consumer could not include it at all - and a frontend written in C is exactly the consumer
+that needs to name its own anchor. The C++ half is behind `#ifdef __cplusplus` now; the setter is
+`extern "C"` and was compiled from both C and C++ with the console toolchain before being believed.
+
+orbis-compat `5f1e4e6`, OpenGothic `c0c202e2`.
+
+## 2026-08-28 — the close-hang: two things believed about it are wrong
+
+Not fixed. But it is narrowed further than it has ever been, and the narrowing came from the
+maintainer's own account plus one log fetch - no experiment was needed to overturn either belief.
+
+### ⚠ IT DOES NOT NEED A CORE LOADED
+
+This file has said since 2026-08-22 that "Close Content followed by Quit exits properly, so the
+condition involves a loaded core". **It does not.** Quit from the menu, dummy core, nothing loaded -
+CE-34878-0 all the same, twice in the capture below. The "Close Content then Quit exits cleanly"
+observation that produced that conclusion was made once and has not held up.
+
+### ⚠ AND THE DRIVER TEARS ITSELF DOWN CLEANLY BEFORE IT HAPPENS
+
+Mesa's log at exit - `/data/retroarch-mesa.log`, which is where `MESA_LOG_FILE` in
+`/data/retroarch-env.txt` sends it - ends:
+
+    wsi/orbis: scan-out down after 4703 flip(s)
+    orbis-drm: at teardown 0 BO(s), 0 syncobj(s), 0 context(s), 0 VA range(s), 0 KiB held
+               - winsys-lifetime, and it did not grow
+
+Nothing leaked and the scan-out came down. The process dies **after** that.
+
+⚠ **AND THIS FILE'S CLAIM THAT "NO CAPTURE FROM THIS CONSOLE HAD EVER CONTAINED `scan-out down`"
+WAS ABOUT THE WRONG FILE.** Mesa writes to `MESA_LOG_FILE`, not to the UDP channel, so grepping a
+UDP capture for `wsi/orbis` finds nothing however healthy the driver is - there are 1575 `wsi/orbis`
+lines in the file and 0 in the datagram log of the same session. Two days of "the teardown path has
+never run" rested on that.
+
+### What is actually left, and it is a short list
+
+The maintainer's account, which no log here contradicts:
+
+* every title built against this workshop's Mesa ends this way, OpenGothic included;
+* **a RetroArch built WITHOUT that driver exits with no dialog at all.**
+
+⚠ **THAT SECOND POINT CONTRADICTS `ps4_app.h`.** Its termination note says returning from `main()`
+on a retail console is outside the system's expected path and pops CE-34878-0 by itself - and if
+that were the whole story, linking a graphics driver could not change it. The same code returning
+from the same `main()` is silent without Mesa. So the dialog is not the price of returning; it is
+the price of something Mesa leaves behind.
+
+Which points at what linking Mesa adds AFTER the driver has already destroyed itself: **atexit
+handlers and static destructors**. `src/util/u_queue.c:83` registers one that walks every
+`util_queue` still on its list and joins its worker threads, and this console has already spent a
+day proving how little it forgives around threads (`ORBIS_NCPU`, the pthread pool exhaustion of the
+same date, `sceKernelGetCpuUsage` refusing outright).
+
+### The instrument, in the build now on the console
+
+Three markers, and the ordering is what makes them an answer rather than three log lines - `atexit`
+runs handlers in REVERSE registration order:
+
+    registered in frontend_orbis_init, before anything creates a util_queue   ->  runs LAST
+    registered in frontend_orbis_shutdown, at the end of main_exit            ->  runs FIRST
+
+With `ps4_log("exit: main_exit returned...")` at the end of `rarch_main`, four outcomes are
+distinct and the next Quit picks one:
+
+    no "main_exit returned"      died in the rest of main_exit, after frontend_orbis_shutdown
+    no "atexit has begun"        died between main() returning and the first handler
+    only "atexit has begun"      died inside a handler registered after startup - Mesa's
+    both markers                 died after every handler, in the runtime's final teardown
+
+⚠ **They go through `ps4_log`, which is klog AND UDP.** A process three instructions from death
+cannot rely on a datagram leaving the machine; klog has already written by the time the call
+returns. 8-15 ms a line, twice, once per process.
+
+### And the anchor bug was confirmed in the field on the way past
+
+The same capture, from the build that predates this morning's fix:
+
+    paths: anchor '/data/OpenGothic/'
+    paths: relative paths are anchored - 'Main Menu.png' -> '/data/OpenGothic/Main Menu.png'
+
+Exactly the file this file guessed at on 2026-08-23, named by the console itself.
+
+## 2026-08-28 — the exit markers answered, and the answer was not the guess
+
+All three fired:
+
+    14:23:27.968  shutdown requested - ending the process rather than idling; expect CE-34878-0
+    14:23:27.968  exit: main_exit returned, main() is about to return
+    14:23:27.968  exit: atexit has begun
+    14:23:27.968  exit: every atexit handler returned, Mesa's included
+
+⚠ **SO IT IS NOT THE atexit HANDLERS, AND util_queue's THREAD JOIN WAS THE WRONG SUSPECT.** The
+entry above named `src/util/u_queue.c:83` as the thing to look at, on the reasoning that joining
+worker threads at exit is where this console is least forgiving. That handler ran and returned. The
+process survived the rest of `main_exit`, the return from `main()`, and every handler in the list -
+and died after all of it, in under a millisecond.
+
+**And the list that just completed is bigger than it looks**, which narrows this further than the
+four outcomes did. Clang registers a C++ static object's destructor with `__cxa_atexit` from a
+constructor in `.init_array`, so **static destructors are IN the atexit list** - Mesa's, ACO's, all
+of them. They ran. What musl's `exit()` has left after `__funcs_on_exit` is exactly:
+
+    __libc_exit_fini()   .fini_array - and by the above, largely empty here
+    __stdio_exit()       flush and close every open FILE
+    _Exit(code)          the kernel
+
+⚠ **WHICH MAKES `MESA_LOG_FILE` THE SHARP SUSPECT, AND THE TEST FREE.** It is the one stdio object
+that linking Mesa adds: a `FILE*` opened with `fopen` and never closed. A RetroArch built without
+the driver has no such file, and exits silently - which fits. `/data/retroarch-env.txt` now has both
+its lines commented out, with the reasoning in the file; one launch and one Quit settles it. **Put
+them back afterwards** - without them Mesa's log goes to a stderr that goes nowhere on this console.
+
+### Two stale things found on the way, both in this port's own record
+
+⚠ **`/data/tempest-env.txt` DOES NOT EXIST ON THE CONSOLE.** This file, and a comment in
+`platform_orbis.c`, both say `ORBIS_3D_LINEAR=1` and `ORBIS_NO_TESS=1` are "not options" and are off
+in the driver unless that file turns them on. Checked in mesa-ps4 today: the driver flipped both
+defaults, and the knobs now read `=0` to turn the behaviour OFF (`ac_surface.c:1691`,
+`radv_physical_device.c:1081`). The frontend applies two lines from its own file, none from the
+shared one, and renders correctly. The comment is corrected; the reader stays, because a file that
+is not there costs one failed open and it is still how any knob is turned on.
+
+## 2026-08-28 — the close-hang is not this frontend's, and now that is proven rather than assumed
+
+Four runs, one afternoon, each one eliminating a step. The conclusion is negative and it is worth
+as much as a fix: **nothing RetroArch can do changes this exit**, and the question moves to
+mesa-ps4 with a boundary drawn around it.
+
+### What the process survives
+
+    shutdown requested                            frontend_driver_shutdown, late in main_exit
+    exit: main_exit returned                      the rest of main_exit, and main() about to return
+    exit: atexit has begun                        __funcs_on_exit entered
+    exit: every atexit handler returned           ALL of them - Mesa's util_queue join included
+    exit: .fini_array is running                  __libc_exit_fini entered
+
+All five, every run, inside two milliseconds. And then CE-34878-0.
+
+⚠ **THE atexit LIST IS BIGGER THAN IT LOOKS, WHICH IS WHY THE FOURTH LINE MATTERS SO MUCH.** Clang
+registers a C++ static object's destructor with `__cxa_atexit` from a constructor in `.init_array`,
+so **static destructors run in that list** - Mesa's, ACO's, every one. They all returned.
+
+### The three eliminations, in order
+
+⚠ **util_queue's thread join was the first guess and it was wrong.** The entry above named
+`src/util/u_queue.c:83` on the reasoning that joining worker threads at exit is where this console
+is least forgiving. That handler ran and returned.
+
+⚠ **`MESA_LOG_FILE` was the second and it was wrong.** It is the one stdio object linking Mesa
+adds - a `FILE*` opened with `fopen` and never closed - and a build without the driver has no such
+file and exits silently. Both lines commented out of `/data/retroarch-env.txt`, confirmed by
+`env: 0 line(s) applied`, same crash.
+
+⚠ **AND THE THIRD ELIMINATION TOOK THE WHOLE REMAINING SPACE AT ONCE.** A build whose `main()`
+called `_Exit(0)` instead of returning - skipping `.fini_array`, `__stdio_exit` and every step
+musl's `exit()` has left, going straight to the kernel - **died exactly the same way.**
+
+So the fault is in process termination itself, with this driver's state in the process. There is no
+step left between the last line RetroArch can write and the dialog. **It belongs to mesa-ps4.**
+
+### What mesa-ps4 has to go and look at
+
+The driver's own teardown reports itself clean:
+
+    wsi/orbis: scan-out down after 4703 flip(s)
+    orbis-drm: at teardown 0 BO(s), 0 syncobj(s), 0 context(s), 0 VA range(s), 0 KiB held
+               - winsys-lifetime, and it did not grow
+
+⚠ **"winsys-lifetime" IS THE QUALIFIER TO READ, NOT TO SKIP.** It says nothing about allocations of
+other lifetimes, and this workshop already knows that **direct memory is not reclaimed when a
+mapping goes away** - recorded here on 2026-08-23, from the Lightrec work. Physical pages taken with
+`sceKernelAllocateDirectMemory` and never released are the shape that would make a process's death
+the system's problem rather than the process's, and that also fits the other half of the symptom:
+Close Application from outside wedges the console rather than freeing it.
+
+`wsi_orbis_release` does call `sceVideoOutClose` and does release its own direct memory when it owns
+the buffers, so the scan-out path is not the obvious offender. The audit is of everything else the
+driver takes from the kernel and of what is still held at `_Exit`.
+
+### ⚠ access() IS REFUSED ON THIS CONSOLE, WITH EPERM
+
+Found while building the third experiment, and measured in one line beside its own control:
+
+    exit: fastexit switch - access()=-1 errno=1, stat()=0 errno=0
+
+Same path, same instant. `stat` finds the file; `access` says EPERM. It is a real `libkernel.so`
+export (`T access`), while the SDK's own `libc.a` ships `access.lo` as an **empty object** - no
+`.text` at all - and `faccessat.lo` as a stub that sets `0x4e` (ENOSYS) and returns -1.
+
+⚠ **THIS IS THE SIXTH CALL IN THAT FAMILY** - after `fcntl(F_SETFL)`, `ioctl(FIONBIO)`, `dup2` onto
+fd 2, `sceKernelGetCpuUsage` and `sceKernelQueryMemoryProtection`. **Presence is not permission**,
+and the first version of that experiment used `access()` alone, got a silent no, and was
+indistinguishable from "the file was not there yet". A check that cannot report what it saw is not
+a check.
+
+Nothing in this tree relies on it: the only `access()` callers are `linuxraw_joypad.c`,
+`parport_joypad.c` - neither built here - and a Wii U shim. A mine defused rather than a live bug,
+but nobody should reach for it on this platform.
+
+### What is left in the tree
+
+The five markers stay; they are the record of how far the process gets, and the next thing to move
+that boundary will be a driver change. The `_Exit` switch and its `access()` call are gone - a
+switch that changes nothing except losing buffered writes is a hazard with no benefit.
+
+## 2026-08-28 — linking the driver is enough; the frontend never has to call it
+
+The zero-cost split, run before touching mesa-ps4: `/data/retroarch/retroarch.cfg` set to
+`video_driver = "ps4"` and `menu_driver = "rgui"`, same eboot. The whole driver is still inside the
+binary - its static constructors run at start and its destructors at exit - but nothing calls
+`vkCreateInstance`. Confirmed from the log rather than from the intent:
+
+    [PS4] video-out up: 1920x1080, 2 buffers, 16 MiB direct     <- the software driver
+    (no "Vulkan up", no "vulkan: destroying the context")
+
+**Same crash.**
+
+⚠ **SO IT IS NOT GPU STATE, AND IT IS NOT ANYTHING THE DRIVER TOOK FROM THE KERNEL WHILE RUNNING.**
+The software path opens video-out and takes 16 MiB of direct memory itself, and a build without the
+driver has always done that and exited silently - so video-out and direct memory are not the
+variable either. What is left is what the ARCHIVE contributes to the process: its static
+constructors and destructors, its TLS, its data, its size.
+
+### ⚠ AND THE CONTROL FOR THAT IS FROM MEMORY, WHICH IS NOT GOOD ENOUGH
+
+"RetroArch built without our Mesa exits cleanly" is the maintainer's recollection of a build from
+weeks ago, and everything under it has changed since - the frontend, orbis-compat, the exit path
+itself. It is the whole premise of the hunt and it has never been re-measured on this tree.
+
+So: `make -f Makefile.orbis clean` and a build with no `HAVE_VULKAN` and no `HAVE_OPENGLES`. The
+link step prints `vulkan: OFF - software rendering only`, the package drops from 60 MB to 12 MB,
+the eboot from 58 MB to 9.6 MB, and `radv`, `wsi/orbis` and `vk_icdGetInstanceProcAddr` are all
+absent from the ELF. `/data/pkg/retroarchv-nomesa-20260828.pkg`.
+
+    exits cleanly    the control holds, the archive is the variable, and the bisect is worth doing
+    still crashes   the premise is stale and this hunt has been chasing the wrong difference
+                    for a day - which is worth finding out in one install rather than in ten
+
+⚠ **THE CLEAN WAS NOT OPTIONAL.** `HAVE_VULKAN` and `HAVE_OPENGLES` are `-D` defines and this
+Makefile has no header dependencies, so objects built the other way are silently reused - recorded
+here on 2026-08-23 as the trap that shipped a package with no cores in it.
+
+## 2026-08-28 — ⚠ THE PREMISE WAS STALE, AND A DAY WENT INTO THE WRONG DIFFERENCE
+
+The control was run and **it does not hold**. A frontend built with no `HAVE_VULKAN` and no
+`HAVE_OPENGLES` - `vulkan: OFF - software rendering only`, 9.6 MB of eboot against 58, `radv`,
+`wsi/orbis` and `vk_icdGetInstanceProcAddr` all absent from the ELF - ends **exactly the same way**:
+
+    14:54:01.273  shutdown requested
+    14:54:01.273  exit: main_exit returned, main() is about to return
+    14:54:01.273  exit: atexit has begun
+    14:54:01.273  exit: every atexit handler returned
+    14:54:01.273  exit: .fini_array is running
+
+then CE-34878-0.
+
+**So Mesa is not the variable and never was.** Everything above in today's entries - util_queue's
+atexit handler, `MESA_LOG_FILE`, `_Exit(0)`, the driver's teardown accounting, the hand-over to
+mesa-ps4 - was measuring a difference that is not there. Each measurement is still true; the frame
+around them was wrong.
+
+⚠ **AND THE FRAME CAME FROM A RECOLLECTION, WHICH IS THE PART TO KEEP.** "A RetroArch built without
+our Mesa exits with no error" was remembered from a build made weeks ago - before this port stopped
+idling at Quit (`frontend_orbis_shutdown` used to hold the process on a heartbeat forever, and the
+entry that changed it is in this file). So the clean exit being remembered was of a build that
+**never returned from main() at all**. It was about a different exit path, not a different link
+line, and nothing distinguished those two readings until the control was actually built. A control
+that is remembered rather than run is not a control.
+
+### Which leaves ps4_app.h's own sentence standing, and it was right from the start
+
+    Termination: returning from main() on a retail console tears the process down outside the
+    system's expected path and pops the error dialog, which reads as a crash (CE-34878-0).
+
+That is the whole explanation, and it fits every measurement made today: the process survives
+`main_exit`, every atexit handler, `.fini_array`, and `_Exit(0)` - because none of those is what is
+wrong. **Ending without asking the system is.**
+
+`sceSystemServiceLoadExec("exit", NULL)` is the path that asks. "exit" is the reserved argument
+meaning hand control back to the system rather than replace this process with another title; the
+SDK declares it with a real signature (`SystemService.h:63`) and `-lSceSystemService` has been on
+this port's link line since the beginning. It is called from `frontend_orbis_shutdown`, after
+`driver_uninit` has already torn everything down.
+
+⚠ **IT IS NOT EXPECTED TO RETURN, AND THE FALLBACK IS THE OLD BEHAVIOUR RATHER THAN IDLING.** A
+frontend that will not close is worse than one that closes with a dialog - that is the trade this
+port already made once and it stands. The return code is logged either way, because "it refused"
+and "it was never reached" must not look alike in a log.
+
+⚠ **AND THE HAND-OVER TO mesa-ps4 HAS TO BE WITHDRAWN.** `ps4-mesa-docs` was given an entry today
+saying the close-hang belongs to the driver. It does not. Correcting a record in another workshop
+is part of the same job as writing it.
+
+### Confirmed on hardware, and what the record now says
+
+    15:02:41.450  shutdown requested
+
+and nothing after it. No `sceSystemServiceLoadExec ... returned` line, none of the exit markers, no
+dialog - the call did not return and the system took the process back. `("exit", NULL)` is the form
+this firmware accepts; the second candidate the build carried was never reached and is gone.
+
+**The markers stay.** They are now unreachable on a healthy exit and only appear if
+`sceSystemServiceLoadExec` ever returns - which makes them free in the normal case and exactly the
+record wanted in the abnormal one.
+
+⚠ **AND THE ENTRY THIS PORT PUT IN ps4-mesa-docs HAS BEEN REVERTED** (`5a1021b`). It told that
+workshop the close-hang was theirs to audit, and it was wrong. Leaving it would have cost somebody
+a day looking for a leak that is not there. **Correcting a record in another workshop is part of
+the same job as writing it.**
+
+`ps4/RELEASE-NOTES.md` and the page `make-site.py` generates both said the dialog was expected and
+explained it by a graphics teardown that never happened. Both now say Quit returns to the menu.
+⚠ They still warn against *Close Application* from the console - that route has been seen to wedge
+the machine and **has not been re-tested since the exit changed**, so it is written as unknown
+rather than as fixed. It is the obvious next thing to measure and it costs one Quit's worth of
+effort.
+
+## 2026-08-28 — Close Application: a second failure, and this time the control was run first
+
+Quit from inside the application is clean. **Closing from the console's own menu still is not**, and
+it is a different fault with a different owner.
+
+### The process is killed outright - nothing of this port runs
+
+Two channels, same session, and both stop mid-sentence:
+
+    UDP    the last line is an ordinary startup line. No "shutdown requested", no
+           sceSystemServiceLoadExec, none of the exit markers.
+    Mesa   /data/retroarch-mesa.log ends in the middle of a session at frame 768,
+           with ZERO "scan-out down".
+
+So `frontend_orbis_shutdown` is never called, the driver never tears down, video-out is never
+closed and the scan-out buffers are never unregistered. ⚠ **The exit fix cannot apply here, because
+none of this port's code runs.** The application is not told it is being closed.
+
+### ⚠ AND THE CONTROL SEPARATES IT CLEANLY - SAME BINARY, ONE CONFIG LINE
+
+    video_driver = "ps4"       software: video-out, 2 buffers, 16 MiB direct, no GPU   CLEAN
+    video_driver = "vulkan"    RADV: video-out, swapchain images, GPU submissions      CRASH
+
+Same eboot, Mesa linked either way, same `sceVideoOut*` API, same `sceKernelAllocateDirectMemory`.
+**The only difference is whether RADV was running.** This time the control was measured before the
+conclusion was written, which is the lesson the earlier half of today paid for.
+
+⚠ **AND IT RULES OUT THE OBVIOUS READING.** "The display is scanning out of memory that vanishes"
+cannot be the whole story: the software driver registers its own direct memory as scan-out buffers
+and is killed exactly as abruptly, and the console comes back. What Vulkan adds on top is a live
+GPU context with work in flight and swapchain images the GPU renders into.
+
+### What the next experiment is, and what it costs
+
+`wsi_orbis` registers the swapchain's own images as scan-out buffers when it can - zero copy,
+`owns_buffers == false` - and falls back to allocating GARLIC buffers of its own with a memcpy per
+frame. That fallback is much closer in shape to the software driver that survives.
+
+    zero copy survives too    the display is not the variable; a live GPU context is
+    zero copy is the one      the display scanning out RADV's render targets is what the
+                              system cannot survive losing, and the copy path is a fallback
+                              that could be selected when a title wants to be closable
+
+⚠ **THERE IS NO ENV KNOB FOR IT.** `wsi_common_headless.c:862-893` takes the direct path whenever
+every image is CPU-mapped and shares a pitch; `owns_buffers` follows from `addrs == NULL` at
+`wsi_orbis.c:297`. Adding the knob is a few lines, but it costs a Mesa rebuild and a frontend
+relink, so it is a decision rather than a try.
+
+### ⚠ AND IT IS A DIALOG, NOT A WEDGE - WHICH SETTLES WHAT IT IS WORTH
+
+Measured, not assumed: on the current build, Close Application on the Vulkan driver shows the error
+dialog and **the console returns to its menu with no restart needed**.
+
+That contradicts what this port has been telling users since v0.1.x - "that can leave the system
+hung and needing a restart" - and the reason it was believed is worth keeping. The wedges that were
+actually seen happened to a process that was ALREADY in a bad state: once when the system pthread
+pool had been exhausted by the fragment-depth-write option, and once when the frontend still idled
+forever at Quit so nothing ever ended. Neither was Close Application's own doing, and both got
+written down as if they were.
+
+So this is a cosmetic defect with a working alternative, not a hazard. **It does not justify a Mesa
+rebuild on its own.** The zero-copy experiment above stays written down for whoever is in that tree
+for another reason.
+
+**Nothing here is a RetroArch change.** Quit is the route that works and the release notes say so.

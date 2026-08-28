@@ -194,6 +194,11 @@
 #include "ui/ui_companion_driver.h"
 #include "verbosity.h"
 
+#ifdef ORBIS
+#include <sys/stat.h>
+#include <ps4_app.h>
+#endif
+
 #include "gfx/video_driver.h"
 #include "gfx/video_display_server.h"
 #ifdef HAVE_THREADS
@@ -6705,6 +6710,20 @@ int rarch_main(int argc, char *argv[], void *data)
    }
 
    main_exit(data);
+#endif
+
+#ifdef ORBIS
+   /* ⚠ THE LAST LINE THIS PROCESS CAN WRITE FROM ITS OWN CODE. Everything after this return is
+    * the C runtime's: atexit handlers, static destructors, and whatever the kernel does with a
+    * process that has finished. See frontend/drivers/platform_orbis.c for what those three lines
+    * separate and why. */
+   ps4_log("exit: main_exit returned, main() is about to return - nothing of RetroArch's is left");
+
+   /* ⚠ AND THERE IS NOTHING AFTER THIS LINE THAT THIS FRONTEND CAN CHANGE. A build that called
+    * _Exit(0) here instead of returning - skipping .fini_array, the stdio flush and every step
+    * musl's exit() has left - died exactly the same way. Measured 2026-08-28; see ps4/HANDOFF.md.
+    * The markers above stay because they are the record of how far the process gets, and the next
+    * thing to move that boundary will be a driver change rather than a frontend one. */
 #endif
 
    return 0;

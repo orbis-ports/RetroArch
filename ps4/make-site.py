@@ -338,11 +338,13 @@ def render(ctx):
 
 <div class="note wide">
 <p><b>Quit from inside the application, not from the console.</b> Use RetroArch's own
-<b>Quit RetroArch</b> entry, or the Quit combo on the pad. It ends with
-<code>CE-34878-0</code> on screen — that dialog is expected here and nothing is wrong.</p>
-<p>Closing it the console's way instead — the PS button, then <em>Close Application</em> — can
-leave the system hung, needing a restart. The application shuts its graphics context down on the
-way out; taken away mid-frame, it sometimes does not get to.</p>
+<b>Quit RetroArch</b> entry, or the Quit combo on the pad. It returns to the console's menu with
+no dialog. Earlier versions showed <code>CE-34878-0</code> here; they ended by returning from
+<code>main()</code>, which takes the process down outside the path the system expects.</p>
+<p>Closing it the console's way instead — the PS button, then <em>Close Application</em> — still
+shows <code>CE-34878-0</code>. The console returns to its menu and nothing needs restarting, but the
+application is killed outright there and never gets to shut itself down, so Quit is the better
+habit.</p>
 </div>
 
 <div class="prose">
@@ -451,9 +453,8 @@ it. Nothing here is sold, and nothing here should be.</p>
 
 <h2>Known limits</h2>
 <ul>
-  <li>Quitting shows <code>CE-34878-0</code>. The process ends rather than idling forever, which
-      is the better half of a trade: holding the screen instead would turn every quit into a hang.
-      Quit from inside the application — see the note at the top.</li>
+  <li>Closing the application from the console's own menu still shows <code>CE-34878-0</code>.
+      It is cosmetic — the console recovers on its own. Quit from inside RetroArch does not.</li>
   <li>63 of the 164 cores in the build recipe do not compile for this platform yet. The ones
       listed here are the ones that link and export a working entry point.</li>
   <li>Cores are built from upstream's tip on the day the build ran, so a core's version is a

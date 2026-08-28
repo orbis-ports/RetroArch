@@ -26,12 +26,15 @@ Then **Online Updater → Core Downloader** lists 101 cores. Download one and it
 
 ## Quitting
 
-Use RetroArch's own **Quit RetroArch** entry, or the Quit combo on the pad. It ends with
-`CE-34878-0` on screen; that dialog is expected here and nothing is wrong.
+Use RetroArch's own **Quit RetroArch** entry, or the Quit combo on the pad. It returns to the
+console's menu with no dialog.
 
-**Do not close it from the console** — PS button, *Close Application*. That can leave the system
-hung and needing a restart: the application tears its graphics context down on the way out, and
-taken away mid-frame it sometimes does not get to.
+Earlier versions showed `CE-34878-0` here. They ended by returning from `main()`, which takes the
+process down outside the path the system expects; this one asks the system to unload it instead.
+
+**Closing it from the console instead** — PS button, *Close Application* — still shows
+`CE-34878-0`. The console returns to its menu and nothing needs restarting, but the application is
+killed outright there and never gets to shut itself down, so Quit is the better habit.
 
 ## New in v0.1.4
 
@@ -61,7 +64,7 @@ taken away mid-frame it sometimes does not get to.
 
 - **63 of 164 recipe cores do not build yet**, for reasons recorded per core. The ones that are
   listed are the ones that link and carry `retro_run`.
-- **Quitting shows CE-34878-0** — see above. The process ends rather than idling forever, and
-  the alternative was a hang that only a console restart cleared.
+- **Closing from the console's own menu still shows CE-34878-0** — see above. It is cosmetic; the
+  console recovers on its own.
 - Cores are cloned from upstream's tip when a build is run, so a given core's version is the
   date it was built, not a pinned release.

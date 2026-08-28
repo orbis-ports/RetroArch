@@ -44,6 +44,7 @@
 
 /* The console's log channel and its termination policy - orbis-compat/optional. */
 #include <ps4_app.h>
+#include <orbis_paths.h>
 
 #include "../../ps4/ps4_mem.h"
 
@@ -197,25 +198,70 @@ static void frontend_orbis_get_env(int *argc, char *argv[],
 
 static void frontend_orbis_deinit(void *data) { }
 
-/* â  THIS IDLED FOREVER, AND THAT WAS THE WRONG POLICY FOR A FRONTEND.
+/* ⚠ HOW THIS PROCESS ENDS, AND WHAT IT COST TO FIND OUT.
  *
- * The rule it was copied from is real: returning from main() on a retail console tears the
- * process down outside the system's expected path and pops CE-34878-0, which reads to a
- * user as a crash. ps4_idle_forever() exists so a DEMO - something with no quit, that would
- * otherwise fall off the end of main() - holds the screen instead of showing that dialog.
+ * `sceSystemServiceLoadExec("exit", NULL)` hands the process back to the system. Confirmed on
+ * hardware 2026-08-28: it does not return, the log stops at "shutdown requested", and there is no
+ * dialog. Before it, Quit ended with CE-34878-0 every time.
  *
- * A frontend is not a demo. It has a Quit entry, and the console has a close button, and
- * both of them mean "end". Holding the process on a heartbeat turns either into a hang that
- * only a console restart clears - which is exactly what this port did.
+ * ⚠ AND THE DAY BEFORE THAT ANSWER WENT ENTIRELY INTO THE WRONG DIFFERENCE, WHICH IS THE PART
+ * WORTH KEEPING. The dialog was believed to be the price of linking this workshop's Mesa, because
+ * a build without the driver was REMEMBERED exiting cleanly. Four experiments were spent inside
+ * that frame - util_queue's atexit thread join, MESA_LOG_FILE, _Exit(0) skipping fini_array and
+ * stdio outright, and the driver's own teardown accounting - and every one of them came back
+ * negative, correctly. Then the control was actually built: no HAVE_VULKAN, no HAVE_OPENGLES,
+ * `vulkan: OFF - software rendering only`, 9.6 MB of eboot against 58, the driver's strings absent
+ * from the ELF. It ended exactly the same way.
  *
- * â  AND IT IS THE SECOND HALF OF A PROBLEM THIS PORT DOES NOT OWN. Every title built
- * against this workshop's Mesa hangs on close; OpenGothic hit it first and now dies visibly
- * rather than hanging, which is the same trade being made here. The dialog is ugly and the
- * process ends; idling is tidy and it does not. Until the driver-side question is answered,
- * ending is the better half. */
+ * The recollection was of a build from before this port stopped idling at Quit - so it was about a
+ * different exit path, not a different link line, and nothing separated those two readings until
+ * the control was run. **A control that is remembered rather than measured is not a control.**
+ *
+ * Which left ps4_app.h's own sentence standing, and it had been right from the first day:
+ * returning from main() tears the process down outside the system's expected path. Every
+ * measurement above fits that and none of them contradicted it - the process survives main_exit,
+ * every atexit handler, .fini_array and even _Exit, because none of those is what is wrong.
+ *
+ * ⚠ THE FALLBACK IS THE OLD BEHAVIOUR, NOT IDLING. If the call ever returns on some other
+ * firmware, this returns from main() and shows the dialog. A frontend that will not close is worse
+ * than one that closes badly - that trade was made here once already and it stands. The return
+ * code is logged, because "it refused" and "it was never reached" must not look alike in a log,
+ * and the exit markers further down only ever appear on that path. */
+/* ⚠ .fini_array, WHICH IS NOT THE SAME LIST AS atexit AND IS WHY THIS EXISTS SEPARATELY.
+ *
+ * Clang registers a C++ static object's destructor with __cxa_atexit from a constructor in
+ * .init_array, so static destructors - Mesa's, ACO's, all of them - run in the atexit list, and
+ * that list was measured complete on 2026-08-28. `__attribute__((destructor))` functions do NOT:
+ * they sit in .fini_array, which musl runs from __libc_exit_fini AFTER __funcs_on_exit. This
+ * marker is the only way to see whether that step is reached. */
+static void __attribute__((destructor)) frontend_orbis_fini_marker(void)
+{
+   ps4_log("exit: .fini_array is running - atexit finished, stdio flush and the kernel are next");
+}
+
+static void frontend_orbis_exit_marker_last(void)
+{
+   ps4_log("exit: every atexit handler returned, Mesa's included - what is left is the runtime's own teardown");
+}
+
+static void frontend_orbis_exit_marker_first(void)
+{
+   ps4_log("exit: atexit has begun - handlers registered after startup, Mesa's util_queue among them, run before this returns");
+}
+
 static void frontend_orbis_shutdown(bool unused)
 {
-   ps4_log("shutdown requested - ending the process rather than idling; expect CE-34878-0");
+   int32_t rc;
+
+   ps4_log("shutdown requested");
+   atexit(frontend_orbis_exit_marker_first);
+
+   /* Measured on hardware: this does not return. See the block above frontend_orbis_deinit for
+    * what it replaced and what the wrong frame cost. */
+   rc = sceSystemServiceLoadExec("exit", NULL);
+   ps4_log("shutdown: sceSystemServiceLoadExec(\"exit\", NULL) returned 0x%08x - it was supposed "
+           "not to return at all. Falling through to returning from main(), which pops CE-34878-0; "
+           "the exit markers below are the record of how far that gets", (unsigned)rc);
 }
 
 /* ⚠ THE DRIVER'S KNOBS, AND TWO OF THEM ARE NOT OPTIONAL.
@@ -232,6 +278,15 @@ static void frontend_orbis_shutdown(bool unused)
  *     configuration this port runs on, and BOTH are off in the driver unless this file
  *     turns them on. [...] the title then loads and crashes on entering 3D - measured
  *     2026-08-19, twice, same binary, only this file different.
+ *
+ * ⚠ THAT QUOTE HAS SINCE GONE STALE, AND THE CONSOLE SAID SO BEFORE ANYONE NOTICED. The
+ * driver flipped both defaults - ac_surface.c and radv_physical_device.c now read the knobs
+ * to turn the behaviour OFF (`ORBIS_3D_LINEAR=0`, `ORBIS_NO_TESS=0`), not on. And there is
+ * no /data/tempest-env.txt on the console at all: checked 2026-08-28, the file is absent,
+ * this frontend applies two lines from its own and runs correctly. So the reader below is
+ * not load-bearing the way this comment used to claim. It stays because the file is still
+ * the way any knob is turned on, and because a title that reads a file that is not there
+ * costs one failed open.
  *
  * The symptom here was not a crash but a picture: Beetle PSX HW's Vulkan renderer drew the
  * static scene correctly and shredded every animated model, with one quad showing stripes
@@ -357,6 +412,18 @@ static void frontend_orbis_init(void *data)
 
    /* Before anything can abort - which on this port means before the first core is loaded. */
    frontend_orbis_capture_stderr();
+
+   /* ⚠ BEFORE THE FIRST FILE IS OPENED, because that is when the overlay decides it and a later
+    * call cannot take effect. This process has NO working directory - getcwd is ENOSYS and a
+    * relative open returns EINVAL - so orbis-compat rewrites every relative path under one root.
+    * Until 2026-08-28 that root was `/data/OpenGothic/` compiled into the overlay, and this
+    * frontend has been creating and reading files in another title's directory ever since it
+    * linked it. RetroArch does open relative paths - `Main Menu.png` among them. */
+   orbis_set_anchor_root(USER_PATH);
+
+   /* Registered here so it runs LAST - see frontend_orbis_shutdown for the whole argument. It has
+    * to be before anything creates a util_queue, which means before Vulkan comes up. */
+   atexit(frontend_orbis_exit_marker_last);
 
    /* The driver's configuration, before anything can ask the driver for anything. The
     * shared file first, so a per-title one can override it. */
