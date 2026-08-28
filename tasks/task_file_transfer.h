@@ -102,6 +102,11 @@ typedef struct
    void *user_data;
    enum msg_hash_enums enum_idx;
    char path[PATH_MAX_LENGTH];
+   /* The body was streamed straight to its destination by
+    * task_push_http_download_file() rather than accumulated in RAM, so the
+    * completion callback receives data == NULL and must not try to write the
+    * file it is already looking at. See action_ok_download_generic(). */
+   bool on_disk;
 } file_transfer_t;
 
 /**

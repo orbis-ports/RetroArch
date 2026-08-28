@@ -87,7 +87,7 @@ PS4_CONTENT_LABEL  := RETROARCHV000000
 # what is already on the console under this title id - a package at the same version is not an
 # update, so leaving it at 01.00 forever makes every new build look like a reinstall of the
 # same thing. Two digits either side, so v0.1.2 is 01.02.
-PS4_PKG_VERSION    := 01.02
+PS4_PKG_VERSION    := 01.03
 
 # 512x512, opaque, full-bleed. The system draws icon0.png as a square, so the rounded corners
 # in media/ico_src/icon.svg would have shown as transparent notches; this is the invader from
@@ -266,12 +266,26 @@ else
   # work is worse than not shipping it. The release build is
   # `HAVE_STATIC_DUMMY=0 HAVE_DYNAMIC=1`, which is the configuration this is for.
   #
-  # ⚠ HAVE_UPDATE_ASSETS AND HAVE_UPDATE_CORE_INFO ARE DELIBERATELY ABSENT. Both point at
-  # DEFAULT_BUILDBOT_ASSETS_SERVER_URL (buildbot.libretro.com/assets/), not at our own host,
-  # and the package already ships the .info files it needs - see phase 2. They can come back
-  # once there is a second index at an assets URL of ours.
+  # ⚠ HAVE_UPDATE_CORE_INFO AND HAVE_UPDATE_ASSETS WERE ABSENT ON A REASON THAT EXPIRED.
+  # The note used to say the package already shipped the .info files, "see phase 2". It never
+  # did and it cannot: package contents mount at /app0, read-only, while
+  # DEFAULT_DIR_CORE_INFO is /data/retroarch/info - so a shipped copy would sit somewhere
+  # RetroArch does not look. Measured on hardware: /app0/assets in the installed package holds
+  # ZERO files, and a console with a fresh /data has no core names and no menu assets.
+  #
+  # Both entries point at DEFAULT_BUILDBOT_ASSETS_SERVER_URL rather than at our host, and that
+  # is correct rather than a compromise: a .info file describes the CORE - its name, extensions,
+  # required BIOS - not the binary, and our cores are upstream's cores. The same is true of menu
+  # icons and fonts. Proven on hardware today, both over plain http from that host: info.zip
+  # (263 KB) and database-rdb.zip (52 MB).
+  #
+  # ⚠ AND WITHOUT THIS THE DOCUMENTATION WAS WRONG. The release notes and cores.prx0.com both
+  # tell a new user to run Online Updater -> Update Core Info Files before browsing the core
+  # list. That entry is gated on HAVE_UPDATE_CORE_INFO; without the define it does not exist,
+  # and the instruction sent people looking for a menu item that was not there.
   ifeq ($(HAVE_DYNAMIC),1)
-    DEFINES                 += -DHAVE_ONLINE_UPDATER -DHAVE_UPDATE_CORES
+    DEFINES                 += -DHAVE_ONLINE_UPDATER -DHAVE_UPDATE_CORES \
+                               -DHAVE_UPDATE_CORE_INFO -DHAVE_UPDATE_ASSETS
   endif
 
   # ⚠ AND THE POINTER MOVES IN THE SAME COMMIT AS THE SWITCH ABOVE. config.def.h has no ORBIS
