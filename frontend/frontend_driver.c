@@ -181,6 +181,11 @@ size_t frontend_driver_get_core_extension(char *s, size_t len)
    return strlcpy(s, "framework", len);
 #elif defined(__APPLE__) || defined(__MACH__)
    return strlcpy(s, "dylib" ,len);
+#elif defined(ORBIS)
+   /* A PS4 loadable module is a .prx: sceKernelLoadStartModule takes one, and
+    * create-fself --lib produces one. Without this arm the dynamic build looked for
+    * ".so" files, which this platform has none of. */
+   return strlcpy(s, "prx", len);
 #else
    return strlcpy(s, "so", len);
 #endif

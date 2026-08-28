@@ -159,12 +159,27 @@ static void frontend_orbis_get_env(int *argc, char *argv[],
       }
    }
 
-   /* ⚠ THIS SAID "host0:app/custom.ini", WHICH IS A VITA PATH. It is the opt-out: if the
-    * file exists, RetroArch skips creating its default directories and assumes the user
-    * laid them out. A path that can never exist here made the opt-out unreachable rather
-    * than wrong, so first boot did create the directories under /data/retroarch -- by
-    * accident rather than by decision. Named for this platform now. */
-   dir_check_defaults("/app0/custom.ini");
+   /* NULL rather than a path. The argument is an opt-out: if the named file EXISTS,
+    * RetroArch creates none of its default directories, on the theory that whoever put it
+    * there laid them out already. Upstream passed "host0:app/custom.ini", which is a Vita
+    * path; there is no custom.ini convention on this platform, so there is nothing to opt
+    * out of, and NULL says that without naming a file that has to be checked.
+    *
+    * (An earlier version of this comment claimed the /app0 spelling had broken directory
+    * creation on hardware. It had not - the evidence was a truncated FTP listing. The
+    * directories were being created the whole time.) */
+   dir_check_defaults(NULL);
+
+   /* The result is checked, because dir_check_defaults calls path_mkdir and discards what
+    * it says. Nothing anywhere reports a writable root that could not be made, and the
+    * symptom of that would be a frontend that runs and silently keeps nothing. One line a
+    * boot is cheap insurance against a long afternoon. */
+   if (!path_is_directory(g_defaults.dirs[DEFAULT_DIR_MENU_CONFIG]))
+      ps4_log("writable root FAILED: '%s' does not exist after dir_check_defaults - "
+              "config, saves and playlists all have nowhere to go",
+              g_defaults.dirs[DEFAULT_DIR_MENU_CONFIG]);
+   else
+      ps4_log("writable root ok: '%s'", g_defaults.dirs[DEFAULT_DIR_MENU_CONFIG]);
 #endif
 }
 

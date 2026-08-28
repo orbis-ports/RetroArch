@@ -23,6 +23,19 @@ GRIFFIN_BUILD      ?= 0
 # with this toolchain there is nothing to link, and cores/dynamic_dummy.c is what
 # lets the frontend link and boot without one. Phase 6 flips this.
 HAVE_STATIC_DUMMY  ?= 1
+
+# ⚠ THE THIRD WAY TO BUILD THIS, and the one Phase 6b is about. With HAVE_DYNAMIC=1 the
+# frontend carries no core at all and loads a .prx at run time through
+# sceKernelLoadStartModule (libretro-common/dynamic/dylib.c). Cores then live in
+# /data/retroarch/cores rather than inside the eboot, and one binary serves all of them.
+#
+#   make -f Makefile.orbis HAVE_STATIC_DUMMY=0 HAVE_DYNAMIC=1
+#
+# ⚠ A DYNAMIC CORE MUST CARRY ITS OWN libretro-common. The static build omits those files
+# (-DSTATIC_LINKING) because the frontend it is linked into already has them; a module has
+# its own symbol table and the frontend's copies are not visible to it. ps4/build-core.sh
+# knows the difference.
+HAVE_DYNAMIC       ?= 0
 WHOLE_ARCHIVE_LINK ?= 0
 
 # TITLE_ID is AAAA00000 - four letters, five digits - because param.sfo and the content id
@@ -191,7 +204,10 @@ DEFINES += -Wno-macro-redefined -Wno-typedef-redefinition \
 # appended after it never reaches the compiler - which is how the first build of this
 # file compiled all 261 objects and then failed to link on twenty undefined retro_*
 # symbols: cores/dynamic_dummy.c had not seen -DHAVE_STATIC_DUMMY.
-ifeq ($(HAVE_STATIC_DUMMY),1)
+ifeq ($(HAVE_DYNAMIC),1)
+  DEFINES  += -DHAVE_DYNAMIC
+  CORE_LIB :=
+else ifeq ($(HAVE_STATIC_DUMMY),1)
   DEFINES  += -DHAVE_STATIC_DUMMY
   CORE_LIB :=
 else
