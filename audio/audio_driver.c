@@ -227,12 +227,11 @@ audio_driver_t *audio_drivers[] = {
 #if defined(HAVE_AUDIOWORKLET)
    &audio_audioworklet,
 #endif
-/* ⚠ ORBIS IS NOT IN THIS LIST ANY MORE. psp_audio.c is the Vita's driver, and the PS4
- * build named it because the old port had nothing of its own; it does not compile
- * against the OpenOrbis SDK. The PS4's own sceAudioOut driver is Phase 5 work - see
- * ps4/PLAN.md - and goes here when it exists. */
 #if defined(PSP) || defined(VITA)
   &audio_psp,
+#endif
+#if defined(ORBIS)
+  &audio_ps4,
 #endif
 #if defined(PS2)
   &audio_ps2,
