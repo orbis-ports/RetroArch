@@ -252,6 +252,20 @@
 /* Start in fullscreen mode for Steam and Dingux
  * WinRT and Winapi Family builds */
 #define DEFAULT_FULLSCREEN true
+#elif defined(ORBIS)
+/* ⚠ THIS CONSOLE HAS NO WINDOWS, SO "not fullscreen" IS NOT A STATE IT CAN BE IN. The application
+ * owns the whole scan-out buffer from the moment sceVideoOutOpen returns; there is no compositor
+ * to share a screen with and no window to resize.
+ *
+ * ⚠ AND LEAVING IT false SILENTLY DISABLES THE MOUSE CURSOR, which is how this was found. Every
+ * menu driver gates the cursor on the same expression - xmb.c:10382 is
+ *
+ *     cursor_visible = menu_mouse_enable && (video_fullscreen || mouse_grabbed)
+ *
+ * and ozone.c:12931 and materialui.c say the same - so with fullscreen false and no mouse-grab on
+ * this platform, a working mouse driver moves the selection and draws no pointer. Which reads as
+ * a broken driver rather than as a setting. */
+#define DEFAULT_FULLSCREEN true
 #else
 #define DEFAULT_FULLSCREEN false
 #endif

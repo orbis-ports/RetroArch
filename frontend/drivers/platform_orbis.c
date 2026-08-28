@@ -86,6 +86,7 @@ static enum frontend_fork orbis_fork_mode = FRONTEND_FORK_NONE;
 #if defined(ORBIS_NET_TRACE)
 void orbis_net_probe(void);
 void orbis_kbd_probe(void);
+void orbis_mouse_probe(void);
 #endif
 
 static void frontend_orbis_get_env(int *argc, char *argv[],
@@ -199,6 +200,7 @@ static void frontend_orbis_get_env(int *argc, char *argv[],
    /* Whether this process may read a USB keyboard at all. Gated on /data/retroarch-kbd-probe
     * existing, so it ships inert and needs no rebuild to run - ps4/orbis_kbd_probe.c. */
    orbis_kbd_probe();
+   orbis_mouse_probe();
 }
 
 static void frontend_orbis_deinit(void *data) { }

@@ -7182,6 +7182,27 @@ static bool config_load_file(global_t *global,
       free(path_settings);
    if (size_settings)
       free(size_settings);
+
+#ifdef ORBIS
+   /* ⚠ THERE IS NO WINDOWED MODE ON THIS CONSOLE, SO A STORED `false` HERE DESCRIBES A STATE THAT
+    * CANNOT EXIST. The application owns the whole scan-out buffer from the moment
+    * sceVideoOutOpen returns - no compositor, no window, nothing to resize.
+    *
+    * ⚠ AND LEAVING IT false SILENTLY DISABLES THE MOUSE POINTER, which is how this was found and
+    * why the fix belongs here rather than only in config.def.h's default. Every GPU menu driver
+    * gates the cursor on the same expression - xmb.c:10382, ozone.c:12931, materialui.c -
+    *
+    *     cursor_visible = menu_mouse_enable && (video_fullscreen || mouse_grabbed)
+    *
+    * and this platform has no mouse-grab either, so a working mouse driver moves the selection
+    * and draws no pointer at all. That reads as a broken driver rather than as a setting.
+    *
+    * The default in config.def.h only helps a FRESH install; every console that has already
+    * written a retroarch.cfg carries the old `false` forward, and the menu entry that would fix
+    * it sits behind Show Advanced Settings. Correcting it after the load covers both. */
+   settings->bools.video_fullscreen = true;
+#endif
+
    first_load = false;
    return true;
 }

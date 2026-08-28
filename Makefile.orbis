@@ -87,7 +87,7 @@ PS4_CONTENT_LABEL  := RETROARCHV000000
 # what is already on the console under this title id - a package at the same version is not an
 # update, so leaving it at 01.00 forever makes every new build look like a reinstall of the
 # same thing. Two digits either side, so v0.1.2 is 01.02.
-PS4_PKG_VERSION    := 01.05
+PS4_PKG_VERSION    := 01.06
 
 # 512x512, opaque, full-bleed. The system draws icon0.png as a square, so the rounded corners
 # in media/ico_src/icon.svg would have shown as transparent notches; this is the invader from
@@ -490,6 +490,7 @@ endif
 # arrangement as ps4/orbis_profile.c, and for the same reason: a question that needs hardware
 # attached should not also need a build.
 OBJ     += ps4/orbis_kbd_probe.o
+OBJ     += ps4/orbis_mouse_probe.o
 
 # ⚠ -Werror IS DELIBERATELY OFF, and the old build's was load-bearing for nothing:
 # it was only ever exercised by a CI job that linked HAVE_STATIC_DUMMY against stub

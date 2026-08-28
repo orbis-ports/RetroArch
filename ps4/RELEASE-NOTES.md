@@ -22,7 +22,7 @@ Do this once, before browsing the Core Downloader. Core metadata is not shipped 
 so on a fresh install the downloader lists `.prx` filenames instead of core names until those
 files arrive. Everything works either way; only the names are missing.
 
-Then **Online Updater → Core Downloader** lists 101 cores. Download one and it is ready to use.
+Then **Online Updater → Core Downloader** lists 104 cores. Download one and it is ready to use.
 
 ## Quitting
 
@@ -35,6 +35,24 @@ process down outside the path the system expects; this one asks the system to un
 **Closing it from the console instead** — PS button, *Close Application* — still shows
 `CE-34878-0`. The console returns to its menu and nothing needs restarting, but the application is
 killed outright there and never gets to shut itself down, so Quit is the better habit.
+
+## New in v0.1.6
+
+- **A USB mouse works.** Move, left and right click, and the wheel, in the menu and in cores that
+  ask for one. The console's mouse library ships no usable declarations in the SDK - five entry
+  points with no argument types and no data structure - so the layout was established by probing
+  the hardware and reading which bytes moved.
+- **DOS, through DOSBox Pure.** The first DOS core this port has been able to offer. Use it with
+  the USB keyboard and mouse.
+- **The mouse pointer is visible at all.** RetroArch hides the cursor unless it believes it is
+  running fullscreen, and this console had that recorded as false - a state it cannot actually be
+  in, since the application owns the whole screen and there is no desktop to share it with.
+- **Three more cores**: `dosbox_pure` (DOS), `swanstation` (PlayStation), `arduous` (Arduboy) and
+  `thepowdertoy`. They are built through CMake, which this port could not use until now - a whole
+  build type was being skipped for want of a toolchain file.
+
+⚠ `swanstation` is a **second** PlayStation core beside `mednafen_psx_hw` and has not been run on
+hardware yet. Prefer `mednafen_psx_hw` unless you are testing.
 
 ## New in v0.1.5
 
@@ -69,7 +87,7 @@ killed outright there and never gets to shut itself down, so Quit is the better 
 
 ## What is here
 
-- 101 cores, built for this console, at `cores.prx0.com`
+- 104 cores, built for this console, at `cores.prx0.com`
 - Nintendo 64 at 60 fps (GLideN64)
 - PlayStation at 50 fps (Beetle PSX HW, Lightrec, Vulkan renderer)
 - Online Updater: cores, core info, databases, thumbnails, assets
