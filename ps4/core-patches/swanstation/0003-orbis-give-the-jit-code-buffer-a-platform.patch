@@ -1,0 +1,83 @@
+From: PS4 port
+Subject: [PATCH] orbis: give the JIT code buffer a platform and the right order
+
+The recompiler died before it emitted anything:
+
+    [InitializeFastmem] Failed to install page fault handler
+    libc++abi: terminating with uncaught exception of type Xbyak::Error
+
+Xbyak was not the culprit - it is handed a buffer rather than allocating one
+(cpu_recompiler_code_generator_x64.cpp:2225 passes host_pc), so the throw came from being given
+nothing. JitCodeBuffer::Allocate had returned false, for the reason that keeps catching this port:
+
+    #elif defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__) || defined(__HAIKU__) \
+       || defined(__FreeBSD__)
+
+__FreeBSD__ is undefined in every C++ TU here - this SDK's libc++ clears it on purpose, so that a
+libc++ built against musl does not take FreeBSD's arms - and nothing names __ORBIS__. The whole
+chain fell through to `#else return false;`.
+
+Naming the platform is not enough, because the POSIX arm then does two things this kernel will not
+accept:
+
+  * it maps with PROT_READ | PROT_WRITE | PROT_EXEC in one call. This kernel refuses PROT_EXEC at
+    MAP time and grants it to mprotect afterwards - the same finding
+    beetle-psx-libretro/ps4/orbis_lightrec_mem.c is built on.
+  * ⚠ it checks the result with `if (!m_code_ptr)`. mmap reports failure as MAP_FAILED, which is
+    (void*)-1 and not NULL, so a failed mapping passes that test and travels on as a pointer.
+    That is latent on every platform this arm serves; here it would have hidden the refusal above.
+
+So this adds an ORBIS arm that maps read-write, promotes with mprotect, and tests against
+MAP_FAILED, and names the platform in the two chains that only needed naming.
+
+diff --git a/src/common/jit_code_buffer.cpp b/src/common/jit_code_buffer.cpp
+--- a/src/common/jit_code_buffer.cpp
++++ b/src/common/jit_code_buffer.cpp
+@@ -32,6 +32,29 @@
+   m_code_ptr = static_cast<uint8_t*>(VirtualAlloc(nullptr, m_total_size, MEM_COMMIT, PAGE_EXECUTE_READWRITE));
+   if (!m_code_ptr)
+     return false;
++#elif defined(__ORBIS__)
++  // ⚠ RW FIRST, EXEC AFTER, AND MAP_FAILED IS -1 RATHER THAN NULL.
++  //
++  // This kernel refuses PROT_EXEC at map time and grants it to mprotect afterwards - the same
++  // finding beetle-psx-libretro/ps4/orbis_lightrec_mem.c rests on. The POSIX arm below asks for
++  // PROT_READ|PROT_WRITE|PROT_EXEC in one call, which fails here.
++  //
++  // ⚠ AND ITS ERROR CHECK WOULD NOT HAVE CAUGHT THAT ANYWAY: mmap reports failure as MAP_FAILED,
++  // which is (void*)-1, so `if (!m_code_ptr)` is false and a failed mapping travels on as a
++  // pointer. That is worth knowing wherever this file is read, not only here.
++  m_code_ptr = static_cast<uint8_t*>(
++    mmap(nullptr, m_total_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
++  if (m_code_ptr == MAP_FAILED)
++  {
++    m_code_ptr = nullptr;
++    return false;
++  }
++  if (mprotect(m_code_ptr, m_total_size, PROT_READ | PROT_WRITE | PROT_EXEC) != 0)
++  {
++    munmap(m_code_ptr, m_total_size);
++    m_code_ptr = nullptr;
++    return false;
++  }
+ #elif defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__) || defined(__HAIKU__) || defined(__FreeBSD__)
+   int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+ #if defined(__APPLE__) && defined(__aarch64__)
+@@ -83,7 +106,7 @@
+ 
+   m_code_ptr = static_cast<uint8_t*>(buffer);
+   m_old_protection = static_cast<uint32_t>(old_protect);
+-#elif defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__) || defined(__HAIKU__) || defined(__FreeBSD__)
++#elif defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__) || defined(__HAIKU__) || defined(__FreeBSD__) || defined(__ORBIS__)
+   if (mprotect(buffer, size, PROT_READ | PROT_WRITE | PROT_EXEC) != 0)
+     return false;
+ 
+@@ -125,7 +148,7 @@
+   {
+ #if defined(_WIN32)
+     VirtualFree(m_code_ptr, 0, MEM_RELEASE);
+-#elif defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__) || defined(__HAIKU__) || defined(__FreeBSD__)
++#elif defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__) || defined(__HAIKU__) || defined(__FreeBSD__) || defined(__ORBIS__)
+     munmap(m_code_ptr, m_total_size);
+ #endif
+   }

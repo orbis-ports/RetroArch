@@ -661,11 +661,18 @@ report() { # core result size commit note
 # holds full speed. Two entries a letter apart, one of them slow for a reason no menu can show.
 # PS4_CORE_FORKS already stops it OVERWRITING mednafen_psx_hw; this stops it being offered.
 #
+# swanstation BUILDS AND DOES NOT RUN, which is the worst thing a core list can contain: a name
+# somebody picks, that fails on the first game. Four separate faults were fixed in it and a fifth
+# is open - see ps4-mesa-docs for the account. It is withheld rather than patched out of the tree,
+# because the work done on it is real and the patches should keep applying; what must not happen
+# is a user choosing it over mednafen_psx_hw, which works, holds 50 fps, and is already the
+# PlayStation core this port offers. Remove the name here the day it boots a game.
+#
 # ⚠ Dropping a core does not remove what is already published. The publish job prunes bucket
 # objects the new index does not name, so the removal happens on the next full run - and only a
 # full run, because a subset run publishes nothing.
 core_dropped() { # core -> 0 if this core is deliberately withheld
-  case " ${PS4_CORE_DROP-mednafen_psx} " in *" $1 "*) return 0 ;; esac
+  case " ${PS4_CORE_DROP-mednafen_psx swanstation} " in *" $1 "*) return 0 ;; esac
   return 1
 }
 
