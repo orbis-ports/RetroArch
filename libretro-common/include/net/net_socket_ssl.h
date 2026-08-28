@@ -24,6 +24,11 @@
 #define _LIBRETRO_SDK_NET_SOCKET_SSL_H
 
 #include <stdlib.h>
+/* ssize_t, used by the two _nonblocking prototypes below. Everywhere this header has been
+ * built before, it arrived transitively; the Orbis toolchain's stdlib.h does not carry it,
+ * so the declarations became implicit-int and clashed with the definitions in
+ * net_socket_ssl_bear.c. Declaring the dependency is cheaper than relying on one. */
+#include <sys/types.h>
 #include <boolean.h>
 #include <retro_common_api.h>
 

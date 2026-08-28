@@ -83,12 +83,21 @@ HAVE_OPENGLES      ?= 0
 PS4_TITLE_ID       := RTRV00001
 PS4_TITLE_NAME     := RetroArchV
 PS4_CONTENT_LABEL  := RETROARCHV000000
-PS4_PKG_VERSION    := 01.00
+# ⚠ MOVES WITH THE RELEASE TAG. param.sfo carries it, and the installer compares it against
+# what is already on the console under this title id - a package at the same version is not an
+# update, so leaving it at 01.00 forever makes every new build look like a reinstall of the
+# same thing. Two digits either side, so v0.1.2 is 01.02.
+PS4_PKG_VERSION    := 01.02
 
 # 512x512, opaque, full-bleed. The system draws icon0.png as a square, so the rounded corners
 # in media/ico_src/icon.svg would have shown as transparent notches; this is the invader from
 # media/retroarch-vector_invader-only.svg composited on our own ground instead.
 PS4_ICON           := ps4/icon0.png
+
+# The trust anchors BearSSL validates against, carried in the package at /app0. Read directly
+# from there - /app0 is read-only but perfectly readable, so no first-boot copy is needed. A
+# bundle in /data/retroarch wins over it, so CAs can be refreshed without a new package.
+PS4_CA_BUNDLE      := ps4/cacert.pem
 
 # Transport tracing for the HTTP task. OFF by default; a diagnostic build sets it to 1 and the
 # stage names (dns_lookup_failed / socket_create_failed / socket_connect_failed / ...) reach the
@@ -277,13 +286,19 @@ else
     DEFINES += -DORBIS_BUILDBOT_SERVER_URL='"$(ORBIS_BUILDBOT_URL)"'
   endif
 
-  # ⚠ TLS IS PHASE 5b AND IS OFF. Turning it on is the ONE line below - HAVE_BUILTINBEARSSL
-  # sets HAVE_SSL itself and adds deps/bearssl-0.6 to OBJ (Makefile.common). It is off
-  # because nothing here has a certificate store yet, and an https URL that fails in the
-  # handshake looks exactly like an empty core list. Everything under it that TLS needs is
-  # already present in the SDK: time() for validity windows, getrandom/getentropy to seed.
-  HAVE_BUILTINBEARSSL       := 0
-  HAVE_SSL                  := 0
+  # ⚠ TLS IS ON, AND THE CERTIFICATE STORE IS WHY IT COULD NOT BE BEFORE.
+  # HAVE_BUILTINBEARSSL sets HAVE_SSL itself and adds deps/bearssl-0.6 to OBJ
+  # (Makefile.common). The pieces TLS needs were always present in the SDK - time() for
+  # validity windows, getrandom/getentropy to seed - but the BearSSL backend read its trust
+  # anchors from one hardcoded Linux path, so on a console it initialised with ZERO anchors
+  # and every handshake failed validation. See the path list in
+  # libretro-common/net/net_socket_ssl_bear.c; the bundle ships as $(PS4_CA_BUNDLE).
+  #
+  # ⚠ AND IT IS NOT WHAT MAKES THE CORE HOST WORK. cores.prx0.com serves plain http on
+  # purpose; TLS is here so the download of executable code can be AUTHENTICATED, and because
+  # every other host worth using redirects to https. The CRC in .index-extended never
+  # protected anything on its own - it arrives over the same channel as the file it describes.
+  HAVE_BUILTINBEARSSL       := 1
 
   # ⚠ WHAT HAVE_NETWORKING=1 DRAGS IN THAT WE DO NOT WANT, AND WHICH HALF OF IT IS ACTUALLY
   # OPTIONAL. Read from Makefile.common's HAVE_NETWORKING block rather than assumed:
@@ -693,6 +708,7 @@ pkg: eboot.bin
 		--title-id $(PS4_TITLE_ID) --title "$(PS4_TITLE_NAME)" \
 		--version $(PS4_PKG_VERSION) --content-label $(PS4_CONTENT_LABEL) \
 		$(if $(wildcard $(PS4_ICON)),--icon $(PS4_ICON),) \
+		$(if $(wildcard $(PS4_CA_BUNDLE)),--extra $(PS4_CA_BUNDLE):cacert.pem,) \
 		--sdk $(TOOLCHAIN)
 
 # Upload to the console over GoldHEN's FTP. lftp rather than curl: it is what the packages

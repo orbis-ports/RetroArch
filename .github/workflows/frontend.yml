@@ -285,3 +285,9 @@ jobs:
         with:
           files: ${{ steps.rename.outputs.pkg }}
           fail_on_unmatched_files: true
+          # ⚠ WITHOUT THIS THE RELEASE SHIPS WITH AN EMPTY BODY, which is how v0.1.1 first went
+          # out. The notes are a file in the repository rather than text here so they are
+          # reviewed in the same diff as the change they describe - and so the one instruction a
+          # fresh install actually needs (Update Core Info Files, before browsing the Core
+          # Downloader) cannot be forgotten at tag time.
+          body_path: ps4/RELEASE-NOTES.md

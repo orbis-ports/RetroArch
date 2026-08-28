@@ -73,10 +73,21 @@ on:
   push:
     tags:
       - 'cores-*'
-  schedule:
-    # Weekly, against upstream's tip. Nothing downstream waits on it; it exists so a core that
-    # upstream breaks is found here rather than by someone with a console.
-    - cron: '17 4 * * 0'
+
+  # ⚠ NO schedule: HERE, AND THAT IS A DELIBERATE REMOVAL. A weekly cron used to run at
+  # 04:17 on Sundays "so a core that upstream breaks is found here rather than by someone with
+  # a console". The reasoning was backwards: this workflow does not merely build, it PUBLISHES -
+  # dry-run defaults to false - and the prune step deletes bucket objects the new index no
+  # longer names. So an unattended run could replace a working core with a broken one, or make
+  # one disappear from the downloader entirely, on a week nobody was looking.
+  #
+  # Core sources are cloned at upstream's tip, so what a run produces depends on the day it
+  # happens. That is fine when a person chose the day and is watching the result; it is not
+  # fine on a timer, because the first report of the breakage would come from a user, about a
+  # change nobody here made or reviewed.
+  #
+  # If a canary is wanted later, it must pass dry-run: true - build and report, publish
+  # nothing.
 
 permissions:
   contents: read
