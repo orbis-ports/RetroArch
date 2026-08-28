@@ -36,6 +36,21 @@ process down outside the path the system expects; this one asks the system to un
 `CE-34878-0`. The console returns to its menu and nothing needs restarting, but the application is
 killed outright there and never gets to shut itself down, so Quit is the better habit.
 
+## New in v0.1.5
+
+- **Quitting no longer shows an error.** The application now asks the system to unload it instead
+  of returning from `main()`, which took the process down outside the path the console expects.
+- **Framebuffer Emulation works on Nintendo 64.** GLideN64 was throwing its depth buffer away on
+  every frame over a one-pixel size test, so the picture was ordered by draw order rather than by
+  distance. It is on by default upstream and can be left on now.
+- **Sound survives switching games.** The console hands out eight audio ports per process and
+  never takes one back; the ninth switch was silent. One port is now held for the whole run.
+- **Files are no longer written into another application's folder.** Relative paths were anchored
+  under `/data/OpenGothic/` by the shared platform overlay.
+- **The stock Beetle PSX build is gone from the core list.** It carried none of this port's work
+  and ran the interpreter at about a third of full speed, one letter away from the fork that does
+  not. Use `mednafen_psx_hw`.
+
 ## New in v0.1.4
 
 - **The build no longer reaches into the host's headers.** `-isysroot` never stopped clang
