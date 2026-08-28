@@ -462,12 +462,37 @@ report() { # core result size commit note
     OK)   N_OK=$((N_OK + 1)) ;;
     FORK) N_FORK=$((N_FORK + 1)) ;;   # built on purpose and deliberately not written
     SKIP) N_SKIP=$((N_SKIP + 1)) ;;   # not in the recipe, or a build type this port cannot use
+    DROP) N_SKIP=$((N_SKIP + 1)) ;;   # deliberately not offered - see PS4_CORE_DROP
     *)    N_BAD=$((N_BAD + 1)); FAILED+=("$1($2)") ;;
   esac
 }
 
+# ⚠ PS4_CORE_DROP IS ABOUT THE MENU, NOT ABOUT THE BUILD.
+#
+# Everything else that does not reach the index failed to get there. These built fine and are
+# withheld anyway, because a core list is a recommendation: every name in it reads as a choice
+# somebody vouched for, and a new user picks by name.
+#
+# mednafen_psx is upstream Beetle PSX with none of this port's work - no ORBIS platform arm, no
+# ps4/orbis_lightrec_mem.c, so no executable code buffer and no recompiler. It runs the MIPS
+# interpreter, which was measured at ~38% of realtime on Spyro 3 while the fork it sits beside
+# holds full speed. Two entries a letter apart, one of them slow for a reason no menu can show.
+# PS4_CORE_FORKS already stops it OVERWRITING mednafen_psx_hw; this stops it being offered.
+#
+# ⚠ Dropping a core does not remove what is already published. The publish job prunes bucket
+# objects the new index does not name, so the removal happens on the next full run - and only a
+# full run, because a subset run publishes nothing.
+core_dropped() { # core -> 0 if this core is deliberately withheld
+  case " ${PS4_CORE_DROP-mednafen_psx} " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
 for core in "${CORES[@]}"; do
   CORE_DEADLINE=$(( SECONDS + CORE_TIMEOUT ))
+  if core_dropped "$core"; then
+    report "$core" DROP - - "withheld on purpose - PS4_CORE_DROP"
+    continue
+  fi
   line="$(recipe_line "$core")"
   [[ -n "$line" ]] || { report "$core" SKIP - - "not in the recipe"; continue; }
   read -r _name dir url branch _fetch buildtype makefile subdir _rest <<<"$line"

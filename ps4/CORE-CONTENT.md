@@ -28,7 +28,6 @@ BIOS/firmware goes in `/data/retroarch/system/` (mode 666). Content anywhere rea
 | `hatari` | Atari ST/STE/TT/Falcon | `tos.img` |
 | `mednafen_lynx` | Lynx | `lynxboot.img` |
 | `mednafen_pcfx` | PC-FX | `pcfx.rom` |
-| `mednafen_psx` | PlayStation | `scph5500.bin`, `scph5501.bin`, `scph5502.bin` |
 | `mednafen_psx_hw` | PlayStation | `scph5500.bin`, `scph5501.bin`, `scph5502.bin` |
 | `mednafen_saturn` | Saturn | `sega_101.bin`, `mpr-17933.bin` |
 | `mu` | Palm OS | `palmos41-en-m515.rom` |
