@@ -8,6 +8,14 @@
 #   --prx      build a loadable module instead of an archive
 #   --source   a source file, relative to --core, or absolute
 #   --common   a libretro-common directory to use INSTEAD of the core's own
+#   --name     display name; also writes a minimal <out>.info beside the output
+#
+# ⚠ THE .info IS WHAT MAKES THE MENU READABLE. RetroArch's core list shows the FILENAME
+# until it finds <core>.info in the core-info directory (/data/retroarch/info here); the
+# name the core reports through retro_get_system_info only appears once it is loaded. So a
+# console with three cores shows three filenames, which is exactly as useful as it sounds.
+# This writes the minimum RetroArch reads; a core with real metadata should ship the real
+# file from libretro-super instead.
 #
 # ⚠ --common EXISTS BECAUSE A CORE'S VENDORED libretro-common PREDATES THIS PLATFORM.
 # libretro-2048's copy still has the orbisdev-era ORBIS branch in vfs_implementation.c -
@@ -41,6 +49,7 @@ ORBIS_COMPAT="${ORBIS_COMPAT_DIR:-$HOME/src-ps4/orbis-compat}"
 CORE_DIR=""
 OUT=""
 COMMON_DIR=""
+DISPLAY_NAME=""
 PRX=0
 EXTRA_SOURCES=()
 
@@ -51,6 +60,7 @@ while [[ $# -gt 0 ]]; do
     --prx)    PRX=1;         shift ;;
     --source) EXTRA_SOURCES+=("$2"); shift 2 ;;
     --common) COMMON_DIR="$2"; shift 2 ;;
+    --name)   DISPLAY_NAME="$2"; shift 2 ;;
     *) echo "build-core: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -125,4 +135,22 @@ else
 
   cp "$INT/$(basename "$OUT")" "$OUT"
   echo "prx: $OUT ($(du -h "$OUT" | cut -f1))"
+fi
+
+if [[ -n "$DISPLAY_NAME" ]]; then
+  info="${OUT%.*}.info"
+  cat > "$info" <<INFO
+display_name = "$DISPLAY_NAME"
+corename = "$DISPLAY_NAME"
+systemname = "$DISPLAY_NAME"
+manufacturer = ""
+categories = "Game"
+authors = ""
+supported_extensions = ""
+license = ""
+permissions = ""
+display_version = ""
+supports_no_game = "true"
+INFO
+  echo "info: $info"
 fi

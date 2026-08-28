@@ -311,3 +311,5 @@ pkg.gp4
 IV0000-*.pkg
 cores/*.a
 .ps4-build-config
+/pkg-stage/
+RTRA*.pkg
