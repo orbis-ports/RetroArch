@@ -82,6 +82,10 @@ static char eboot_path[512]     = {0};
 static enum frontend_fork orbis_fork_mode = FRONTEND_FORK_NONE;
 
 
+#if defined(ORBIS_NET_TRACE)
+void orbis_net_probe(void);
+#endif
+
 static void frontend_orbis_get_env(int *argc, char *argv[],
       void *args, void *params_data)
 {
@@ -182,6 +186,12 @@ static void frontend_orbis_get_env(int *argc, char *argv[],
               g_defaults.dirs[DEFAULT_DIR_MENU_CONFIG]);
    else
       ps4_log("writable root ok: '%s'", g_defaults.dirs[DEFAULT_DIR_MENU_CONFIG]);
+#endif
+
+#if defined(ORBIS_NET_TRACE)
+   /* Which socket API this process is ALLOWED to use, answered on hardware rather than by
+    * reading a symbol table. See the note at the top of ps4/orbis_net_probe.c. */
+   orbis_net_probe();
 #endif
 }
 

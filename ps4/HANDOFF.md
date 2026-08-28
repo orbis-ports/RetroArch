@@ -1943,3 +1943,88 @@ cannot see because to YAML it is a perfectly good string. Every `run:` block now
 Live: `orbis-mesa-c42aa135f234` (16.4 MB, past the link probe), the `cores` Release as the archival
 copy (103 assets, where GitHub stores the index as `default.index-extended`), and the R2 bucket the
 console actually reads. The frontend `.pkg` is still an artifact, not a Release - that needs a tag.
+
+## RetroArchV, and why the title id had to move with the name
+
+The package is now `RetroArchV`, title id `RTRV00001`, content label `RETROARCHV000000`.
+
+⚠ The console decides collisions by **title id**, never by the name on screen. A second package
+carrying `RTRA00001` would not have appeared beside an existing RetroArch install - the installer
+would have treated it as an update and replaced it, silently, with something built by strangers.
+Renaming the title alone would have left that exactly as dangerous while looking solved. Both moved
+together, so the two are different applications as far as the system is concerned and either can be
+removed without touching the other.
+
+`ps4/icon0.png` is 512x512 and opaque on purpose: the system draws icon0 as a square, so the rounded
+corners in `media/ico_src/icon.svg` would have appeared as transparent notches. It is the invader
+from `media/retroarch-vector_invader-only.svg` - cropped to its alpha bounding box, because the
+source has ~30% padding inside its viewBox and scaling the box rather than the glyph produced a
+small mark floating in a large field - recoloured white over our own gradient, with a chevron mark.
+Verified by content rather than by build success: the icon's bytes appear verbatim inside the
+`.pkg`, alongside one `RetroArchV` and four `RTRV00001`.
+
+Both workflow steps that used to spell `IV0000-RTRA00001_00-RETROARCH0000000.pkg` now glob
+`IV0000-*.pkg` and assert exactly one. They were already stale when this landed - a hardcoded name
+in CI for a value Makefile.orbis owns is a green run that copies a file which no longer exists.
+
+## Networking works, and three defects of one family stood in the way
+
+The Core Downloader lists 101 cores from `http://cores.prx0.com/`, downloads one, extracts it and
+runs it. Databases update too - a 52 MB transfer. All of it measured on hardware.
+
+⚠ **Every step of the diagnosis that reasoned from symbol tables was wrong, and every step that
+measured was right.** Phase 5a concluded no wrapper was needed because `libkernel.so` exports all
+22 POSIX socket calls. That is true and it is not the question. Presence is not permission, and the
+two are indistinguishable at link time.
+
+**1. The socket cannot be made non-blocking by any POSIX route.** Probed:
+
+    fcntl(F_GETFL)  =  2   errno=0     reading flags is allowed
+    fcntl(F_SETFL)  = -1   errno=13    EACCES
+    ioctl(FIONBIO)  = -1   errno=13    EACCES
+    connect()       =  0   errno=0     a blocking connect succeeds
+
+`socket_connect_with_timeout()` calls `socket_nonblock()` FIRST and returns on failure without
+reaching `connect()`, so `net_http` reported `socket_connect_failed` on a connect that never
+happened. ⚠ That misattribution cost most of an afternoon: it reads as a host problem, then as a
+process with no network authority, and it is neither. `sceNetSetsockopt(SO_NBIO)` works - **applied
+to the descriptor musl's `socket()` returned**, which is also the experimental proof that the two
+APIs share one descriptor namespace. The fix is an ORBIS arm in `socket_set_block()`.
+
+**2. A downloaded core arrives without the execute bit.** The zip extracts to 0666, every `.prx`
+that has ever loaded here is 0777, and `sceKernelLoadStartModule` will not open it. The download
+reported success, the CRC matched, the file was byte-correct, and the core would not load. Nothing
+server-side was wrong, so no assertion in the pipeline could have caught it. `chmod(0777)` in
+`CORE_UPDATER_DOWNLOAD_END` - 0777 and not 0755 because that is the mode of the cores that already
+work, under a different uid than the downloader writes as.
+
+**3. musl's resolver cannot run here, and repairing its flags would not fix it.**
+`sceNetGetDnsInfo()` reports a working nameserver and `getaddrinfo()` still answers -11 with EACCES:
+`__res_msend` opens its query socket as `SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK`, and this SDK
+defines those as 02000000 and 04000 - **Linux's values on a FreeBSD kernel**, which did not accept
+them in `socket()` until FreeBSD 10. ⚠ And overriding `socket()` would not be enough: probed, the
+flagged call returns a valid descriptor AND leaves errno at 13, because musl retries plain, tries
+`fcntl(O_NONBLOCK)`, is refused again, and hands the descriptor back anyway - its resolver then runs
+on a blocking socket it believes is non-blocking. `sceNetPoolCreate()` + `sceNetResolverStartNtoa()`
+resolved in 73 ms first try. ⚠ The pool is the part the first attempt missed;
+`sceNetResolverCreate(memid=0)` fails with 0x80410109.
+
+That is three defects of one family in one day, with the libc++ `ETIMEDOUT` and the `LINUX_FIONBIO`
+in `bits/ioctl.h`: **a musl and a libc++ built against Linux constants, shipped for a FreeBSD
+target.** All of them compile, none of them warn.
+
+**Instruments, kept.** `ps4/orbis_net_probe.c` runs from `frontend_orbis_get_env()` under
+`-DORBIS_NET_TRACE` and answers "which API may this process actually use" on hardware. The same flag
+un-gates `net_http_log_transport_state()`, whose stage names (`dns_lookup_failed`,
+`socket_connect_failed`, `socket_send_failed`) are what turned each of these from a guess into a
+measurement. ⚠ It logs through `ps4_log()`, not `RARCH_LOG` - the probe runs before RetroArch's
+logger exists, and one build printed nothing at all for that reason.
+
+⚠ **And `ps4_log()` writes klog ONLY while netlog is down** (`klogWanted()` in ps4_app.cpp is
+`s_frameKlog || orbis_netlog_ready()==0`). A klog capture alone shows the first few lines of a boot
+and then goes quiet. Capture UDP.
+
+⚠ **This console's FTP does not return binaries faithfully.** The same 749,552-byte `.prx` came back
+as 1,104,568 bytes through both lftp and curl, and it is not LF-to-CRLF expansion - the file holds
+907 bytes of 0x0A. Uploads are fine; a 63 MB package installs and runs. Any forensic based on a file
+pulled off this console is based on a corrupted copy.

@@ -167,7 +167,15 @@ jobs:
       - name: Assert the package exists
         run: |
           set -euo pipefail
-          pkg=IV0000-RTRA00001_00-RETROARCH0000000.pkg
+          # Glob, because the title id and content label are Makefile.orbis's to choose and
+          # they have moved once already. Exactly one, so a stale package from a previous run
+          # cannot stand in for a missing one.
+          shopt -s nullglob
+          built=(IV0000-*.pkg)
+          [ "${#built[@]}" -eq 1 ] || {
+            echo "!! expected exactly one IV0000-*.pkg, found ${#built[@]}: ${built[*]:-none}" >&2
+            exit 1; }
+          pkg="${built[0]}"
           for f in retroarch_orbis.elf eboot.bin "$pkg"; do
             [ -f "$f" ] || { echo "!! make reported success but $f is missing" >&2; exit 1; }
           done
@@ -204,12 +212,27 @@ jobs:
         id: rename
         run: |
           set -euo pipefail
+          # ⚠ FIND THE PACKAGE, DO NOT SPELL IT. make-pkg.sh names it
+          # IV0000-<TITLE_ID>_00-<CONTENT_LABEL>.pkg, and both halves live in Makefile.orbis -
+          # they changed once already (RTRA00001/RetroArch -> RTRV00001/RetroArchV, so the app
+          # does not collide with a RetroArch someone already has installed) and a hardcoded
+          # name here would have kept copying a file that no longer existed.
+          shopt -s nullglob
+          built=(IV0000-*.pkg)
+          [ "${#built[@]}" -eq 1 ] || {
+            echo "!! expected exactly one IV0000-*.pkg, found ${#built[@]}: ${built[*]:-none}" >&2
+            exit 1; }
+
           # GITHUB_REF_NAME can contain a slash (a branch like foo/bar); the filename cannot.
           ref="${GITHUB_REF_NAME//\//-}"
-          out="RetroArch-PS4-${ref}.pkg"
-          cp -f IV0000-RTRA00001_00-RETROARCH0000000.pkg "$out"
+          # Tags are retroarch-ps4-v0.1.0, so the raw ref would produce
+          # RetroArchV-PS4-retroarch-ps4-v0.1.0.pkg. Drop the prefix the tag and the filename
+          # already agree on.
+          ref="${ref#retroarch-ps4-}"
+          out="RetroArchV-PS4-${ref}.pkg"
+          cp -f "${built[0]}" "$out"
           echo "pkg=$out" >> "$GITHUB_OUTPUT"
-          echo "== $out"
+          echo "== ${built[0]} -> $out"
 
       - uses: actions/upload-artifact@v4
         with:
