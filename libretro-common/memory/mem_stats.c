@@ -91,6 +91,7 @@ extern char *_newlib_heap_base, *_newlib_heap_end, *_newlib_heap_cur;
 #include <malloc.h>
 #elif defined(MEM_STATS_ORBIS)
 #include <orbis/libkernel.h>
+#include "../../ps4/ps4_mem.h"
 #elif defined(MEM_STATS_PS3)
 #ifdef __PSL1GHT__
 #include <ppu-lv2.h>
@@ -335,11 +336,7 @@ uint64_t mem_stats_total(void)
    }
 #endif
 #elif defined(MEM_STATS_ORBIS)
-   {
-      size_t max_mem = 0, cur_mem = 0;
-      get_user_mem_size(&max_mem, &cur_mem);
-      return (uint64_t)max_mem;
-   }
+   return ps4_mem_total();
 #elif defined(MEM_STATS_PS3)
    {
       sys_memory_info_t mem_info;
@@ -454,15 +451,9 @@ uint64_t mem_stats_free(void)
    }
 #endif
 #elif defined(MEM_STATS_ORBIS)
-   /* get_user_mem_size reports the ceiling and what is taken, so free
-    * is the difference.  The frontend wired the taken figure straight
-    * into the free slot, which had this platform reporting the opposite
-    * of what every caller asked for. */
-   {
-      size_t max_mem = 0, cur_mem = 0;
-      get_user_mem_size(&max_mem, &cur_mem);
-      return (max_mem > cur_mem) ? (uint64_t)(max_mem - cur_mem) : 0;
-   }
+   /* Flexible memory, which is the pool RetroArch's own allocations come out of.
+    * ps4/ps4_mem.h says why it is not the direct pool. */
+   return ps4_mem_free();
 #elif defined(MEM_STATS_PS3)
    /* named get_mem_used in the frontend, but what it read was avail */
    {

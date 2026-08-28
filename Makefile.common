@@ -1214,11 +1214,6 @@ ifeq ($(TARGET), retroarch_ps2)
           audio/drivers/ps2_audio.o
 endif
 
-ifeq ($(TARGET), retroarch_orbis)
-   OBJ +=  input/drivers/ps4_input.o \
-	   input/drivers_joypad/ps4_joypad.o \
-	   audio/drivers/psp_audio.o
-endif
 
 ifeq ($(TARGET), retroarch_vita)
    OBJ +=  input/drivers/psp_input.o \
@@ -1261,9 +1256,14 @@ ifeq ($(TARGET), retroarch_switch)
           frontend/drivers/platform_switch.o
 endif
 
+# The PS4 port names only what it has. It used to name five objects it did not:
+# ps4_input.c, ps4_joypad.c and platform_orbis.c were written against the orbisdev
+# SDK (orbisPad.h, ps4link.h, debugnet.h, user_mem.h - none of which the OpenOrbis
+# toolchain has), psp_audio.c is the Vita's, and orbis_ctx.c is Sony's Piglet GLES2
+# in the VSH process. None of it compiled here; the CI that stayed green only ever
+# linked HAVE_STATIC_DUMMY against stub headers. See ps4/PLAN.md.
 ifeq ($(TARGET), retroarch_orbis)
-   OBJ += gfx/drivers_context/orbis_ctx.o \
-          frontend/drivers/platform_orbis.o
+   OBJ += frontend/drivers/platform_orbis.o
 endif
 
 ifeq ($(DINGUX), 1)

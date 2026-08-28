@@ -1,208 +1,270 @@
-TARGET		    := retroarch_orbis
-DEBUG               ?= 0
-GRIFFIN_BUILD        = 0
-WHOLE_ARCHIVE_LINK   = 0
+# RetroArch for the PlayStation 4 — OpenOrbis toolchain.
+#
+#   make -f Makefile.orbis -j$(nproc)
+#
+# ⚠ THIS FILE REPLACED AN orbisdev BUILD, and the two are not variants of one thing.
+# The port that stood here from 2018 targeted the orbisdev SDK: $ORBISDEV,
+# --target=x86_64-scei-ps4, crt0.o, orbis-elf-create, make_fself.py, -lorbisPad
+# -lorbisLink -ldebugnet. Nothing else in ~/src-ps4 speaks that toolchain, and
+# orbis-compat — which corrects declarations THIS SDK gets wrong — only exists for
+# OpenOrbis. Keeping both would have meant maintaining the corrections twice.
+# See ps4/PLAN.md §1 for what the old port was and why none of it survived.
+#
+# The flags below are a TRANSCRIPTION of orbis-compat/cmake/ps4-openorbis.cmake.
+# That file is normative; this one cannot include it (RetroArch is Makefile-driven),
+# so when it changes, this changes. The comments that explain WHY a flag is what it
+# is live there — only the load-bearing ones are repeated here.
 
-HAVE_STATIC_DUMMY ?= 0
-HAVE_GLES3 ?= 0
-HAVE_MOUSE ?= 0
-HAVE_KEYBOARD ?= 0
+TARGET             := retroarch_orbis
 
-PS4_TITLE_ID	:= RETROARCH
-PS4_TITLE_NAME	:= RetroArch
+DEBUG              ?= 0
+GRIFFIN_BUILD      ?= 0
+# Default 1, unlike every other console Makefile: until a libretro core is built
+# with this toolchain there is nothing to link, and cores/dynamic_dummy.c is what
+# lets the frontend link and boot without one. Phase 6 flips this.
+HAVE_STATIC_DUMMY  ?= 1
+WHOLE_ARCHIVE_LINK ?= 0
 
-PC_DEVELOPMENT_IP_ADDRESS  = 192.168.1.137
-PC_DEVELOPMENT_UDP_PORT	   = 18194
+PS4_TITLE_ID       := RETROARCH
+PS4_TITLE_NAME     := RetroArch
 
-AUTH_INFO = 000000000000000000000000001C004000FF000000000080000000000000000000000000000000000000008000400040000000000000008000000000000000080040FFFF000000F000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+# ---------------------------------------------------------------------------
+# Toolchain and the platform overlay.
+# ---------------------------------------------------------------------------
+OO_PS4_TOOLCHAIN   ?= $(HOME)/.local/opt/openorbis
+ORBIS_COMPAT_DIR   ?= $(HOME)/src-ps4/orbis-compat
+TOOLCHAIN          := $(OO_PS4_TOOLCHAIN)
 
-OBJ += deps/xxHash/xxhash.o \
-# 	input/drivers/ps4_input.o \
-# 	input/drivers_joypad/ps4_joypad.o \
-# 	audio/drivers/psp_audio.o \
-# 	gfx/drivers_context/orbis_ctx.o \
-# 	frontend/drivers/platform_orbis.o
-
-ifeq ($(HAVE_GLES3),1)
-  DEFINES += -DHAVE_OPENGLES3
+ifeq ($(wildcard $(TOOLCHAIN)/link.x),)
+  $(error OpenOrbis toolchain not found at '$(TOOLCHAIN)'. Set OO_PS4_TOOLCHAIN.)
 endif
 
+# ⚠ orbis-compat is not optional and not a convenience. The SDK ships musl's headers
+# over Sony's FreeBSD-derived implementation, and the two disagree structurally: four
+# pthread types are declared 4 bytes where Sony writes 8 (measured on hardware), and
+# the libc++/SDK include order decides whether std::abs(float) silently truncates to
+# int. Building without the overlay compiles and is wrong.
+ORBIS_COMPAT_LIB   := $(ORBIS_COMPAT_DIR)/build/liborbis-compat.a
+ifeq ($(wildcard $(ORBIS_COMPAT_DIR)/include/orbis_prefix.h),)
+  $(error orbis-compat not found at '$(ORBIS_COMPAT_DIR)'. Set ORBIS_COMPAT_DIR.)
+endif
+
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+  OO_BINDIR := $(TOOLCHAIN)/bin/macos
+else
+  OO_BINDIR := $(TOOLCHAIN)/bin/linux
+endif
+
+CC  := clang
+CXX := clang++
+LD  := clang
+AR  := llvm-ar
+
+# ---------------------------------------------------------------------------
+# Feature set.
+#
+# ⚠ NO OPENGL, NO EGL, NO PIGLET. The old build linked -lScePigletv2VSH_stub and
+# ran Sony's GLES2 out of the VSH process; this port exists to not need that. Video
+# is CPU-drawn (Phase 3) until the RADV port in ~/src-ps4/mesa-ps4 is wired in
+# (Phase 7). Enabling HAVE_OPENGL here would pull gfx/drivers_context/orbis_ctx.c,
+# which is the Piglet path.
+#
+# ⚠ RGUI ONLY. XMB, Ozone, MaterialUI and the gfx widgets all want a GL or Vulkan
+# driver. RGUI is software and draws its own bitmap font. They come back in Phase 7.
+#
+# ⚠ NO ONLINE UPDATER, NO CORE DOWNLOADER. Not squeamishness: the build is static
+# (HAVE_DYNAMIC=0), so a downloaded core cannot be loaded, and networking is off
+# until the socket stack is known good. Shipping menu entries that cannot work is
+# worse than not shipping them.
+# ---------------------------------------------------------------------------
+ifeq ($(GRIFFIN_BUILD),1)
+  OBJ += griffin/griffin.o
+  DEFINES += -DHAVE_GRIFFIN=1 -DHAVE_MENU -DHAVE_LIBRETRODB -DHAVE_CONFIGFILE
+  DEFINES += -DHAVE_RPNG -DHAVE_RWEBP -DHAVE_RDDS -DHAVE_RJPEG -DHAVE_RBMP -DHAVE_RTGA -DHAVE_CC_RESAMPLER
+  DEFINES += -DHAVE_CORE_INFO_CACHE
+else
+  HAVE_MENU                 := 1
+  HAVE_MENU_COMMON          := 1
+  HAVE_RGUI                 := 1
+  HAVE_XMB                  := 0
+  HAVE_OZONE                := 0
+  HAVE_MATERIALUI           := 0
+  HAVE_GFX_WIDGETS          := 0
+  HAVE_CONFIGFILE           := 1
+  HAVE_LIBRETRODB           := 1
+  HAVE_CORE_INFO_CACHE      := 1
+  HAVE_LANGEXTRA            := 1
+  HAVE_THREADS              := 1
+  HAVE_THREAD_ATTR          := 1
+  HAVE_RUNAHEAD             := 1
+  HAVE_CC_RESAMPLER         := 1
+  HAVE_RPNG                 := 1
+  HAVE_RJPEG                := 1
+  HAVE_RBMP                 := 1
+  HAVE_RTGA                 := 1
+  HAVE_RWEBP                := 1
+  HAVE_RDDS                 := 1
+  HAVE_RVORBIS              := 1
+  HAVE_RFLAC                := 1
+  HAVE_RMP3                 := 1
+  HAVE_7ZIP                 := 1
+  HAVE_CHD                  := 1
+  HAVE_COMPRESSION          := 1
+  HAVE_FILTERS_BUILTIN      := 1
+  HAVE_STATIC_VIDEO_FILTERS := 1
+  HAVE_STATIC_AUDIO_FILTERS := 1
+  HAVE_NETWORKING           := 0
+  HAVE_IFINFO               := 0
+  HAVE_SOCKET_LEGACY        := 1
+  HAVE_CHEEVOS              := 0
+  HAVE_OVERLAY              := 0
+  HAVE_MAIN                 := 1
+  RARCH_CONSOLE             := 1
+
+  include Makefile.common
+  CFLAGS += $(DEF_FLAGS)
+  OBJ := $(filter-out $(BLACKLIST),$(OBJ))
+endif
+
+# ---------------------------------------------------------------------------
+# Flags — transcribed from orbis-compat/cmake/ps4-openorbis.cmake.
+# ---------------------------------------------------------------------------
+# _BSD_SOURCE: the SDK libc is musl, which hides POSIX declarations when
+# __STRICT_ANSI__ is set — which -std=cNN always sets.
+# ORBIS/__ORBIS__/__PS4__/PS4: RetroArch's own ifdefs key off ORBIS
+# (libretro-common/dynamic/dylib.c), the overlay's off __PS4__. Both, always.
+ARCHFLAGS := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables \
+             -isysroot $(TOOLCHAIN) \
+             -DORBIS -D__ORBIS__ -D__PS4__ -DPS4 -D_BSD_SOURCE=1
+
+# ⚠ THE OVERLAY GOES AHEAD OF THE SDK, AND MUST. It corrects musl declarations by
+# defining musl's own __DEFINED_<name> guards before bits/alltypes.h is reached.
+# Behind the SDK's directory it would compile, do nothing, and say nothing.
+C_INCLUDES   := -isystem $(ORBIS_COMPAT_DIR)/include -isystem $(TOOLCHAIN)/include
+
+# ⚠ AND FOR C++, libc++ GOES AHEAD OF BOTH. libc++ ships C-header wrappers that
+# #include_next the platform header and add the C++ overloads; the float abs()
+# overloads live in libc++'s <stdlib.h>. With the C directory first, std::abs(float)
+# resolves to musl's int abs(int) and truncates — silently, at every call site.
+# orbis_prefix.h (<stddef.h> + <stdint.h>, nothing else) is needed because the SDK's
+# own orbis/*.h are not self-contained.
+CXX_INCLUDES := -isystem $(TOOLCHAIN)/include/c++/v1 \
+                -isystem $(ORBIS_COMPAT_DIR)/include -isystem $(TOOLCHAIN)/include \
+                -include orbis_prefix.h
+
+INCDIRS += -I. -Ideps -Ilibretro-common/include -Ideps/rcheevos/include \
+           -I$(ORBIS_COMPAT_DIR)/include
+
+# ⚠ THE LOG CHANNEL IS ADOPTED BY NAMING ITS SOURCE, which is how orbis-compat/optional
+# is meant to be used: it is POLICY, not correction, so it is deliberately NOT inside
+# liborbis-compat.a. ps4_app.cpp decides that a dying process idles rather than returns
+# and obliges the link to carry -lSceNet; orbis_netlog.cpp is the UDP transport under it.
+# Both register into orbis_log.h's hooks, which is how the overlay's own corrections get
+# a channel without knowing this file exists.
+ORBIS_COMPAT_OBJ := ps4/oc_ps4_app.o ps4/oc_netlog.o ps4/ps4_log.o ps4/ps4_mem.o
+OBJ += $(ORBIS_COMPAT_OBJ)
+
+# Where the datagrams go, and what the first log line says the console is running.
+# scripts/ps4/logs.sh in orbis-compat binds this port.
+PS4_NETLOG_HOST ?= 192.168.100.1
+PS4_NETLOG_PORT ?= 18194
+PS4_APP_STAMP   := $(shell date -u '+%Y-%m-%d %H:%M') $(shell git rev-parse --short HEAD 2>/dev/null)$(shell git diff --quiet 2>/dev/null || echo -dirty)
+OC_DEFINES      := -DNETLOG_HOST='"$(PS4_NETLOG_HOST)"' -DNETLOG_PORT=$(PS4_NETLOG_PORT) \
+                   -DPS4_APP_BUILD_STAMP='"$(PS4_APP_STAMP)"'
+
+DEFINES += -DRARCH_INTERNAL -DRARCH_CONSOLE -DHAVE_FILTERS_BUILTIN
+
+# ⚠ -Werror IS DELIBERATELY OFF, and the old build's was load-bearing for nothing:
+# it was only ever exercised by a CI job that linked HAVE_STATIC_DUMMY against stub
+# headers, so it never saw a real translation unit. Turning it back on is a task for
+# after the port compiles, with the warning list read rather than pre-suppressed.
+# These four are suppressed because the SDK's own headers produce them:
+DEFINES += -Wno-macro-redefined -Wno-typedef-redefinition \
+           -Wno-non-literal-null-conversion -Wno-implicit-function-declaration
+
+# ⚠ THIS BLOCK GOES BEFORE CFLAGS IS COMPOSED. CFLAGS is a := assignment, so a DEFINES
+# appended after it never reaches the compiler - which is how the first build of this
+# file compiled all 261 objects and then failed to link on twenty undefined retro_*
+# symbols: cores/dynamic_dummy.c had not seen -DHAVE_STATIC_DUMMY.
 ifeq ($(HAVE_STATIC_DUMMY),1)
-  DEFINES += -DHAVE_STATIC_DUMMY
-endif
-
-ifeq ($(GRIFFIN_BUILD), 1)
-	OBJ += griffin/griffin.o
-	DEFINES += -DHAVE_GRIFFIN=1
-	DEFINES += -DHAVE_MENU -DHAVE_LIBRETRODB -DHAVE_CONFIGFILE
-	DEFINES += -DHAVE_RPNG -DHAVE_RWEBP -DHAVE_RDDS -DHAVE_RJPEG -DHAVE_RBMP -DHAVE_RTGA -DHAVE_CC_RESAMPLER
-	DEFINES += -DHAVE_CORE_INFO_CACHE
-	ifeq ($(DEBUG), 1)
-		DEFINES += -DHAVE_NETLOGGER
-	endif
+  DEFINES  += -DHAVE_STATIC_DUMMY
+  CORE_LIB :=
 else
-
-	HAVE_FILTERS_BUILTIN	:= 1
-	HAVE_LANGEXTRA				:= 1
-	HAVE_IMAGEVIEWER 			:= 1
-	HAVE_RPNG							:= 1
-	HAVE_RWEBP						:= 1
-	HAVE_RDDS						:= 1
-	HAVE_RJPEG						:= 1
-	HAVE_RBMP							:= 1
-	HAVE_RTGA							:= 1
-	HAVE_OVERLAY					:= 1
-	HAVE_7ZIP							:= 1
-	HAVE_EGL 							:= 1
-	HAVE_GFX_WIDGETS 			:= 1
-	HAVE_GLSL      				:= 1
-	HAVE_SHADERPIPELINE  	:= 1
-	HAVE_OPENGL  					:= 1
-	HAVE_OPENGLES  				:= 1
-	HAVE_OPENGLES2  			:= 1
-	HAVE_NETWORKING				:= 0
-	HAVE_IFINFO				:= 0
-	HAVE_SOCKET_LEGACY		:= 1
-	HAVE_MENU							:= 1
-	HAVE_MENU_COMMON			:= 1
-	HAVE_RGUI							:= 1
-	HAVE_RVORBIS				:= 1
-	HAVE_RFLAC					:= 1
-	HAVE_RMP3						:= 1
-	HAVE_MATERIALUI 			:= 1
-	HAVE_XMB							:= 1
-	HAVE_OZONE						:= 1
-	HAVE_RGUI							:= 1
-	HAVE_THREADS					:= 1
-	HAVE_THREAD_ATTR			:= 1
-	HAVE_LIBRETRODB				:= 1
-	HAVE_CC_RESAMPLER			:= 1
-	HAVE_CHEEVOS					:= 0
-	HAVE_RUNAHEAD					:= 1
-	RARCH_CONSOLE					:= 1
-	HAVE_MAIN 						:= 1
-	HAVE_ONLINE_UPDATER 	:= 1
-	HAVE_COMPRESSION 			:= 1
-	HAVE_UPDATE_ASSETS 		:= 1
-	HAVE_UPDATE_CORES 		:= 1
-	HAVE_UPDATE_CORE_INFO 		:= 1
-	HAVE_CONFIGFILE 			:= 1
-	HAVE_CHD 							:= 1
-	HAVE_STATIC_VIDEO_FILTERS = 1
-	HAVE_STATIC_AUDIO_FILTERS = 1
-	HAVE_CORE_INFO_CACHE	:= 1
-
-	ifeq ($(DEBUG), 1)
-		HAVE_NETLOGGER = 1
-	endif
-
-	include Makefile.common
-	CFLAGS += $(DEF_FLAGS)
-	OBJ := $(filter-out $(BLACKLIST),$(OBJ))
+  CORE_LIB := $(WHOLE_START) -lretro_orbis $(WHOLE_END)
 endif
 
-ifeq ($(strip $(ORBISDEV)),)
-$(error "Please set ORBISDEV in your environment. export ORBISDEV=<path to>orbisdev")
-endif
+CFLAGS   := $(ARCHFLAGS) $(C_INCLUDES)   $(INCDIRS) $(DEFINES) $(CFLAGS)
+CXXFLAGS := $(ARCHFLAGS) $(CXX_INCLUDES) $(INCDIRS) $(DEFINES)
 
-PREFIX := orbis-
-CC      := clang
-CXX     := clang++
-AS      := $(PREFIX)as
-AR      := $(PREFIX)ar
-OBJCOPY := $(PREFIX)objcopy
-STRIP   := $(PREFIX)strip
-NM      := $(PREFIX)nm
-LD      := clang
-
-LIBDIRS += -L. -Lcores -Lbuild -L$(ORBISDEV)/usr/lib
-INCDIRS += -I. -Idefines -Ideps -Ilibretro-common/include -Ideps/rcheevos/include -I$(ORBISDEV)/usr/include -I$(ORBISDEV)/usr/include/c++/v1 -I$(ORBISDEV)/usr/include/orbis
-
-ARCHFLAGS += --target=x86_64-scei-ps4 -DORBIS -D__ORBIS__ -D__PS4__ -D_BSD_SOURCE
-DEFINES += -DRARCH_INTERNAL -DRARCH_CONSOLE -DHAVE_FILTERS_BUILTIN \
-					 -DHAVE_XMB -DHAVE_RGUI -DHAVE_OZONE \
-					 -DHAVE_ONLINE_UPDATER -DHAVE_UPDATE_CORES -DHAVE_UPDATE_CORE_INFO -DHAVE_UPDATE_ASSETS \
-
-# Compiling with -Werror and disabling some warnings
-DEFINES += -Werror -Wno-macro-redefined -Wno-typedef-redefinition -Wno-non-literal-null-conversion -Wno-void-pointer-to-int-cast \
-	-Wno-format -Wno-tautological-constant-out-of-range-compare -Wno-implicit-function-declaration
-
-ifeq ($(HAVE_KEYBOARD), 1)
-  DEFINES += -DHAVE_KEYBOARD
-  PS4_LIBS += -lSceDbgKeyboard_stub
-endif
-
-ifeq ($(HAVE_MOUSE),1)
-  DEFINES += -DHAVE_MOUSE
-  PS4_LIBS += -lSceMouse_stub
-endif
-
-ifneq ($(PC_DEVELOPMENT_IP_ADDRESS),)
-  DEFINES += -DPC_DEVELOPMENT_IP_ADDRESS='"$(PC_DEVELOPMENT_IP_ADDRESS)"'
-endif
-
-ifneq ($(PC_DEVELOPMENT_UDP_PORT),)
-  DEFINES += -DPC_DEVELOPMENT_UDP_PORT=$(PC_DEVELOPMENT_UDP_PORT)
-endif
-
-ifeq ($(WHOLE_ARCHIVE_LINK), 1)
-  WHOLE_START := --whole-archive
-  WHOLE_END := --no-whole-archive
-endif
-
-PS4_LIBS += -luser_mem_sys -lkernel_stub -lSceLibcInternal_stub -lunwind -lc++ -lc++abi -lc++experimental \
-				-lorbisLink -lkernelUtil -ldebugnet -lorbisNfs -lSceSysmodule_stub -lSceSystemService_stub -lSceNet_stub \
-				-lSceUserService_stub -lScePigletv2VSH_stub -lSceVideoOut_stub -lSceGnmDriver_stub -lorbisPad \
-				-lScePad_stub -lSceAudioOut_stub -lSceIme_stub -lSceNetCtl_stub -lSQLite
-
-ifeq ($(HAVE_STATIC_DUMMY),1)
-  LIBS	:= $(PS4_LIBS)
+ifeq ($(DEBUG),1)
+  CFLAGS   += -O0 -g -fno-inline
+  CXXFLAGS += -O0 -g -fno-inline
 else
-  LIBS	:= $(WHOLE_START) -lretro_orbis $(WHOLE_END) $(PS4_LIBS)
+  CFLAGS   += -O2
+  CXXFLAGS += -O2
 endif
 
+# ---------------------------------------------------------------------------
+# Link.
+#
+# --no-rosegment: modern ld.lld emits a separate, non-page-aligned read-only
+# PT_LOAD. The PS4 loader rounds segment sizes to 0x1000 and maps raw p_vaddr, so
+# that extra segment overlaps the text segment and the image is rejected.
+#
+# --whole-archive on orbis-compat: nothing REFERENCES an interposer. backtrace,
+# __mmap and the rest exist to be preferred over the SDK's definitions, and a linker
+# pulls an archive member in only when something already wants it.
+#
+# crt1.o last, after the SDK libs — the order the SDK's own link rule uses.
+# ---------------------------------------------------------------------------
+# -lSceNet is here for the log channel, not for networking: ps4_app tees every line
+# over a UDP datagram to the dev host, and that is the only channel that says anything
+# when the console is not next to a TV. HAVE_NETWORKING stays 0.
+PS4_LIBS := -lSceVideoOut -lScePad -lSceAudioOut -lSceUserService \
+            -lSceSystemService -lSceSysmodule -lSceIme -lSceNet
 
-CFLAGS   := $(ARCHFLAGS) $(INCDIRS) $(DEFINES)
-CXXFLAGS := $(ARCHFLAGS) $(INCDIRS) $(DEFINES)
-LDFLAGS  := $(LIBDIRS) -Wl,--gc-sections -Wl,-z -Wl,max-page-size=0x4000 -Wl,--dynamic-linker="/libexec/ld-elf.so.1" -Wl,-pie -Wl,--eh-frame-hdr -target x86_64-scei-ps4-elf -T $(ORBISDEV)/usr/lib/linker.x
+LDFLAGS := -nostdlib -fuse-ld=lld -pie --target=x86_64-pc-freebsd12-elf \
+           -Wl,-m,elf_x86_64 -Wl,--script=$(TOOLCHAIN)/link.x \
+           -Wl,--eh-frame-hdr -Wl,--no-rosegment \
+           -L$(TOOLCHAIN)/lib -Lcores -Lbuild
 
-ifeq ($(DEBUG), 1)
-   CFLAGS += -O0 -fno-inline
-   CXXFLAGS += -O0 -fno-inline
-else
-   CFLAGS += -O3
-   CXXFLAGS += -O3
+ifeq ($(WHOLE_ARCHIVE_LINK),1)
+  WHOLE_START := -Wl,--whole-archive
+  WHOLE_END   := -Wl,--no-whole-archive
 endif
 
+LIBS := $(CORE_LIB) $(PS4_LIBS) \
+        -Wl,--whole-archive $(ORBIS_COMPAT_LIB) -Wl,--no-whole-archive \
+        -lc -lkernel -lc++ -lc++abi -lunwind $(TOOLCHAIN)/lib/crt1.o
+
+# ---------------------------------------------------------------------------
+# Rules.
+# ---------------------------------------------------------------------------
 ifneq ($(V),1)
-        Q := @
+  Q := @
 endif
 
-TARGETS := $(TARGET).self
+OBJOUT  := -o
+TARGETS := $(TARGET).elf eboot.bin
 
 all: $(TARGETS)
 
 define INFO
-CC: $(CC)
-CFLAGS: $(CFLAGS)
-CXX: $(CXX)
-CXXFLAGS: $(CXXFLAGS)
-LD: $(LD)
-LDFLAGS: $(LDFLAGS)
-LIBS: $(LIBS)
-OBJ: $(OBJ)
-OBJOUT: $(OBJOUT)
-ORBISDEV: $(ORBISDEV)
-TARGET: $(TARGET)
+CC:        $(CC)
+CFLAGS:    $(CFLAGS)
+CXXFLAGS:  $(CXXFLAGS)
+LD:        $(LD)
+LDFLAGS:   $(LDFLAGS)
+LIBS:      $(LIBS)
+TOOLCHAIN: $(TOOLCHAIN)
+OVERLAY:   $(ORBIS_COMPAT_DIR)
+OBJ:       $(OBJ)
 endef
 export INFO
 
 info:
-ifneq ($(V),1)
 	@echo "$$INFO"
-endif
-
-OBJOUT   = -o
 
 %.o: %.c
 	@$(if $(Q), $(shell echo echo CC $<),)
@@ -216,25 +278,30 @@ OBJOUT   = -o
 	@$(if $(Q), $(shell echo echo CC $<),)
 	$(Q)$(CC) $(CFLAGS) -c $(OBJOUT)$@ $<
 
-%.o: %.s
-	@$(if $(Q), $(shell echo echo CC $<),)
-	$(Q)$(CC) -c $(OBJOUT)$@ $<
+ps4/oc_ps4_app.o: $(ORBIS_COMPAT_DIR)/optional/ps4_app.cpp
+	@$(if $(Q), $(shell echo echo CXX $<),)
+	$(Q)$(CXX) $(CXXFLAGS) $(OC_DEFINES) -c $(OBJOUT)$@ $<
 
-$(TARGET).elf: $(OBJ)
+ps4/oc_netlog.o: $(ORBIS_COMPAT_DIR)/optional/orbis_netlog.cpp
+	@$(if $(Q), $(shell echo echo CXX $<),)
+	$(Q)$(CXX) $(CXXFLAGS) $(OC_DEFINES) -c $(OBJOUT)$@ $<
+
+$(ORBIS_COMPAT_LIB):
+	$(error orbis-compat is not built: no $(ORBIS_COMPAT_LIB). Run ./build.sh in $(ORBIS_COMPAT_DIR).)
+
+$(TARGET).elf: $(OBJ) $(ORBIS_COMPAT_LIB)
 	@$(if $(Q), $(shell echo echo LD $@),)
-	$(Q)$(LD) $(ORBISDEV)/usr/lib/crt0.o $(OBJ) $(LDFLAGS) $(LIBS) -o $(TARGET).elf
+	$(Q)$(LD) $(OBJ) $(LDFLAGS) $(LIBS) -o $@
 
-$(TARGET).oelf: $(TARGET).elf
-	orbis-elf-create $(TARGET).elf $(TARGET).oelf
-
-$(TARGET).self: $(TARGET).oelf
-	python $(ORBISDEV)/bin/make_fself.py --auth-info $(AUTH_INFO) $(TARGET).oelf $(TARGET).self
-
-install:
-	cp $(TARGET).self $(SELF_PATH_INSTALL)/homebrew.self
-	@echo "Installed!"
+# create-fself turns the ELF into an Orbis ELF and the eboot.bin a console expects.
+# unemups4 loads the plain .elf directly, so the eboot is only the hardware path.
+# PAID 0x3800000000000011 is the value every OpenOrbis sample uses for homebrew.
+eboot.bin: $(TARGET).elf
+	@$(if $(Q), $(shell echo echo FSELF $@),)
+	$(Q)$(OO_BINDIR)/create-fself -in=$(TARGET).elf -out=$(TARGET).oelf \
+		--eboot $@ --paid 0x3800000000000011 >/dev/null
 
 clean:
-	$(Q)rm -f $(OBJ) $(TARGET).elf $(TARGET).oelf $(TARGET).self
+	$(Q)rm -f $(OBJ) $(TARGET).elf $(TARGET).oelf eboot.bin
 
-.PHONY: clean all
+.PHONY: all clean info
