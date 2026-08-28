@@ -125,6 +125,7 @@ enum video_driver_enum
    VIDEO_PS2,
    VIDEO_CTR,
    VIDEO_SWITCH,
+   VIDEO_PS4,
    VIDEO_D3D8,
    VIDEO_D3D9_CG,
    VIDEO_D3D9_HLSL,
@@ -496,6 +497,10 @@ static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_PS2;
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_CTR;
 #elif defined(SWITCH)
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_SWITCH;
+#elif defined(ORBIS)
+/* The PS4's software driver. Until it existed this platform fell through the whole chain
+ * to VIDEO_NULL, which is why the port could boot without a display at all. */
+static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_PS4;
 #elif defined(HAVE_XVIDEO)
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_XVIDEO;
 #elif defined(HAVE_SDL3)
@@ -1159,6 +1164,8 @@ const char *config_get_default_video(void)
          return "ctr";
       case VIDEO_SWITCH:
          return "switch";
+      case VIDEO_PS4:
+         return "ps4";
       case VIDEO_XVIDEO:
          return "xvideo";
       case VIDEO_SDL_DINGUX:

@@ -170,6 +170,20 @@ void ps4_video_out_close(ps4_video_out_t *vo)
    free(vo);
 }
 
+void ps4_video_out_clear(ps4_video_out_t *vo)
+{
+   size_t   fb_bytes;
+   unsigned i;
+
+   if (!vo)
+      return;
+
+   fb_bytes = (size_t)vo->pitch_px * vo->height * sizeof(uint32_t);
+
+   for (i = 0; i < vo->count; i++)
+      memset(vo->fb[i], 0, fb_bytes);
+}
+
 uint32_t *ps4_video_out_backbuffer(ps4_video_out_t *vo)
 {
    return vo ? vo->fb[vo->back] : NULL;
