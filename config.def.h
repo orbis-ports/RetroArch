@@ -1905,6 +1905,42 @@
 
 #if defined(HAKCHI)
 #define DEFAULT_BUILDBOT_SERVER_URL "http://hakchicloud.com/Libretro_Cores/"
+#elif defined(ORBIS)
+/* ⚠ THIS MUST LAND IN THE SAME COMMIT AS HAVE_NETWORKING=1 IN Makefile.orbis, and the
+ * reason is what the user sees rather than what the code does.
+ *
+ * Without an arm here ORBIS falls through the whole chain - it is not __linux__, not
+ * _WIN32, not any of the consoles - to the final `#define DEFAULT_BUILDBOT_SERVER_URL ""`.
+ * An empty base URL does not disable the Core Downloader; it makes it fetch nothing and
+ * report nothing, which is a menu entry that looks broken. And the moment someone "fixes"
+ * that by borrowing the Linux/x86_64 URL - the same architecture, after all - the downloader
+ * fills with x86-64 ELF shared objects that download happily, land in the cores directory
+ * beside ours, appear in the core list and fail to load every time with no explanation.
+ * Both changes together, or neither.
+ *
+ * The host is a Cloudflare R2 bucket, and the trailing slash is required: RetroArch joins
+ * each filename from .index-extended onto this base URL and never stores a URL per core, so
+ * the index and the payloads must sit in one directory.
+ *
+ * ⚠ R2 rather than GitHub Releases because of the leading dot. A Release asset uploaded as
+ * .index-extended is silently renamed to default.index-extended - measured, the dotted name
+ * 404s - and the filename is hardcoded at tasks/task_core_updater.c:389. R2 keeps the key
+ * verbatim, so the client needs no patch.
+ *
+ * ⚠ http, ON PURPOSE, AND IT IS WHAT MAKES THIS WORK AT ALL. HAVE_SSL is 0 - BearSSL is
+ * phase 5b - so an https base URL would fail in the handshake and produce a silent empty core
+ * list. The bucket's own pub-*.r2.dev hostname answers plain http with a 301 to https, which
+ * net_http.c:2329 follows straight into that handshake; a custom domain does not, because
+ * Always Use HTTPS is off for this hostname. That is the whole reason the domain exists.
+ *
+ * Point it somewhere else for a bring-up test without editing this file:
+ *
+ *     make -f Makefile.orbis ORBIS_BUILDBOT_URL=http://192.168.100.1:8000/ ...
+ */
+#ifndef ORBIS_BUILDBOT_SERVER_URL
+#define ORBIS_BUILDBOT_SERVER_URL "http://cores.prx0.com/"
+#endif
+#define DEFAULT_BUILDBOT_SERVER_URL ORBIS_BUILDBOT_SERVER_URL
 #elif defined(WEBOS)
 #if defined(__arm__)
 #define DEFAULT_BUILDBOT_SERVER_URL "http://buildbot.libretro.com/nightly/webos/armv7a/latest/"

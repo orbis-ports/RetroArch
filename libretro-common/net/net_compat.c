@@ -624,6 +624,44 @@ failure:
    }
 
    return true;
+#elif defined(ORBIS)
+   /* ⚠ THE ONLY THING THIS PLATFORM NEEDS, and it is not the socket API.
+    *
+    * connect/bind/listen/accept/select/poll/close and the rest come from libkernel under
+    * their POSIX names - see the long note in net_compat.h - so nothing below has to be
+    * redirected. What does not come for free is the network stack itself: musl's resolver
+    * asks libSceNet for the console's DNS servers (sceNetGetDnsInfo, in resolvconf.lo), and
+    * that call answers with an error until sceNetInit() has run. Without this arm, name
+    * resolution fails on a console that is plainly online, which reads as a dead HTTP task.
+    *
+    * ⚠ THE RETURN VALUE IS DELIBERATELY NOT FATAL. sceNetInit() answers with a negative SCE
+    * code when the stack is ALREADY up, and this SDK's orbis/Net.h names no constant for
+    * that case - it declares `int32_t sceNetInit();` and nothing else. The log channel
+    * (orbis-compat/optional/orbis_netlog.cpp) calls sceNetInit() during early boot and then
+    * sends datagrams successfully on hardware, so by the time RetroArch reaches here the
+    * second call is the expected one. Treating its error as failure would turn the proven
+    * path into the broken one.
+    *
+    * ⚠ NO sceNetCtl WAIT. The PS3 and Vita arms above poll for an IP because their stacks
+    * come up with the title. Here the system is already associated before the application
+    * starts; there is nothing to wait for, and a wait loop would only add a stall to every
+    * cold boot. If a console is genuinely offline the connect timeout in
+    * socket_connect_with_timeout() is what reports it, which is where it belongs.
+    */
+   static bool initialized = false;
+
+   if (!initialized)
+   {
+      sceNetInit();
+
+      /* Same reason as the generic branch: a peer that hangs up mid-transfer must not take
+       * the process with it. SIGPIPE is 13 here (bits/signal.h) and signal() is real. */
+      signal(SIGPIPE, SIG_IGN);
+
+      initialized = true;
+   }
+
+   return true;
 #else
    static bool initialized = false;
 

@@ -123,10 +123,11 @@ AR  := llvm-ar
 # ⚠ RGUI ONLY. XMB, Ozone, MaterialUI and the gfx widgets all want a GL or Vulkan
 # driver. RGUI is software and draws its own bitmap font. They come back in Phase 7.
 #
-# ⚠ NO ONLINE UPDATER, NO CORE DOWNLOADER. Not squeamishness: the build is static
-# (HAVE_DYNAMIC=0), so a downloaded core cannot be loaded, and networking is off
-# until the socket stack is known good. Shipping menu entries that cannot work is
-# worse than not shipping them.
+# ⚠ THE ONLINE UPDATER FOLLOWS HAVE_DYNAMIC, NOT HAVE_NETWORKING. Networking is on
+# from phase 5a, but with HAVE_DYNAMIC=0 the frontend carries its core inside the
+# eboot and cannot load a downloaded .prx, so the Core Downloader stays out of the
+# menu in that configuration. Shipping menu entries that cannot work is worse than
+# not shipping them. See the networking block below.
 # ---------------------------------------------------------------------------
 ifeq ($(GRIFFIN_BUILD),1)
   OBJ += griffin/griffin.o
@@ -202,9 +203,99 @@ else
     HAVE_SPIRV_CROSS        := 1
     HAVE_BUILTINSPIRV_CROSS := 1
   endif
-  HAVE_NETWORKING           := 0
+  # ---------------------------------------------------------------------------
+  # Networking — phase 5a. See ps4/HANDOFF.md.
+  #
+  # ⚠ THE SOCKET LAYER IS NOT MISSING, WHICH IS THE OPPOSITE OF WHAT AN EARLIER SURVEY OF
+  # THIS SDK CONCLUDED. That survey looked in the SDK's STATIC archives - libc.a,
+  # libpthread.a, "libkernel.a" - found socket/send/recv/getaddrinfo/inet_pton/fcntl and not
+  # connect/bind/listen/accept/select/poll/close, and sized a sceNet* rewrite of the whole
+  # POSIX API. There is no libkernel.a. The socket calls arrive through the DYNAMIC stub
+  # libkernel.so, which exports every one of them under its POSIX name, and `-lkernel` is
+  # already on the link line below. Verified by linking a probe that takes the address of all
+  # twenty-two calls against this file's own LIBS: it links, with -lSceNet needed for exactly
+  # one symbol - sceNetGetDnsInfo, which musl's resolvconf.lo calls to read the console's DNS
+  # servers. The SDK's own libc is built on this layer; see net_compat.h for the full note.
+  #
+  # ⚠ HAVE_SOCKET_LEGACY MUST BE 0, and this is the one thing that had to change. It was 1
+  # here, inherited from the console Makefiles this file was modelled on, and it is inert
+  # while HAVE_NETWORKING is 0. Turn networking on with it still set and the build stops on
+  # `redefinition of 'addrinfo'` - net_compat.h declares its own struct addrinfo for
+  # platforms that have no getaddrinfo, and this one has a real one in the SDK's netdb.h.
+  # The legacy path would also route name lookups through gethostbyname, throwing away a
+  # resolver that is already wired to the console's network settings.
+  HAVE_NETWORKING           := 1
+  HAVE_SOCKET_LEGACY        := 0
+
+  # The Online Updater and the Core Downloader under it. Neither is a Makefile.common switch -
+  # they are bare defines, the way Makefile.griffin passes them - so they are named here.
+  #
+  # ⚠ AND THEY ARE GATED ON HAVE_DYNAMIC, for the reason the feature comment at the top of
+  # this file already gives: with HAVE_DYNAMIC=0 the frontend carries its core inside the
+  # eboot and cannot load a .prx at all, so a Core Downloader would let the user fetch a
+  # file, watch it extract, and then find nothing changed. Shipping a menu entry that cannot
+  # work is worse than not shipping it. The release build is
+  # `HAVE_STATIC_DUMMY=0 HAVE_DYNAMIC=1`, which is the configuration this is for.
+  #
+  # ⚠ HAVE_UPDATE_ASSETS AND HAVE_UPDATE_CORE_INFO ARE DELIBERATELY ABSENT. Both point at
+  # DEFAULT_BUILDBOT_ASSETS_SERVER_URL (buildbot.libretro.com/assets/), not at our own host,
+  # and the package already ships the .info files it needs - see phase 2. They can come back
+  # once there is a second index at an assets URL of ours.
+  ifeq ($(HAVE_DYNAMIC),1)
+    DEFINES                 += -DHAVE_ONLINE_UPDATER -DHAVE_UPDATE_CORES
+  endif
+
+  # ⚠ AND THE POINTER MOVES IN THE SAME COMMIT AS THE SWITCH ABOVE. config.def.h has no ORBIS
+  # arm without this; the platform falls through to `""`, and a Core Downloader with an empty
+  # base URL is a menu entry that fetches nothing and explains nothing. The full argument,
+  # including why it must not borrow the Linux/x86_64 URL, is in config.def.h next to the
+  # ORBIS_BUILDBOT_SERVER_URL default. Override for a LAN bring-up test:
+  #
+  #   make -f Makefile.orbis ORBIS_BUILDBOT_URL=http://192.168.100.1:8000/
+  ORBIS_BUILDBOT_URL        ?=
+  ifneq ($(ORBIS_BUILDBOT_URL),)
+    DEFINES += -DORBIS_BUILDBOT_SERVER_URL='"$(ORBIS_BUILDBOT_URL)"'
+  endif
+
+  # ⚠ TLS IS PHASE 5b AND IS OFF. Turning it on is the ONE line below - HAVE_BUILTINBEARSSL
+  # sets HAVE_SSL itself and adds deps/bearssl-0.6 to OBJ (Makefile.common). It is off
+  # because nothing here has a certificate store yet, and an https URL that fails in the
+  # handshake looks exactly like an empty core list. Everything under it that TLS needs is
+  # already present in the SDK: time() for validity windows, getrandom/getentropy to seed.
+  HAVE_BUILTINBEARSSL       := 0
+  HAVE_SSL                  := 0
+
+  # ⚠ WHAT HAVE_NETWORKING=1 DRAGS IN THAT WE DO NOT WANT, AND WHICH HALF OF IT IS ACTUALLY
+  # OPTIONAL. Read from Makefile.common's HAVE_NETWORKING block rather than assumed:
+  #
+  #   wanted     net_compat.o net_http.o net_http_parse.o net_socket.o
+  #              core_updater_list.o tasks/task_http.o
+  #              tasks/task_core_updater.o        (needs HAVE_MENU_COMMON, which is 1)
+  #
+  #   off here   HAVE_CLOUDSYNC   task_cloudsync.o, network/cloud_sync/*
+  #              HAVE_CHEEVOS     RetroAchievements
+  #              HAVE_DISCORD     Discord rich presence
+  #              HAVE_IFINFO      net_ifinfo.o
+  #
+  #   ⚠ NOT OPTIONAL, contrary to the plan this phase came from: there is no HAVE_NETPLAY
+  #   switch anywhere in this tree. Makefile.common's HAVE_NETWORKING block adds
+  #   network/natt.o, network/netplay/netplay_frontend.o, netplay_room_parse.o,
+  #   tasks/task_netplay_*.o and -DHAVE_NETWORK_CMD unconditionally, and retroarch.c calls
+  #   into netplay from paths that are only gated on HAVE_NETWORKING. They all compile
+  #   cleanly for this target (checked, seven objects, no warnings) and are dead code unless
+  #   the user starts a session, so they are carried rather than fought. Ripping them out
+  #   would mean an ORBIS #ifdef in retroarch.c, which is a larger divergence than the code
+  #   it would remove.
+  #
+  # ⚠ HAVE_CLOUDSYNC IS SET FROM $(OS) INSIDE THAT BLOCK, not from this assignment: Makefile.
+  # common does `ifneq ($(findstring Linux,$(OS)),) HAVE_CLOUDSYNC = 1`. $(OS) is empty on a
+  # Linux host (it is the Windows environment variable, not uname), so it stays off - but if
+  # a build host ever exports OS=Linux, that block wins over the 0 below. Verified off in the
+  # object list as it stands.
+  HAVE_CLOUDSYNC            := 0
+  HAVE_DISCORD              := 0
+  HAVE_NETPLAYDISCOVERY     := 0
   HAVE_IFINFO               := 0
-  HAVE_SOCKET_LEGACY        := 1
   HAVE_CHEEVOS              := 0
   HAVE_OVERLAY              := 0
   HAVE_MAIN                 := 1
@@ -367,9 +458,16 @@ endif
 #
 # crt1.o last, after the SDK libs — the order the SDK's own link rule uses.
 # ---------------------------------------------------------------------------
-# -lSceNet is here for the log channel, not for networking: ps4_app tees every line
-# over a UDP datagram to the dev host, and that is the only channel that says anything
-# when the console is not next to a TV. HAVE_NETWORKING stays 0.
+# -lSceNet started here for the log channel - ps4_app tees every line over a UDP datagram to
+# the dev host, and that is the only channel that says anything when the console is not next
+# to a TV - and phase 5a gave it a second job it must not lose.
+#
+# ⚠ IT IS NOW LOAD-BEARING FOR THE C LIBRARY ITSELF, not just for our logging. musl's
+# resolver reads the console's DNS servers through sceNetGetDnsInfo (resolvconf.lo inside
+# libc.a), so dropping -lSceNet breaks the link of anything that calls getaddrinfo - that one
+# symbol is the ONLY thing the whole socket API needs from libSceNet; the calls themselves
+# come from -lkernel. network_init() adds sceNetInit() on top. Removing this because "the log
+# channel is off in release" would fail at link time, loudly, which is the good case.
 PS4_LIBS := -lSceVideoOut -lScePad -lSceAudioOut -lSceUserService \
             -lSceSystemService -lSceSysmodule -lSceIme -lSceNet
 
