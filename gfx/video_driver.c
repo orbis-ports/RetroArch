@@ -142,7 +142,7 @@ static const gfx_ctx_driver_t *gfx_ctx_gl_drivers[] = {
 /* ⚠ orbis_ctx IS PIGLET, and this port does not use it. gfx/drivers_context/orbis_ctx.c
  * drives Sony's GLES2 out of the VSH process (scePigletSetConfigurationVSH,
  * -lScePigletv2VSH_stub). Video here is CPU-drawn until the RADV port lands - Phase 3
- * and Phase 7 of ps4/PLAN.md - and neither of those is a GL context driver. */
+ * and Phase 7 of ps4-mesa-docs docs/retroarch/PLAN.md - and neither of those is a GL context driver. */
 #if defined(HAVE_VITAGL) | defined(HAVE_VITAGLES)
    &vita_ctx,
 #endif

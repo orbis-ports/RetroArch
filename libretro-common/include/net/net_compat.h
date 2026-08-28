@@ -179,7 +179,7 @@
 /* ⚠ ORBIS (PlayStation 4) TAKES THE PLAIN POSIX BRANCH, AND THAT IS NOT AN OVERSIGHT.
  *
  * Every other console here has an arm because its SDK renames the socket API. This one does
- * not need one, and the reason was measured rather than assumed - see ps4/HANDOFF.md:
+ * not need one, and the reason was measured rather than assumed - see ps4-mesa-docs docs/retroarch/HANDOFF.md:
  *
  *   - libkernel.sprx exports socket, connect, bind, listen, accept, send, recv, sendto,
  *     recvfrom, shutdown, setsockopt, getsockopt, getpeername, getsockname, select, poll,

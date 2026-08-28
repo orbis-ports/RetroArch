@@ -30,7 +30,7 @@
  * orbisFile.h, user_mem.h and the libSce*.h spellings are all psxdev's SDK. This port
  * builds against OpenOrbis plus the orbis-compat overlay, where the same services are
  * <orbis/UserService.h>, <orbis/SystemService.h>, <orbis/Sysmodule.h>. See
- * ps4/PLAN.md section 1 for why none of the old port survived. */
+ * ps4-mesa-docs docs/retroarch/PLAN.md section 1 for why none of the old port survived. */
 #include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>

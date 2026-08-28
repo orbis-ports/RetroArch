@@ -16,7 +16,7 @@
  *
  * The CPU draws every pixel: the core's frame is scaled and converted straight into a
  * scan-out buffer and flipped. There is no context driver, no shader stage and no GPU
- * involved - Phase 7 of ps4/PLAN.md replaces this with the RADV port, and this driver is
+ * involved - Phase 7 of ps4-mesa-docs docs/retroarch/PLAN.md replaces this with the RADV port, and this driver is
  * what proves everything ELSE about the port before that lands.
  *
  * ⚠ NO SWIZZLE PASS, AND THAT IS NOT AN OVERSIGHT. Video-out's only pixel format,
@@ -61,7 +61,7 @@
  *
  * ⚠ THIS IS THE PORT'S LARGEST UNMEASURED COST. Every frame is a scale into 2.07 million
  * pixels on a Jaguar core. If 60 Hz does not hold, 1280x720 halves the fill and is the
- * first knob to turn - ps4/PLAN.md Phase 3 says to settle this by measurement, not by
+ * first knob to turn - ps4-mesa-docs docs/retroarch/PLAN.md Phase 3 says to settle this by measurement, not by
  * choosing up front. */
 #define PS4_GFX_WIDTH   1920
 #define PS4_GFX_HEIGHT  1080

@@ -900,7 +900,7 @@ build-static-retroarch-dummy-psl1ght:
 # image. They also expected retroarch_orbis.self, which Makefile.orbis no longer
 # emits -- it produces eboot.bin and a .pkg. And the one that mattered ran with
 # `||:`, so it could not fail: six years of bit-rot hid behind a job that was
-# green by construction. See ps4/PLAN.md. Restoring CI for this platform means
+# green by construction. See ps4-mesa-docs docs/retroarch/PLAN.md. Restoring CI for this platform means
 # publishing an image with the toolchain in it first.
 
 build-static-retroarch-djgpp:

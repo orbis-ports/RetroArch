@@ -8,7 +8,7 @@
 # -lorbisLink -ldebugnet. Nothing else in ~/src-ps4 speaks that toolchain, and
 # orbis-compat — which corrects declarations THIS SDK gets wrong — only exists for
 # OpenOrbis. Keeping both would have meant maintaining the corrections twice.
-# See ps4/PLAN.md §1 for what the old port was and why none of it survived.
+# See ps4-mesa-docs docs/retroarch/PLAN.md §1 for what the old port was and why none of it survived.
 #
 # The flags below are a TRANSCRIPTION of orbis-compat/cmake/ps4-openorbis.cmake.
 # That file is normative; this one cannot include it (RetroArch is Makefile-driven),
@@ -67,7 +67,7 @@ WHOLE_ARCHIVE_LINK ?= 0
 #
 # ⚠ WHAT IT IS FOR. mupen64plus-next's fast renderer is GLideN64 with the HLE RSP, and without a
 # GL context the only pairing available is ParaLLEl-RDP with the LLE RSP - 22-25 fps measured, of
-# which the LLE RSP alone is 24 ms against a 16.7 ms budget. See ps4/HANDOFF.md; that measurement
+# which the LLE RSP alone is 24 ms against a 16.7 ms budget. See ps4-mesa-docs docs/retroarch/HANDOFF.md; that measurement
 # is why this arm exists.
 HAVE_OPENGLES      ?= 0
 
@@ -233,7 +233,7 @@ else
     HAVE_BUILTINSPIRV_CROSS := 1
   endif
   # ---------------------------------------------------------------------------
-  # Networking — phase 5a. See ps4/HANDOFF.md.
+  # Networking — phase 5a. See ps4-mesa-docs docs/retroarch/HANDOFF.md.
   #
   # ⚠ THE SOCKET LAYER IS NOT MISSING, WHICH IS THE OPPOSITE OF WHAT AN EARLIER SURVEY OF
   # THIS SDK CONCLUDED. That survey looked in the SDK's STATIC archives - libc.a,

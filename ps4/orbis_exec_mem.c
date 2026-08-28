@@ -69,7 +69,7 @@ static int orbis_exec_state = -1;
  * sceKernelQueryMemoryProtection reports the protection a range was MAPPED with, not what
  * mprotect has since made it: on hardware it answered 0x03 for ranges that were executing
  * code. Using it as the check vetoed a working recompiler sixteen times out of sixteen
- * (ps4/HANDOFF.md, 2026-08-23). So the check is the one the original probe made - put six
+ * (ps4-mesa-docs docs/retroarch/HANDOFF.md, 2026-08-23). So the check is the one the original probe made - put six
  * bytes of x86-64 in the buffer and call them:
  *
  *     b8 ee ff c0 00   mov eax, 0x00c0ffee

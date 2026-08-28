@@ -6721,7 +6721,7 @@ int rarch_main(int argc, char *argv[], void *data)
 
    /* ⚠ AND THERE IS NOTHING AFTER THIS LINE THAT THIS FRONTEND CAN CHANGE. A build that called
     * _Exit(0) here instead of returning - skipping .fini_array, the stdio flush and every step
-    * musl's exit() has left - died exactly the same way. Measured 2026-08-28; see ps4/HANDOFF.md.
+    * musl's exit() has left - died exactly the same way. Measured 2026-08-28; see ps4-mesa-docs docs/retroarch/HANDOFF.md.
     * The markers above stay because they are the record of how far the process gets, and the next
     * thing to move that boundary will be a driver change rather than a frontend one. */
 #endif

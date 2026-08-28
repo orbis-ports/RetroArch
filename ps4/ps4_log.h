@@ -3,7 +3,7 @@
  * The PS4 log sink behind RARCH_LOG and friends.
  *
  * ⚠ THIS REPLACED debugnet, which is orbisdev's and which verbosity.h included
- * unconditionally under #ifdef ORBIS. See ps4/PLAN.md section 1.
+ * unconditionally under #ifdef ORBIS. See ps4-mesa-docs docs/retroarch/PLAN.md section 1.
  *
  * ⚠ AND IT SPLITS THE CHANNEL IN TWO, WHICH debugnet DID NOT. The console's klog
  * (sceKernelDebugOutText) costs 8-15 ms per line, measured - it blocks the calling

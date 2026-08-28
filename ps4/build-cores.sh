@@ -153,7 +153,7 @@ ORBIS_ARCH=(--target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables
 # C++: libc++ FIRST, then the overlay, then the SDK. Getting this wrong is not a link error, it
 # is `cmath:341: no member named 'abs' in the global namespace` - libc++'s <cmath> hoists the C
 # library's abs into std:: and needs the C headers underneath it. This file had c++/v1 appended
-# LAST on its first draft, which is the trap Makefile.orbis and ps4/HANDOFF.md both already
+# LAST on its first draft, which is the trap Makefile.orbis and ps4-mesa-docs docs/retroarch/HANDOFF.md both already
 # describe. Writing a new tool next to a documented trap is not protection from it.
 # ⚠ THE GL HEADERS COME FROM MESA, AND WITHOUT THEM clang QUIETLY USES THE BUILD HOST'S.
 #

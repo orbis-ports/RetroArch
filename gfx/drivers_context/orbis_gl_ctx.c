@@ -18,7 +18,7 @@
  * written is Nintendo 64. mupen64plus-next's fast renderer is GLideN64 driven by the HLE RSP,
  * and without a GL context the only pairing left is ParaLLEl-RDP with the LLE RSP - measured on
  * hardware at 22-25 fps, of which the LLE RSP alone is 24 ms against a 16.7 ms budget (see
- * ps4/HANDOFF.md). No amount of tuning reaches full speed from there; a different renderer does.
+ * ps4-mesa-docs docs/retroarch/HANDOFF.md). No amount of tuning reaches full speed from there; a different renderer does.
  *
  * ⚠ AND THE STACK UNDER IT IS DEEPER THAN IT LOOKS. There is no GL hardware path on this console.
  * Every call here ends up as Vulkan:

@@ -288,7 +288,7 @@ static void gl_glsl_print_linker_log(GLuint obj)
  * them. glPigletGetShaderBinarySCE is an extension of Sony's GLES2 implementation, reached
  * through libScePigletv2VSH; the PS4 port does not use it and will not, because its GL path
  * was the old orbisdev build's and its replacement is Vulkan on RADV. The cache also wrote
- * into /data/retroarch/temp with a path shape from that build. See ps4/PLAN.md. */
+ * into /data/retroarch/temp with a path shape from that build. See ps4-mesa-docs docs/retroarch/PLAN.md. */
 
 static bool gl_glsl_compile_shader(glsl_shader_data_t *glsl,
       GLuint shader,
