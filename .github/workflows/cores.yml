@@ -515,6 +515,16 @@ jobs:
           cp -f fork-out/mednafen_psx_hw_libretro.info out/ 2>/dev/null || true
           cat out/index-fragment-fork.txt
 
+          # ⚠ RECORD THE COMMIT, BECAUSE THIS IS THE ONE CORE NOBODY ELSE CAN TRACE. The shards
+          # write cores-manifest-<n>.tsv and this job wrote nothing, so the published page had to
+          # link the fork's repository without saying which commit - for a GPL notice, the least
+          # precise entry on the page was the only core we maintain ourselves. Same five columns
+          # the shards use, so ps4/make-site.py needs no special case.
+          sha="$(git -C .beetle rev-parse --short HEAD)"
+          printf 'mednafen_psx_hw\tOK\t%s\t%s\t\n' \
+            "$(du -h "$prx" | cut -f1)" "$sha" > out/cores-manifest-fork.tsv
+          cat out/cores-manifest-fork.tsv
+
       - uses: actions/upload-artifact@v4
         with:
           name: cores-shard-fork
@@ -522,6 +532,7 @@ jobs:
             out/*.prx.zip
             out/*.info
             out/index-fragment-fork.txt
+            out/cores-manifest-fork.tsv
           if-no-files-found: error
           retention-days: 7
 
