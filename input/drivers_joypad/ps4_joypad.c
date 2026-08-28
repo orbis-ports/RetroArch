@@ -205,13 +205,23 @@ static void ps4_joypad_poll(void)
       OrbisPadData data;
       uint32_t     b;
 
-      if (!ds_joypad_states[i].connected)
-         continue;
-
-      /* A failed read means this frame said nothing, not that the buttons held last frame
-       * are still held. Latching them is how a menu runs away on its own. */
+      /* ⚠ NEVER STOP READING A SLOT, WHICH IS WHAT THIS USED TO DO. The loop began by skipping
+       * any pad whose `connected` was false, and the disconnect branch below set it false and
+       * nothing ever set it back - so the flag was a latch rather than a state. A DualShock 4
+       * that goes to sleep reports `connected == 0` for one frame, and from then on its slot
+       * was never polled again: the pad was gone for the rest of the process and only a
+       * restart brought it back. Measured on hardware 2026-08-28.
+       *
+       * The read is cheap and the console answers it whether or not a pad is awake, so the
+       * flag is now DERIVED from what the read said, every frame. */
       if (scePadReadState(ds_joypad_states[i].handle, &data) != 0)
       {
+         /* A failed read means this frame said nothing, not that the buttons held last frame
+          * are still held. Latching them is how a menu runs away on its own.
+          *
+          * ⚠ AND IT DOES NOT MEAN THE PAD IS GONE. The handle is reported as still ours; only
+          * a state that says `connected == 0` is a disconnection, so a transient read error
+          * leaves the slot alone rather than tearing it down. */
          pad_state[i] = 0;
          continue;
       }
@@ -221,9 +231,20 @@ static void ps4_joypad_poll(void)
        * and a pad that went away stayed "connected" forever. */
       if (!data.connected)
       {
+         if (ds_joypad_states[i].connected)
+            RARCH_LOG("[PS4] pad %u went away.\n", i);
          ds_joypad_states[i].connected = false;
          pad_state[i]                  = 0;
+         memset(analog_state[i], 0, sizeof(analog_state[i]));
          continue;
+      }
+
+      /* Back, on the same handle. Nothing has to be reopened - which is why the slot must keep
+       * being read rather than written off. */
+      if (!ds_joypad_states[i].connected)
+      {
+         ds_joypad_states[i].connected = true;
+         RARCH_LOG("[PS4] pad %u is back.\n", i);
       }
 
       b            = data.buttons;

@@ -485,6 +485,12 @@ ifeq ($(ORBIS_NET_TRACE),1)
   OBJ     += ps4/orbis_net_probe.o
 endif
 
+# ⚠ UNCONDITIONAL, unlike the net probe above, because this one is gated at RUN TIME by
+# /data/retroarch-kbd-probe existing. It ships inert and needs no rebuild to turn on - the same
+# arrangement as ps4/orbis_profile.c, and for the same reason: a question that needs hardware
+# attached should not also need a build.
+OBJ     += ps4/orbis_kbd_probe.o
+
 # ⚠ -Werror IS DELIBERATELY OFF, and the old build's was load-bearing for nothing:
 # it was only ever exercised by a CI job that linked HAVE_STATIC_DUMMY against stub
 # headers, so it never saw a real translation unit. Turning it back on is a task for
@@ -547,7 +553,10 @@ endif
 # symbol is the ONLY thing the whole socket API needs from libSceNet; the calls themselves
 # come from -lkernel. network_init() adds sceNetInit() on top. Removing this because "the log
 # channel is off in release" would fail at link time, loudly, which is the good case.
-PS4_LIBS := -lSceVideoOut -lScePad -lSceAudioOut -lSceUserService \
+# ⚠ -lSceKeyboard AND -lSceMouse ARE FOR A PROBE, and they cost nothing when it is off: the
+# probe is one translation unit gated on a file, and an unused import is a NID in the table.
+# ps4/orbis_kbd_probe.c says why the mouse is linked but barely called.
+PS4_LIBS := -lSceVideoOut -lScePad -lSceAudioOut -lSceUserService -lSceKeyboard -lSceMouse \
             -lSceSystemService -lSceSysmodule -lSceIme -lSceNet
 
 # ⚠ APPENDED HERE AND NOT WHERE HAVE_VULKAN IS HANDLED, because PS4_LIBS is a := assignment

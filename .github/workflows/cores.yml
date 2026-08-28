@@ -64,6 +64,10 @@ on:
         description: libretro-super commit the recipe comes from (a sha, never a branch).
         required: false
         default: bc2b5463fe7e45a36295db54f74bc56b950dec4b
+      libretro-core-info-ref:
+        description: libretro-core-info commit the licences come from (a sha, never a branch).
+        required: false
+        default: b03bfc451381e1a5eb92fda9e56a1e81bfeb92c9
       orbis-compat-ref:
         description: orbis-compat commit to build against (a sha, never a branch).
         required: false
@@ -111,6 +115,7 @@ env:
   # job would assemble an index over a set nobody chose.
   LIBRETRO_SUPER_REF: ${{ github.event.inputs.libretro-super-ref || 'bc2b5463fe7e45a36295db54f74bc56b950dec4b' }}
   ORBIS_COMPAT_REF: ${{ github.event.inputs.orbis-compat-ref || '5f1e4e6174cfe221da390237201392e0674c0987' }}
+  CORE_INFO_REF: ${{ github.event.inputs.libretro-core-info-ref || 'b03bfc451381e1a5eb92fda9e56a1e81bfeb92c9' }}
   MESA_RELEASE: ${{ github.event.inputs.mesa-release || 'orbis-mesa-c42aa135f234' }}
   OPENORBIS_SDK_TAG: v0.5.4
   SHARDS: ${{ github.event.inputs.shards || '8' }}
@@ -706,6 +711,18 @@ jobs:
           ref: ${{ env.LIBRETRO_SUPER_REF }}
           path: .libretro-super
 
+      # ⚠ THE LICENCE COLUMN COMES FROM HERE AND FROM NOWHERE ELSE. The page exists to satisfy
+      # GPL notice, and a core listed without its licence is the one row that fails at that. The
+      # shard artifacts cannot supply it: the archives carry the .prx alone, so the only .info in
+      # them is the fork's. Pinned by sha like every other input to this pipeline - a floating
+      # branch would let a rename upstream change what a published page claims.
+      - name: Checkout libretro-core-info
+        uses: actions/checkout@v4
+        with:
+          repository: libretro/libretro-core-info
+          ref: ${{ env.CORE_INFO_REF }}
+          path: .core-info
+
       - name: Collect every shard
         uses: actions/download-artifact@v4
         with:
@@ -1165,6 +1182,81 @@ jobs:
             echo "== dropping stale object $a"
             npx --yes wrangler@4 r2 object delete "$BUCKET/${PREFIX:+$PREFIX/}$a" --remote
           done < /tmp/r2-stale
+
+      # ⚠ THE PAGE USED TO BE BUILT BY HAND, AND IT DRIFTED. ps4/make-site.py was called from no
+      # workflow at all: index.html was regenerated on a laptop whenever somebody remembered, so
+      # between a release and that moment the published page advertised the previous version and
+      # linked the previous all-cores bundle. On 2026-08-28 it was a full day behind a core set it
+      # was describing. A page that documents what is published has to be published by the same
+      # job that publishes it.
+      #
+      # ⚠ IT READS THE NEWEST FRONTEND RELEASE RATHER THAN A VERSION IN THE TREE, so the order that
+      # produces a correct page is: tag the frontend, let frontend.yml cut the release, THEN run
+      # this. Run in the other order and the page is right about the cores and a version behind on
+      # the package - which is the drift this step exists to end, just narrower.
+      - name: Build and publish the download page
+        if: github.event.inputs.dry-run != 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GH_TOKEN: ${{ github.token }}
+          BUCKET: ${{ steps.r2.outputs.bucket }}
+          PREFIX: ${{ steps.r2.outputs.prefix }}
+          BASE: ${{ steps.r2.outputs.base }}
+        run: |
+          set -euo pipefail
+
+          tag="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 50 \
+                   --json tagName --jq '[.[] | select(.tagName | startswith("retroarch-ps4-v"))][0].tagName')"
+          [ -n "$tag" ] || { echo "!! no retroarch-ps4-v* release to point the page at" >&2; exit 1; }
+          asset="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
+                     --json assets --jq '[.assets[] | select(.name | endswith(".pkg"))][0]')"
+          pkg_url="$(printf '%s' "$asset" | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"])')"
+          pkg_bytes="$(printf '%s' "$asset" | python3 -c 'import json,sys; print(json.load(sys.stdin)["size"])')"
+          pkg_size="$(python3 -c "print('%.1f MB' % ($pkg_bytes/1000000.0))")"
+          version="${tag#retroarch-ps4-}"
+          echo "== page will offer $version, $pkg_size, from $pkg_url"
+
+          mkdir -p site
+          python3 ps4/make-site.py \
+            --index dist/.index-extended \
+            --manifests dist \
+            --recipe "$RECIPE" \
+            --info .core-info \
+            --icon ps4/icon0.png \
+            --dist dist --bundle \
+            --out site \
+            --base "$BASE" \
+            --pkg-url "$pkg_url" \
+            --pkg-size "$pkg_size" \
+            --version "$version" \
+            --src-url "https://github.com/$GITHUB_REPOSITORY/tree/$tag"
+
+          bundle="$(cd site && ls orbis-cores-*.zip)"
+          npx --yes wrangler@4 r2 object put "$BUCKET/${PREFIX:+$PREFIX/}$bundle" \
+            --file "site/$bundle" --content-type application/zip --remote
+          npx --yes wrangler@4 r2 object put "$BUCKET/${PREFIX:+$PREFIX/}index.html" \
+            --file site/index.html --content-type 'text/html; charset=utf-8' \
+            --cache-control 'no-store' --remote
+
+          # ⚠ THE BUNDLE IS NOT PRUNED BY THE STEP THAT PRUNES, because that one drops objects the
+          # index does not name and the index never names the bundle - which is why a superseded
+          # one was still being served the morning after. Its name is derivable: the bundle is
+          # named for the index's date, and the PREVIOUS index is already on disk from the
+          # round-trip check above.
+          if [ -s /tmp/r2-index-before ]; then
+            old="orbis-cores-$(awk 'NR==1{print $1}' /tmp/r2-index-before).zip"
+            if [ "$old" != "$bundle" ]; then
+              echo "== dropping the superseded bundle $old"
+              npx --yes wrangler@4 r2 object delete "$BUCKET/${PREFIX:+$PREFIX/}$old" --remote || \
+                echo "-- $old was not there to delete, which is fine"
+            fi
+          fi
+
+          code="$(curl -s -o /dev/null -w '%{http_code}' -L --retry 5 --retry-delay 3 \
+                    "${BASE}index.html?v=${GITHUB_RUN_ID}")"
+          [ "$code" = "200" ] || { echo "!! ${BASE}index.html -> HTTP $code" >&2; exit 1; }
+          echo "== ${BASE}index.html is live, offering $version"
 
       - name: R2 summary
         if: github.event.inputs.dry-run != 'true'

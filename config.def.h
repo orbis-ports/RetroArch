@@ -1754,7 +1754,26 @@
 
 /* Automatically enable game focus when running or
  * resuming content */
+#if defined(ORBIS)
+/* ⚠ DETECT ON THIS CONSOLE, BECAUSE THE ALTERNATIVE IS A KEYBOARD THAT HALF WORKS AND NO
+ * OBVIOUS REASON WHY. A key bound to a RetroPad button or a hotkey is swallowed by
+ * input_keyboard_event() and never reaches the core, so an Amstrad or a Spectrum core sees
+ * only the handful of keys the default binds leave alone - measured on hardware 2026-08-28,
+ * where cap32 received o, j, d, period and slash and nothing else while the menu took every
+ * key correctly. On a desktop the answer is a Scroll Lock hotkey nobody has to be told about;
+ * here there is no keyboard hotkey by default and the setting is four menus deep.
+ *
+ * ⚠ AND IT COSTS NOTHING ELSE, WHICH WAS CHECKED RATHER THAN ASSUMED. `game_focus_state.enabled`
+ * has exactly one reader in the whole input path - the keyboard filter above - plus a mouse grab
+ * that is a no-op on a console. Joypad hotkeys are untouched, so the pad combo that opens the
+ * menu still works and nobody is stranded inside a core.
+ *
+ * Detect rather than On: it turns itself on only for cores that implement the frontend keyboard
+ * callback, so a pad-only session behaves exactly as before. */
+#define DEFAULT_INPUT_AUTO_GAME_FOCUS AUTO_GAME_FOCUS_DETECT
+#else
 #define DEFAULT_INPUT_AUTO_GAME_FOCUS AUTO_GAME_FOCUS_OFF
+#endif
 
 /* Make simultaneous buttons easier to hit on Android */
 #if defined(ANDROID)
