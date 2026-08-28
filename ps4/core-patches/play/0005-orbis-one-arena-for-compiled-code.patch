@@ -1,0 +1,203 @@
+From: PS4 port
+Subject: [PATCH] orbis: one arena for compiled code, not one mapping per block
+
+Grand Theft Auto III reached its intro FMV at 3-5 fps and then died:
+
+    # reason: page fault (user write data, page not present)
+    # fault address: ffffffffffffffff        # rax: ffffffffffffffff
+
+    CPS2VM::UpdateEe -> CGenericMipsExecutor::CreateBlock -> CEeExecutor::BlockFactory
+                     -> CBasicBlock::Compile -> memcpy
+
+rax is MAP_FAILED. The MMAP arm calls mmap(PROT_WRITE | PROT_EXEC) once per CMemoryFunction, its
+assert() is a nop under NDEBUG, and memcpy then writes to (void*)-1. Both symptoms are the same
+cause: a PS2 recompiler makes thousands of these, this kernel's page is 16 KiB, and every basic
+block was costing a syscall and a whole page for a few hundred bytes of code - until the kernel
+stopped handing them out.
+
+⚠ orbis-compat's mmap interposer does not cover this and is not meant to: it admits exactly one
+tuple (anonymous, PROT_READ|PROT_WRITE, no address hint) and forwards anything carrying PROT_EXEC
+straight to the kernel.
+
+So this adds a MEMFUNC_USE_ORBIS arm: map one 64 MiB arena read-write, promote it with mprotect -
+the order this kernel grants, the same finding beetle-psx/ps4/orbis_lightrec_mem.c rests on - and
+suballocate from it with a coalescing free list. More arenas are mapped on demand, so the size is
+a first guess rather than a ceiling, and freed blocks are reused instead of burning a kernel
+object per basic block.
+
+diff --git a/deps/CodeGen/src/MemoryFunction.cpp b/deps/CodeGen/src/MemoryFunction.cpp
+index 73a3dab..617a2c7 100644
+--- a/deps/CodeGen/src/MemoryFunction.cpp
++++ b/deps/CodeGen/src/MemoryFunction.cpp
+@@ -31,6 +31,8 @@
+ #elif defined(__EMSCRIPTEN__)
+ 	#include <emscripten.h>
+ 	#define MEMFUNC_USE_WASM
++#elif defined(__ORBIS__)
++	#define MEMFUNC_USE_ORBIS
+ #else
+ 	#define MEMFUNC_USE_MMAP
+ #endif
+@@ -43,6 +45,138 @@
+ #elif defined(MEMFUNC_USE_MMAP)
+ #include <sys/mman.h>
+ #include <pthread.h>
++#elif defined(MEMFUNC_USE_ORBIS)
++#include <sys/mman.h>
++#include <mutex>
++#include <vector>
++
++// ⚠ ONE MAPPING PER COMPILED BLOCK IS WHAT THIS CONSOLE WILL NOT TOLERATE.
++//
++// The MMAP arm calls mmap(PROT_WRITE | PROT_EXEC) for every CMemoryFunction, and a PS2 recompiler
++// makes thousands of them. Two things follow on this kernel, and they were both observed running
++// Grand Theft Auto III:
++//
++//   * IT RUNS OUT. The mapping eventually returns MAP_FAILED, the assert() above it is a nop in
++//     Release, and memcpy() writes to (void*)-1:
++//         # reason: page fault (user write data, page not present)
++//         # fault address: ffffffffffffffff       # rax: ffffffffffffffff
++//         CPS2VM::UpdateEe -> CreateBlock -> CEeExecutor::BlockFactory
++//                          -> CBasicBlock::Compile -> memcpy
++//   * IT IS SLOW. Every block costs a kernel call and a whole page - this platform's page is
++//     16 KiB - for a function that is usually a few hundred bytes.
++//
++// ⚠ AND orbis-compat DOES NOT HELP HERE, deliberately: its mmap interposer admits exactly one
++// tuple (anonymous, PROT_READ|PROT_WRITE, no address hint) and forwards everything with PROT_EXEC
++// to the kernel unexamined. So this arm has to solve it rather than hope.
++//
++// One arena, mapped read-write and promoted with mprotect - the order this kernel grants, which is
++// the same finding beetle-psx's ps4/orbis_lightrec_mem.c is built on - then suballocated. Blocks
++// are recycled through a coalescing free list, so a long session reuses memory instead of
++// consuming a kernel object per basic block.
++namespace
++{
++	// 64 MiB to start; another arena is mapped on demand, so this is a first guess and not a cap.
++	const size_t ORBIS_JIT_ARENA_SIZE = 64 * 1024 * 1024;
++
++	struct ORBIS_JIT_SPAN
++	{
++		unsigned char* addr;
++		size_t size;
++	};
++
++	struct ORBIS_JIT_ARENA
++	{
++		unsigned char* base;
++		size_t size;
++		std::vector<ORBIS_JIT_SPAN> freeList;
++	};
++
++	std::mutex g_orbisJitMutex;
++	std::vector<ORBIS_JIT_ARENA> g_orbisJitArenas;
++
++	bool OrbisJitAddArena(size_t atLeast)
++	{
++		size_t size = ORBIS_JIT_ARENA_SIZE;
++		while(size < atLeast) size *= 2;
++		// ⚠ RW FIRST, EXEC AFTER. Asking for PROT_EXEC at map time is what this kernel declines.
++		void* base = mmap(nullptr, size, PROT_READ | PROT_WRITE,
++		                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++		if(base == MAP_FAILED) return false;
++		if(mprotect(base, size, PROT_READ | PROT_WRITE | PROT_EXEC) != 0)
++		{
++			munmap(base, size);
++			return false;
++		}
++		ORBIS_JIT_ARENA arena;
++		arena.base = reinterpret_cast<unsigned char*>(base);
++		arena.size = size;
++		ORBIS_JIT_SPAN whole = {arena.base, size};
++		arena.freeList.push_back(whole);
++		g_orbisJitArenas.push_back(arena);
++		return true;
++	}
++
++	void* OrbisJitAlloc(size_t size)
++	{
++		size = (size + BLOCK_ALIGN - 1) & ~static_cast<size_t>(BLOCK_ALIGN - 1);
++		std::lock_guard<std::mutex> lock(g_orbisJitMutex);
++		for(unsigned pass = 0; pass < 2; pass++)
++		{
++			for(size_t a = 0; a < g_orbisJitArenas.size(); a++)
++			{
++				auto& arena = g_orbisJitArenas[a];
++				for(size_t i = 0; i < arena.freeList.size(); i++)
++				{
++					if(arena.freeList[i].size < size) continue;
++					unsigned char* addr = arena.freeList[i].addr;
++					if(arena.freeList[i].size == size)
++					{
++						arena.freeList.erase(arena.freeList.begin() + i);
++					}
++					else
++					{
++						arena.freeList[i].addr += size;
++						arena.freeList[i].size -= size;
++					}
++					return addr;
++				}
++			}
++			if(pass == 0 && !OrbisJitAddArena(size)) break;
++		}
++		return nullptr;
++	}
++
++	void OrbisJitFree(void* ptr, size_t size)
++	{
++		if(ptr == nullptr) return;
++		size = (size + BLOCK_ALIGN - 1) & ~static_cast<size_t>(BLOCK_ALIGN - 1);
++		unsigned char* addr = reinterpret_cast<unsigned char*>(ptr);
++		std::lock_guard<std::mutex> lock(g_orbisJitMutex);
++		for(size_t a = 0; a < g_orbisJitArenas.size(); a++)
++		{
++			auto& arena = g_orbisJitArenas[a];
++			if(addr < arena.base || addr >= arena.base + arena.size) continue;
++			size_t i = 0;
++			while(i < arena.freeList.size() && arena.freeList[i].addr < addr) i++;
++			ORBIS_JIT_SPAN span = {addr, size};
++			arena.freeList.insert(arena.freeList.begin() + i, span);
++			// Coalesce forward, then backward, so the list cannot fragment into unusable slivers.
++			if((i + 1) < arena.freeList.size() &&
++			   (arena.freeList[i].addr + arena.freeList[i].size) == arena.freeList[i + 1].addr)
++			{
++				arena.freeList[i].size += arena.freeList[i + 1].size;
++				arena.freeList.erase(arena.freeList.begin() + i + 1);
++			}
++			if(i > 0 &&
++			   (arena.freeList[i - 1].addr + arena.freeList[i - 1].size) == arena.freeList[i].addr)
++			{
++				arena.freeList[i - 1].size += arena.freeList[i].size;
++				arena.freeList.erase(arena.freeList.begin() + i);
++			}
++			return;
++		}
++	}
++}
+ #elif defined(MEMFUNC_USE_WASM)
+ EM_JS_DEPS(WasmMemoryFunction, "$addFunction,$removeFunction");
+ EM_JS(int, WasmCreateFunction, (emscripten::EM_VAL moduleHandle),
+@@ -128,6 +262,14 @@ CMemoryFunction::CMemoryFunction(const void* code, size_t size)
+ #ifdef MEMFUNC_MMAP_REQUIRES_JIT_WRITE_PROTECT
+ 	pthread_jit_write_protect_np(true);
+ #endif
++#elif defined(MEMFUNC_USE_ORBIS)
++	m_size = size;
++	m_code = OrbisJitAlloc(size);
++	assert(m_code != nullptr);
++	if(m_code != nullptr)
++	{
++		memcpy(m_code, code, size);
++	}
+ #elif defined(MEMFUNC_USE_WASM)
+ 	m_wasmModule = emscripten::val::take_ownership(WasmCreateModule(reinterpret_cast<uintptr_t>(code), size));
+ 	m_size = size;
+@@ -165,6 +307,8 @@ void CMemoryFunction::Reset()
+ 		vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(m_code), m_size);
+ #elif defined(MEMFUNC_USE_MMAP)
+ 		munmap(m_code, m_size);
++#elif defined(MEMFUNC_USE_ORBIS)
++		OrbisJitFree(m_code, m_size);
+ #elif defined(MEMFUNC_USE_WASM)
+ 		WasmDeleteFunction(reinterpret_cast<int>(m_code));
+ #endif

@@ -1,0 +1,56 @@
+From: PS4 port
+Subject: [PATCH] orbis: this kernel does not deliver SA_SIGINFO
+
+Loading any content crashed the moment the EE executor took its first fault:
+
+    # signal: 11 (SIGSEGV)          # thread name: orbis
+    # reason: page fault (user read data, page not present)
+    # fault address: 000000000000001a
+    # rsi: 0000000000000002         # rdi: 000000089c04b900 (g_eeExecutor, valid)
+    # rip: 0000000800a8bb40         -> play_libretro.prx + 0x227b40
+
+which disassembles to the second instruction of CEeExecutor::HandleException:
+
+    227b39:  movq 0x529eb8(%rip), %rdi    # g_eeExecutor
+    227b40:  movq 0x18(%rsi), %rsi        # sigInfo->si_addr   <- rsi is 2, so 2 + 0x18 = 0x1a
+
+So the handler ran, found its executor, and was handed a siginfo_t* of 2. rdi = 11 and rdx = a
+valid stack address, with a small integer between them, is FreeBSD's ORIGINAL handler signature -
+void (*)(int sig, int code, struct sigcontext *scp) - and not SA_SIGINFO's
+void (*)(int, siginfo_t *, void *). The flag is set in AddExceptionHandler and does not reach the
+kernel.
+
+There is no fixing the handler, because the address it exists to read is the thing that never
+arrives. DISABLE_PROTECTION is Play!'s own answer for a platform that cannot trap writes - iOS,
+tvOS and 32-bit ARM builds all take it - so this takes the same one.
+
+diff --git a/Source/ee/EeExecutor.cpp b/Source/ee/EeExecutor.cpp
+index c8c72f9..0ef50e4 100644
+--- a/Source/ee/EeExecutor.cpp
++++ b/Source/ee/EeExecutor.cpp
+@@ -36,6 +36,25 @@
+ 
+ #endif
+ 
++#ifdef __ORBIS__
++// ⚠ THIS KERNEL CALLS A SIGNAL HANDLER WITH FreeBSD'S OLD (sig, code, scp) CONVENTION, NOT
++// SA_SIGINFO'S (sig, siginfo_t*, ucontext_t*). Measured from the crash dump: SIGSEGV arrived with
++// rdi = 11 (the signal), rdx = a valid stack pointer, and rsi = 2 - a small integer where the
++// siginfo_t* belongs. HandleException's first act is `movq 0x18(%rsi), %rsi` to read si_addr, so
++// it read address 0x1a and took the process down:
++//
++//     # reason: page fault (user read data, page not present)
++//     # fault address: 000000000000001a
++//     # rsi: 0000000000000002
++//
++// The whole memory-protection scheme depends on that address, so there is nothing to salvage in
++// the handler. DISABLE_PROTECTION is Play!'s own answer for a platform that cannot trap writes -
++// it is what iOS, tvOS and 32-bit ARM builds use - and it turns AddExceptionHandler into a no-op
++// and SetMemoryProtected into a nop. The cost is that writes into already-translated code are not
++// detected by a fault, which is a correctness risk for self-modifying games rather than a crash.
++#define DISABLE_PROTECTION
++#endif
++
+ static CEeExecutor* g_eeExecutor = nullptr;
+ 
+ CEeExecutor::CEeExecutor(CMIPS& context, uint8* ram)

@@ -33,3 +33,19 @@ void ZSTD_trace_compress_end(unsigned long long ctx, const void *trace)
 unsigned long long ZSTD_trace_decompress_begin(const void *dctx) { (void)dctx; return 0; }
 void ZSTD_trace_decompress_end(unsigned long long ctx, const void *trace)
 { (void)ctx; (void)trace; }
+
+/* ⚠ glsm_ctl, FOR A CORE THAT HAS NO glsm - AND WEAK, WHICH IS THE WHOLE TRICK.
+ *
+ * ps4/orbis_gl_forward.c declares glsm_ctl weak and null-checks it, which is correct C and is not
+ * enough: an undefined weak symbol is exactly what create-fself refuses, so a GL core without glsm
+ * linked cleanly and then got
+ *
+ *     Failed to build FSELF: missing library for symbol (glsm_ctl)
+ *
+ * Defining it WEAK here means a core that DOES build glsm still wins - its strong definition
+ * overrides this one - while a core that does not gets a definition rather than a hole. Returning
+ * 0 is the truthful answer to every GLSM_CTL_* query from a core with no glsm; orbis_gl_forward.c
+ * then says so and points at orbis_gl_resolve_proc(). */
+__attribute__((weak)) int glsm_ctl(int state, void *data);
+__attribute__((weak)) int glsm_ctl(int state, void *data)
+{ (void)state; (void)data; return 0; }

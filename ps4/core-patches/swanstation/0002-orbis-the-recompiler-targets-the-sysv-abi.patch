@@ -1,0 +1,25 @@
+From: PS4 port
+Subject: [PATCH] orbis: the recompiler targets the SysV ABI
+
+Same cause as 0001 - a C++ TU here has no platform macro, because this SDK's libc++ undefines
+__FreeBSD__ on purpose - and the same shape of consequence: eleven `#error Unknown ABI.` and
+every register name the recompiler defines behind that branch (RARG1, RCPUPTR, RMEMBASEPTR,
+RRETURN, FUNCTION_CALL_SHADOW_SPACE) reported as undeclared identifiers.
+
+This one is not a guess about what the console prefers. The target triple is
+x86_64-pc-freebsd12-elf and everything in this port is built for it, so the calling convention IS
+System V - the same arm __FreeBSD__ already selects two lines up.
+
+diff --git a/src/core/cpu_recompiler_types.h b/src/core/cpu_recompiler_types.h
+index ab2431a..8f5fd4a 100644
+--- a/src/core/cpu_recompiler_types.h
++++ b/src/core/cpu_recompiler_types.h
+@@ -80,7 +80,7 @@ constexpr uint32_t CODE_STORAGE_ALIGNMENT = 4096;
+ // ABI selection
+ #if defined(_WIN32)
+ #define ABI_WIN64 1
+-#elif defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__) || defined(__HAIKU__) || defined(__FreeBSD__)
++#elif defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__) || defined(__HAIKU__) || defined(__FreeBSD__) || defined(__ORBIS__)
+ #define ABI_SYSV 1
+ #else
+ #error Unknown ABI.

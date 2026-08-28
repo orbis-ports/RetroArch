@@ -1,0 +1,47 @@
+From: PS4 port
+Subject: [PATCH] orbis: resolve the GL entry points from the hardware-render callback
+
+A .prx has its own symbol table and no dynamic linker, so the GLES core ABI a core calls directly
+- glTexImage2D, glTexParameteri, glRenderbufferStorageMultisample here - arrives at the link as
+plain undefined symbols. ps4/orbis_gl_forward.c answers them with thunks that jump to the
+frontend's implementations, and those are null until something hands them a proc-address function.
+
+Most GL cores go through libretro-common's glsm, and orbis_gl_forward.c took the function from it.
+Play! does not use glsm at all - it keeps its own retro_hw_render_callback - so the thunk table
+stayed empty. The frontend gives get_proc_address to EVERY hardware-rendered core in that
+callback, so this passes it straight in, at the first moment there is a context to ask.
+
+diff --git a/Source/ui_libretro/main_libretro.cpp b/Source/ui_libretro/main_libretro.cpp
+index 8a07c26..c7c03a3 100644
+--- a/Source/ui_libretro/main_libretro.cpp
++++ b/Source/ui_libretro/main_libretro.cpp
+@@ -33,6 +33,14 @@ retro_input_state_t g_input_state_cb;
+ retro_audio_sample_batch_t g_set_audio_sample_batch_cb;
+ 
+ std::map<int, int> g_ds2_to_retro_btn_map;
++#ifdef __ORBIS__
++extern "C" {
++typedef void (*orbis_gl_proc_t)(void);
++typedef orbis_gl_proc_t (*orbis_gl_getproc_t)(const char *sym);
++int orbis_gl_resolve_proc(orbis_gl_getproc_t getproc);
++}
++#endif
++
+ struct retro_hw_render_callback g_hw_render
+ {
+ };
+@@ -99,6 +107,14 @@ static void retro_context_reset()
+ {
+ 	CLog::GetInstance().Print(LOG_NAME, "%s\n", __FUNCTION__);
+ 
++#ifdef __ORBIS__
++	// A .prx carries its own symbol table and has no dynamic linker to ask, so the GLES core ABI
++	// this core calls directly - glTexImage2D and the rest - arrives as undefined symbols and is
++	// satisfied by thunks in ps4/orbis_gl_forward.c. They are null until something hands them the
++	// frontend's proc-address function, and this is the first moment there is a context to ask.
++	orbis_gl_resolve_proc(reinterpret_cast<orbis_gl_getproc_t>(g_hw_render.get_proc_address));
++#endif
++
+ 	if(m_virtualMachine)
+ 	{
+ 		SetupVideoHandler();

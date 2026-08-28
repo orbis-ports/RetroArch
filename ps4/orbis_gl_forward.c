@@ -176,25 +176,33 @@ static const char *const orbis_gl_names[] = {
    "glVertexAttribPointer",
    "glViewport",
    "glWaitSync",
+   /* ⚠ APPENDED, NEVER INSERTED. Each thunk below carries its slot as a literal byte offset -
+    * index * 8 - so putting a name in alphabetical order would silently renumber every thunk
+    * after it. Anything new goes on the end, whatever it looks like. These three came from
+    * Play!, which reaches them directly rather than through glsm's macros. */
+   "glTexImage2D",
+   "glTexParameteri",
+   "glRenderbufferStorageMultisample",
    NULL
 };
 
-void *orbis_gl_slot[134];
+void *orbis_gl_slot[137];
 
 /* Called before the first GL call of a context - see the core patch that calls it from
  * context_reset. Resolving eagerly rather than lazily keeps the thunks to four instructions and
  * means a missing entry point is reported at a known moment instead of at a random draw call. */
-int orbis_gl_resolve(void)
+/* ⚠ THE PROC-ADDRESS FUNCTION DOES NOT ONLY COME FROM glsm, AND ASSUMING IT DID COST A CORE.
+ * glsm is libretro-common's GL state manager and most GL cores use it, so GLSM_CTL_PROC_ADDRESS_GET
+ * was the only way in here. Play! does not use glsm at all - it keeps its own
+ * retro_hw_render_callback and calls the GLES core ABI directly - so orbis_gl_resolve() found no
+ * glsm_ctl, reported "no glsm in this core", and every thunk stayed null. The frontend hands
+ * get_proc_address to EVERY hardware-rendered core in that callback, whether or not glsm is in the
+ * middle, so a core that has it can pass it straight in. */
+int orbis_gl_resolve_proc(orbis_gl_getproc_t getproc)
 {
-   orbis_gl_getproc_t getproc = NULL;
    unsigned i, missing = 0;
 
-   if (!glsm_ctl)
-   {
-      orbis_report("gl", "no glsm in this core - GL entry points cannot be resolved");
-      return 0;
-   }
-   if (!glsm_ctl(GLSM_CTL_PROC_ADDRESS_GET, &getproc) || !getproc)
+   if (!getproc)
    {
       orbis_report("gl", "the frontend gave this core no proc-address function");
       return 0;
@@ -216,6 +224,21 @@ int orbis_gl_resolve(void)
 
    orbis_report("gl", "%u entry points resolved, %u missing", i - missing, missing);
    return missing == 0;
+}
+
+int orbis_gl_resolve(void)
+{
+   orbis_gl_getproc_t getproc = NULL;
+
+   if (!glsm_ctl)
+   {
+      orbis_report("gl", "no glsm in this core - pass get_proc_address to "
+                         "orbis_gl_resolve_proc() instead");
+      return 0;
+   }
+   if (!glsm_ctl(GLSM_CTL_PROC_ADDRESS_GET, &getproc))
+      getproc = NULL;
+   return orbis_gl_resolve_proc(getproc);
 }
 
 /* Reached only if something calls GL before the context was resolved, which is a bug in the
@@ -1058,6 +1081,30 @@ __asm__(
    "glTexStorage2D:\n"
    "  movq orbis_gl_slot@GOTPCREL(%rip), %rax\n"
    "  movq 824(%rax), %rax\n"
+   "  testq %rax, %rax\n"
+   "  je orbis_gl_thunk_bad\n"
+   "  jmpq *%rax\n"
+   ".globl glTexImage2D\n"
+   ".type glTexImage2D,@function\n"
+   "glTexImage2D:\n"
+   "  movq orbis_gl_slot@GOTPCREL(%rip), %rax\n"
+   "  movq 1064(%rax), %rax\n"
+   "  testq %rax, %rax\n"
+   "  je orbis_gl_thunk_bad\n"
+   "  jmpq *%rax\n"
+   ".globl glTexParameteri\n"
+   ".type glTexParameteri,@function\n"
+   "glTexParameteri:\n"
+   "  movq orbis_gl_slot@GOTPCREL(%rip), %rax\n"
+   "  movq 1072(%rax), %rax\n"
+   "  testq %rax, %rax\n"
+   "  je orbis_gl_thunk_bad\n"
+   "  jmpq *%rax\n"
+   ".globl glRenderbufferStorageMultisample\n"
+   ".type glRenderbufferStorageMultisample,@function\n"
+   "glRenderbufferStorageMultisample:\n"
+   "  movq orbis_gl_slot@GOTPCREL(%rip), %rax\n"
+   "  movq 1080(%rax), %rax\n"
    "  testq %rax, %rax\n"
    "  je orbis_gl_thunk_bad\n"
    "  jmpq *%rax\n"

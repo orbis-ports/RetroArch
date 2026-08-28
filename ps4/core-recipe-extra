@@ -1,0 +1,19 @@
+# Cores this port builds that libretro-super's recipe does not carry.
+#
+# ⚠ THE RECIPE IS SOMEBODY ELSE'S FILE AND IT IS NOT ALWAYS RIGHT ABOUT THIS PORT.
+# recipes/linux/cores-linux-x64-generic is fetched from libretro-super, so a core missing from it
+# is simply never attempted here - not judged and rejected, never tried. That is how dosbox_pure
+# went unbuilt for the whole life of this port while the three DOSBox cores that ARE in the recipe
+# all fail: dosbox_core and dosbox_svn want SDL and do not link, and dosbox_svn_ce cannot even
+# clone. dosbox_pure has its own backend, needs no SDL, and built here on the first attempt with
+# no patches at all.
+#
+# The same file also goes stale: tic80's recipe line names a branch that no longer exists, and
+# libretro/pcsx2 and libretro/duckstation have been DELETED from GitHub while still being listed.
+#
+# Format is the recipe's own, so a line can be moved either way without editing:
+#   name  dir  url  branch  fetch  buildtype  makefile  subdir  [extra args]
+#
+# Appended to whatever --recipe points at, and a name here WINS over the same name in the recipe,
+# so this file can also correct a stale line rather than only add a missing core.
+dosbox_pure libretro-dosbox_pure https://github.com/schellingb/dosbox-pure.git main YES GENERIC Makefile .

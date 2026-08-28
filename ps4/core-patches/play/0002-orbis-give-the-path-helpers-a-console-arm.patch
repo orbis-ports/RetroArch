@@ -1,0 +1,57 @@
+From: PS4 port
+Subject: [PATCH] orbis: give the path helpers a console arm
+
+    deps/Framework/src/PathUtils.cpp:177: error: use of undeclared identifier 'getuid'
+
+Same cause as swanstation's two patches: this SDK's libc++ undefines __FreeBSD__ on purpose, so a
+C++ TU here has NO platform macro and falls through every #elif to the final #else - which builds
+a home directory out of getpwuid(getuid()). getuid is declared in the SDK's unistd.h but the
+overlay's shadows it, and neither libc.a nor libkernel.a defines it, so even declared it would
+have been an undefined symbol at link.
+
+⚠ ADDING __ORBIS__ TO THE LINUX/FreeBSD ARM WOULD COMPILE AND THEN CRASH. Every function in it is
+`fs::path(getenv("HOME")) / something`, and this console has no HOME, no XDG_CONFIG_HOME and no
+XDG_CACHE_HOME - so each one would construct fs::path from a null pointer. The arm needs real
+paths, not a platform label.
+
+/data/retroarch is where the frontend already keeps cores, system files, saves and playlists, so
+Play!'s own data goes beside them rather than at a path nothing else on the console knows about.
+
+diff --git a/deps/Framework/src/PathUtils.cpp b/deps/Framework/src/PathUtils.cpp
+index f7a9f8b..0ec38d9 100644
+--- a/deps/Framework/src/PathUtils.cpp
++++ b/deps/Framework/src/PathUtils.cpp
+@@ -121,6 +121,33 @@ void PathUtils::SetCacheDirPath(const char* cacheDirPath)
+ 	s_cacheDirPath = cacheDirPath;
+ }
+ 
++#elif defined(__ORBIS__)
++
++// This console has no HOME, no XDG_* and no passwd database, so every arm below would either
++// dereference a null getenv() or call getpwuid(getuid()) - which is what the #else arm does, and
++// what this file used to reach here. /data/retroarch is where the frontend keeps everything else.
++#define ORBIS_PLAY_DATA_PATH "/data/retroarch/system/play"
++
++fs::path PathUtils::GetAppResourcesPath()
++{
++	return ORBIS_PLAY_DATA_PATH;
++}
++
++fs::path PathUtils::GetRoamingDataPath()
++{
++	return ORBIS_PLAY_DATA_PATH;
++}
++
++fs::path PathUtils::GetPersonalDataPath()
++{
++	return ORBIS_PLAY_DATA_PATH;
++}
++
++fs::path PathUtils::GetCachePath()
++{
++	return fs::path(ORBIS_PLAY_DATA_PATH) / "cache";
++}
++
+ #elif defined(__linux__) || defined(__FreeBSD__) || defined(__EMSCRIPTEN__)
+ 
+ fs::path PathUtils::GetAppResourcesPath()

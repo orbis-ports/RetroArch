@@ -1,0 +1,37 @@
+From: PS4 port
+Subject: [PATCH] orbis: tell the bundled zlib that unistd.h exists
+
+The build stopped at 17% and took everything downstream with it:
+
+    deps/Dependencies/zlib/gzlib.c:245: error: call to undeclared function 'lseek'
+    ... and read, write and close, ten in all, across gzlib.c gzread.c gzwrite.c
+
+gzclose_r and gzclose_w live in gzread.c and gzwrite.c, so the link then reported exactly two
+undefined symbols and nothing about the cause.
+
+Play! does not use upstream zlib's CMakeLists - it has its own minimal one in
+deps/Dependencies/build_cmake/zlib that compiles the sources directly. Upstream's decides
+Z_HAVE_UNISTD_H from a check_include_file() and writes it into a generated zconf.h; this one
+generates no zconf.h and never defines the macro, so gzguts.h skips its <unistd.h> and the three
+gz* files compile with those four functions undeclared. Under C99 that is an error.
+
+It is latent everywhere and only fires on a libc that does not leak the declarations in through
+another header - glibc does, musl does not. Measured on this platform before defining it:
+unistd.h is present and lseek links.
+
+diff --git a/deps/Dependencies/build_cmake/zlib/CMakeLists.txt b/deps/Dependencies/build_cmake/zlib/CMakeLists.txt
+index 47b7cc7..c67bbd9 100644
+--- a/deps/Dependencies/build_cmake/zlib/CMakeLists.txt
++++ b/deps/Dependencies/build_cmake/zlib/CMakeLists.txt
+@@ -21,5 +21,11 @@ set(zlib_srcs
+ add_library(zlibstatic ${zlib_srcs})
+ add_library(ZLIB::ZLIB ALIAS zlibstatic)
+ target_compile_definitions(zlibstatic PRIVATE -DLIT_MEM=1)
++# zlib reaches lseek/read/write/close from gzlib.c, gzread.c and gzwrite.c, and gzguts.h includes
++# <unistd.h> for them only under Z_HAVE_UNISTD_H. Upstream zlib's own CMakeLists sets that from a
++# check_include_file() and a generated zconf.h; this minimal build compiles the sources directly
++# and generates neither, so the macro is never defined and those three files compile with the
++# functions undeclared - an error rather than a warning under C99.
++target_compile_definitions(zlibstatic PRIVATE -DZ_HAVE_UNISTD_H=1)
+ target_include_directories(zlibstatic PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../../zlib/)
+ 

@@ -111,14 +111,35 @@ fi
 # not a combination that means anything. It wins.
 [[ $KEEP -eq 1 ]] && DROP_CLONES=0
 
-recipe_line() { awk -v c="$1" '!/^[[:space:]]*(#|$)/ && $1==c {print; exit}' "$RECIPE"; }
+# ⚠ THE RECIPE IS EXTENDED BY ps4/core-recipe-extra, AND IT IS CHECKED FIRST.
+#
+# The upstream recipe is fetched from libretro-super, so a core it omits is never attempted here -
+# not tried and rejected, never tried at all. dosbox_pure is the case that made this necessary: it
+# is absent from the recipe, builds first try with no patches, and is the only working DOS core
+# for this port, while all three the recipe DOES list fail. The extra file is searched before the
+# recipe so it can also correct a line that has gone stale.
+RECIPE_EXTRA="$HERE/core-recipe-extra"
+recipe_line() { # core -> its line, ours first
+  local line=""
+  [[ -f "$RECIPE_EXTRA" ]] \
+    && line="$(awk -v c="$1" '!/^[[:space:]]*(#|$)/ && $1==c {print; exit}' "$RECIPE_EXTRA")"
+  [[ -n "$line" ]] && { printf '%s\n' "$line"; return; }
+  awk -v c="$1" '!/^[[:space:]]*(#|$)/ && $1==c {print; exit}' "$RECIPE"
+}
 
 if [[ $LIST -eq 1 ]]; then
-  awk '!/^[[:space:]]*(#|$)/ {printf "%-26s %s\n", $1, $6}' "$RECIPE" | sort
+  awk '!/^[[:space:]]*(#|$)/ {printf "%-26s %s\n", $1, $6}' "$RECIPE" ${RECIPE_EXTRA:+"$RECIPE_EXTRA"} | sort
   exit 0
 fi
+# ⚠ --all IS STILL GENERIC ONLY, ON PURPOSE, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT.
+# The CMAKE cores are buildable now (see the toolchain file below) but nothing is known about what
+# they COST: dolphin, citra and pcsx2 are each larger than anything in the GENERIC list, and a
+# sweep is already eight shards against a 25-minute per-core cap. Name them individually until
+# there is a measured time for each; then they can join this line with the weights in
+# ps4/CORE-STATUS.md updated to match.
 if [[ $ALL -eq 1 ]]; then
-  mapfile -t CORES < <(awk '!/^[[:space:]]*(#|$)/ && $6=="GENERIC" {print $1}' "$RECIPE" | sort)
+  mapfile -t CORES < <(awk '!/^[[:space:]]*(#|$)/ && $6=="GENERIC" {print $1}' \
+      "$RECIPE" ${RECIPE_EXTRA:+"$RECIPE_EXTRA"} | sort -u)
 fi
 [[ ${#CORES[@]} -gt 0 ]] || { echo "build-cores: name a core, or pass --all" >&2; exit 2; }
 
@@ -190,6 +211,112 @@ CXX_INCLUDES=(-isystem "$TOOLCHAIN/include/c++/v1"
               -include orbis_prefix.h)
 CC_ORBIS="clang ${ORBIS_ARCH[*]} ${C_INCLUDES[*]}"
 CXX_ORBIS="clang++ ${ORBIS_ARCH[*]} ${CXX_INCLUDES[*]}"
+
+# ⚠ THE CMake TOOLCHAIN FILE IS GENERATED HERE RATHER THAN CHECKED IN, AND THAT IS THE POINT.
+#
+# A core built through CMake must see the SAME target, the SAME sysroot and the SAME include order
+# as one built through make - otherwise this harness has two definitions of what this platform is,
+# and the second one will drift out of date silently, which is the failure mode every ⚠ above is
+# about. So the file is written from $ORBIS_ARCH and $C_INCLUDES/$CXX_INCLUDES, the arrays that
+# already decided it, and there is nothing to keep in step.
+#
+# ⚠ IT IS NOT orbis-compat/cmake/ps4-openorbis.cmake AND MUST NOT BE. That file is for
+# EXECUTABLES - Tempest, OpenGothic, VK-GL-CTS. It links crt1.o, puts the overlay on the link line
+# with --whole-archive, and forces BUILD_SHARED_LIBS OFF. A libretro core is none of those things:
+# its own link is EXPECTED to fail, the objects are collected and linked below against the module
+# script, and crt1.o in the middle of that would be an entry point in a thing that has none.
+# It also does not pass -nostdinc, so it reaches this desktop's /usr/include - see the block above.
+#
+# ⚠ FreeBSD, NOT Generic, AS THE SYSTEM NAME. Generic leaves UNIX unset, and a libretro
+# CMakeLists.txt routinely branches on if(UNIX) for its threading, its dynamic loader and its
+# endianness - taking the Windows arm instead is not a build failure, it is a wrong build. The
+# triple is x86_64-pc-freebsd12-elf, so FreeBSD is also the truthful answer.
+#
+# ⚠ try_compile LINKS A REAL EXECUTABLE HERE, AND THE SHORTCUT THAT AVOIDS THAT IS A TRAP.
+#
+# CMake proves a compiler works by linking a little executable, and the documented escape for a
+# target with no runnable link is CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY. It configures, and
+# it is wrong twice over:
+#
+#   * NOTHING LINKS, SO EVERY check_function_exists() SAYS YES. A core asking whether shm_open or
+#     posix_memalign exists gets told yes because the reference compiled, and finds out at the real
+#     link - or does not, and quietly configures a code path this platform has no symbol for.
+#   * CMake FEEDS THE EXECUTABLE LINKER FLAGS TO THE ARCHIVER. The static library rule is
+#     "<CMAKE_AR> qc <TARGET> <LINK_FLAGS> <OBJECTS>" and llvm-ar reads a leading word as operation
+#     LETTERS, so yaps2's own compiler-flag probes came out as
+#         /usr/bin/llvm-ar: error: unknown option n      <- a -n... flag
+#         /usr/bin/llvm-ar: error: unknown option f      <- a -f... flag
+#     reported as a COMPILE failure in a try_compile, about as far from the cause as a message gets.
+#
+# So the link line below is the real one - the SDK's crt1.o, its libraries, and this overlay's
+# corrected linker script - and CMake's checks answer truthfully. It is the same recipe as
+# orbis-compat/cmake/ps4-openorbis.cmake, which is the file this port uses for EXECUTABLES; a core
+# is not one, and its own link is still discarded, but a try_compile IS an executable and wants an
+# executable's link line.
+CMAKE_TOOLCHAIN="$WORK/orbis-core.cmake"
+# Only if it has been built - a missing archive would fail every check for a reason none of them
+# are about, and the overlay carries interposers rather than symbols the checks need.
+ORBIS_COMPAT_LINK=""
+[[ -f "$ORBIS_COMPAT_DIR/build/liborbis-compat.a" ]] \
+  && ORBIS_COMPAT_LINK="-L$ORBIS_COMPAT_DIR/build -lorbis-compat"
+cat > "$CMAKE_TOOLCHAIN" <<EOF
+# GENERATED by ps4/build-cores.sh on each run - edit that script, not this file.
+set(CMAKE_SYSTEM_NAME      FreeBSD)
+set(CMAKE_SYSTEM_VERSION   12)
+set(CMAKE_SYSTEM_PROCESSOR x86_64)
+
+set(CMAKE_C_COMPILER   clang)
+set(CMAKE_CXX_COMPILER clang++)
+set(CMAKE_ASM_COMPILER clang)
+set(CMAKE_AR       $(command -v llvm-ar)       CACHE FILEPATH "")
+set(CMAKE_RANLIB   $(command -v llvm-ranlib)   CACHE FILEPATH "")
+set(CMAKE_NM       $(command -v llvm-nm)       CACHE FILEPATH "")
+set(CMAKE_OBJDUMP  $(command -v llvm-objdump)  CACHE FILEPATH "")
+
+set(CMAKE_C_FLAGS_INIT   "${ORBIS_ARCH[*]} ${C_INCLUDES[*]}")
+set(CMAKE_CXX_FLAGS_INIT "${ORBIS_ARCH[*]} ${CXX_INCLUDES[*]}")
+set(CMAKE_ASM_FLAGS_INIT "${ORBIS_ARCH[*]} ${C_INCLUDES[*]}")
+
+# The executable link line, which is what CMake's own checks use. --script is this overlay's
+# corrected copy of the SDK's link.x and --no-rosegment keeps the loader from rejecting the image;
+# orbis-compat/cmake/ps4-openorbis.cmake carries both reasons in full. crt1.o goes LAST, the order
+# the SDK's own link rule uses.
+#
+# ⚠ THE CORE'S OWN SHARED/MODULE LINK IS STILL EXPECTED TO FAIL and is left alone deliberately -
+# build-cores.sh collects the objects and links them against ps4/orbis-module.ld itself.
+set(CMAKE_EXE_LINKER_FLAGS_INIT "-nostdlib -fuse-ld=lld -pie -Wl,-m,elf_x86_64 -Wl,--script=$ORBIS_COMPAT_DIR/cmake/orbis-tls.ld -Wl,--eh-frame-hdr -Wl,--no-rosegment -L$TOOLCHAIN/lib $ORBIS_COMPAT_LINK")
+set(CMAKE_C_STANDARD_LIBRARIES   "-lc -lkernel -lc++ $TOOLCHAIN/lib/crt1.o")
+set(CMAKE_CXX_STANDARD_LIBRARIES "-lc -lkernel -lc++ $TOOLCHAIN/lib/crt1.o")
+
+# NEVER for programs: a core's build may want pkg-config, python or a shader compiler, and those
+# are the HOST's. ONLY for libraries and headers: anything found outside the sysroot would be this
+# desktop's, which is the whole reason -nostdinc is on the compile line.
+set(CMAKE_FIND_ROOT_PATH "$TOOLCHAIN;$ORBIS_COMPAT_DIR")
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+EOF
+
+# ⚠ CHECK THE FILE THAT WAS JUST WRITTEN, BECAUSE AN EMPTY ONE IS NOT AN ERROR ANYWHERE ELSE.
+#
+# The heredoc above is UNQUOTED - it has to be, that is how the flag arrays reach it - so every
+# backtick and every $ in it is live. A pair of backticks in one of its comments turned the whole
+# body into a command substitution and left this file ZERO BYTES, and nothing said so: CMake reads
+# an empty toolchain file happily, falls back to /usr/bin/c++ and the host's headers, and builds a
+# core for THIS DESKTOP that ld.lld then links and create-fself then accepts, because the host and
+# the console are both x86-64. The verdict was OK. The tell was in the link of the NEXT core:
+#
+#     undefined symbol: std::cerr        _ZSt4cerr, which is libstdc++'s mangling
+#                                        libc++.a has _ZNSt3__14cerrE
+#
+# So a green core built against the wrong C++ library entirely. Anything written by an unquoted
+# heredoc has to be looked at afterwards.
+if ! grep -q CMAKE_CXX_FLAGS_INIT "$CMAKE_TOOLCHAIN"; then
+  echo "build-cores: the generated $CMAKE_TOOLCHAIN is empty or truncated." >&2
+  echo "   An unquoted heredoc wrote it - check it for backticks and for a stray \$." >&2
+  exit 1
+fi
 
 # ⚠ THE libretro ABI HAS TO BE NAMED OR LTO THROWS IT AWAY, AND THE BUILD STILL SUCCEEDS.
 #
@@ -315,6 +442,56 @@ core_make_flags() {
     mupen64plus_next) echo "HAVE_THR_AL=1 WITH_DYNAREC=x86_64 FORCE_GLES3=1" ;;
     parallel_n64)     echo "HAVE_PARALLEL=1 HAVE_PARALLEL_RSP=1 HAVE_THR_AL=1 WITH_DYNAREC=x86_64" ;;
     *)                echo "" ;;
+  esac
+}
+
+# ⚠ AND THE SAME FOR CMake CORES, WHERE THE RECIPE'S ARGUMENTS ARE WRITTEN FOR A LINUX DESKTOP.
+#
+# Appended after the recipe's own -D arguments, so these win.
+#
+# play: USE_GLES=ON. Left to its default, deps/Framework/build_cmake/FrameworkOpenGl decides GLES
+# by platform name - Android, iOS, ARM, Emscripten - and this console is none of them, so it takes
+# the desktop arm: find_package(GLEW), then a bundled glew-2.0.0 whose CMakeLists does
+# find_package(OpenGL REQUIRED), which wants GLX. That is what stopped the core configuring:
+#
+#     Could NOT find OpenGL (missing: OPENGL_opengl_LIBRARY OPENGL_glx_LIBRARY OPENGL_INCLUDE_DIR)
+#     deps/Dependencies/glew-2.0.0/CMakeLists.txt:20 (find_package)
+#
+# ⚠ IT IS NOT A WORKAROUND, IT IS THE TRUTHFUL ANSWER. This port has no desktop GL and no GLX; it
+# has GLES 3.1 through zink, which is exactly the arm USE_GLES selects - no glew, no
+# find_package(OpenGL), and GLESv2 on the link line. The variable is a CACHE BOOL, so a -D wins.
+# ⚠ BUILD THE CORE'S TARGET, NOT `all` - A CMake TREE SHIPS PROGRAMS AS WELL AS THE CORE.
+#
+# Everything under the build directory is swept up for the link, and a source tree that also
+# builds tools and test suites contributes their entry points. play, from `all`:
+#
+#     ld.lld: error: duplicate symbol: main
+#       >>> .../CodeGen/CMakeFiles/CodeGenTestSuite.dir/tests/Main.cpp.o
+#       >>> .../tools/NamcoSys147NANDTools/CMakeFiles/NamcoSys147NANDTools.dir/Main.cpp.o
+#
+# and the recipe already passes -DBUILD_TESTS=no, which those two did not honour. libretro CMake
+# cores name their target <core>_libretro - the same convention this file already relies on for
+# the .prx filename - so when that target exists it is the one to build, and `all` is the fallback
+# for a core that names its target something else.
+#
+# ⚠ AND NO `grep -q` IN THE PIPELINE, for the reason this file already records at the retro_run
+# check: grep -q exits on its first match, cmake gets SIGPIPE, and under `set -o pipefail` the
+# PIPELINE fails even though the target was found. Written that way first, it answered `all` every
+# time and the duplicate `main` above never went away.
+cmake_build_target() { # -> the target to build, from $core and $cbuild in scope
+  local targets
+  targets="$(cmake --build "$cbuild" --target help 2>/dev/null)"
+  if [[ "$targets" == *"... ${core}_libretro"$'\n'* ]]; then
+    echo "${core}_libretro"
+  else
+    echo all
+  fi
+}
+
+core_cmake_flags() { # core -> extra -D arguments, appended after the recipe's
+  case "$1" in
+    play) echo "-DUSE_GLES=ON" ;;
+    *)    echo "" ;;
   esac
 }
 
@@ -497,11 +674,11 @@ for core in "${CORES[@]}"; do
   [[ -n "$line" ]] || { report "$core" SKIP - - "not in the recipe"; continue; }
   read -r _name dir url branch _fetch buildtype makefile subdir _rest <<<"$line"
 
-  # GENERIC_GL wants an OpenGL context this port does not have; CMAKE wants a toolchain file.
-  # Unless core_make_flags names the core - see the comment there for why the recipe's build type
-  # is not the last word on whether a core can render here.
+  # GENERIC_GL wants an OpenGL context this port does not have. CMAKE is driven through the
+  # generated toolchain file above. Unless core_make_flags names the core - see the comment there
+  # for why the recipe's build type is not the last word on whether a core can render here.
   makeflags="$(core_make_flags "$core")"
-  [[ "$buildtype" == GENERIC || -n "$makeflags" ]] \
+  [[ "$buildtype" == GENERIC || "$buildtype" == CMAKE || -n "$makeflags" ]] \
     || { report "$core" SKIP - - "build type $buildtype"; continue; }
 
   # Whatever the previous core left behind goes now, before this one's clone lands beside it.
@@ -534,6 +711,21 @@ for core in "${CORES[@]}"; do
     git -C "$src" reset -q --hard "origin/$branch" 2>/dev/null \
       || git -C "$src" reset -q --hard 2>/dev/null || true
     git -C "$src" clean -qfd 2>/dev/null || true
+    # ⚠ NEITHER reset NOR clean REACHES INTO A SUBMODULE, AND THAT MAKES A BUILD UNREPEATABLE.
+    #
+    # `git reset --hard` in a superproject restores the RECORDED COMMIT of each submodule, not the
+    # files inside one, and `git clean -fd` skips them entirely. Play! keeps deps/Framework and
+    # deps/Dependencies as submodules, so an edit made inside either survives every reset - which
+    # is how a patch that contained no changes at all appeared to work: the file it was supposed to
+    # change had been edited by hand and nothing ever put it back. `git diff` in the superproject
+    # records such an edit as `-Subproject commit <sha>` / `+Subproject commit <sha>-dirty` and
+    # NOTHING ELSE, so the patch was a one-line no-op that git apply later refused outright.
+    #
+    # ⚠ A PATCH THAT TOUCHES A SUBMODULE HAS TO BE GENERATED FROM INSIDE IT:
+    #     git -C deps/<sub> diff --src-prefix=a/deps/<sub>/ --dst-prefix=b/deps/<sub>/
+    # git apply from the clone root then finds the file by path, which is all it needs.
+    git -C "$src" submodule foreach -q --recursive \
+        'git reset -q --hard 2>/dev/null; git clean -qfd 2>/dev/null' 2>/dev/null || true
     if [[ -d "$PATCHES/$core" ]]; then
       for p in "$PATCHES/$core"/*.patch; do
         [[ -e "$p" ]] || continue
@@ -571,11 +763,71 @@ for core in "${CORES[@]}"; do
   # member while cdrom.c never joins the source list - and satisfying that from a shared archive
   # would put two layouts of one struct in a single link. That is silent and much worse than a
   # missing symbol. Turning it off makes both sides agree and loses nothing that exists here.
-  # $makeflags is a list of make variables and must word-split - hence the disable below.
-  # shellcheck disable=SC2086
-  ( cd "$bdir" && capped make -f "${makefile:-Makefile}" platform=unix HAVE_CDROM=0 $makeflags \
-        CC="$CC_ORBIS" CXX="$CXX_ORBIS" AR=llvm-ar -k -j"$JOBS" ) >"$WORK/$core.log" 2>&1
-  rc=$?
+  if [[ "$buildtype" == CMAKE ]]; then
+    # ⚠ FIELD 8 MEANS SOMETHING ELSE HERE. For a GENERIC core it is a SOURCE subdirectory to run
+    # make in; for a CMAKE core it is a BUILD directory that does not exist yet - "build" for all
+    # of them but tic80, which says "builddir". So $bdir above is not the answer and is not used.
+    cbuild="$src/${subdir:-build}"
+
+    # ⚠ A STALE CMakeCache.txt SURVIVES `git clean -fd` AND SILENTLY PINS THE OLD FLAGS.
+    # Every core here gitignores its build directory, and clean does not touch ignored paths
+    # without -x. CMAKE_CXX_FLAGS_INIT is only consulted on the FIRST configure, so a cache left
+    # from a previous run keeps the flags that run was given: correcting the toolchain file and
+    # rebuilding changed nothing, twice, and the compiler errors were identical each time -
+    # which reads as a fix that does not work rather than a fix that was never applied.
+    # RESET THEN CONFIGURE, for the same reason the patch loop resets before it patches.
+    [[ $KEEP -eq 0 ]] && rm -rf "$cbuild"
+
+    # ⚠ THE RECIPE'S ARGUMENTS ARE NOT ALL CMake ARGUMENTS, AND TWO OF THEM WOULD UNDO THIS FILE.
+    #
+    #   ishiiruka  -DCMAKE_CXX_COMPILER=g++-7 -DCMAKE_C_COMPILER=gcc-7
+    #   flycast    HAVE_OIT=1
+    #
+    # The first pair names a HOST compiler and would build a Linux core with a PS4 toolchain file
+    # attached, which is not a failure until the link. The second is a make variable that wandered
+    # into a CMake line: cmake reads a bare word as a source directory, so it would silently
+    # configure the wrong tree. Only -D arguments are passed, and not those two.
+    cargs=()
+    # shellcheck disable=SC2086  # the recipe's tail is a list of arguments and must word-split
+    for a in $_rest; do
+      a="${a//\"/}"
+      case "$a" in
+        -DCMAKE_C_COMPILER=*|-DCMAKE_CXX_COMPILER=*|-DCMAKE_TOOLCHAIN_FILE=*) ;;
+        -D*) cargs+=("$a") ;;
+        *) ;;
+      esac
+    done
+    # shellcheck disable=SC2086  # a list of -D arguments, and must word-split
+    for a in $(core_cmake_flags "$core"); do cargs+=("$a"); done
+
+    # ⚠ Unix Makefiles EXPLICITLY, EVEN WHERE ninja IS INSTALLED. Two reasons, both about this
+    # harness rather than about taste: `-k` past a failure is what leaves a partial build's objects
+    # on disk for the collection below, and the object layout under CMakeFiles/<target>.dir is what
+    # the exclusions there are written against. A generator chosen by whatever the runner happens
+    # to have installed is a build that differs between machines for no stated reason.
+    # ⚠ pkg-config IS A HOST PROGRAM AND IT ANSWERS WITH HOST PATHS. CMAKE_FIND_ROOT_PATH keeps
+    # find_library and find_path inside the sysroot, and has no say over what pkg-config reports:
+    # yaps2's configure printed `Found Freetype: /usr/lib/libfreetype.so` and `Found WebP:
+    # /usr/include` - this desktop's, for a console build. That is the same accident as the GLES
+    # headers above, one layer out, and it ends in a core that links a host shared object.
+    # PKG_CONFIG_LIBDIR REPLACES the default search path rather than adding to it, so pointing it
+    # at the SDK means pkg-config finds what the SDK ships and otherwise finds nothing.
+    ( export PKG_CONFIG_LIBDIR="$TOOLCHAIN/lib/pkgconfig" \
+             PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN" \
+      && capped cmake -S "$src" -B "$cbuild" -G "Unix Makefiles" \
+          -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN" -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+          -DCMAKE_POLICY_VERSION_MINIMUM=3.5 "${cargs[@]}" \
+      && capped cmake --build "$cbuild" -j"$JOBS" --target "$(cmake_build_target)" -- -k \
+      ) >"$WORK/$core.log" 2>&1
+    rc=$?
+  else
+    # $makeflags is a list of make variables and must word-split - hence the disable below.
+    # shellcheck disable=SC2086
+    ( cd "$bdir" && capped make -f "${makefile:-Makefile}" platform=unix HAVE_CDROM=0 $makeflags \
+          CC="$CC_ORBIS" CXX="$CXX_ORBIS" AR=llvm-ar -k -j"$JOBS" ) >"$WORK/$core.log" 2>&1
+    rc=$?
+  fi
   # ⚠ TIMEOUT IS ITS OWN VERDICT AND NOT "COMPILE". A core that ran out of clock has objects
   # half-written and a log that ends mid-sentence; calling that a compile failure sends whoever
   # reads the manifest looking for an error message that was never printed. The two want
@@ -585,9 +837,26 @@ for core in "${CORES[@]}"; do
     continue
   fi
 
-  mapfile -t objs < <(find "$src" -name '*.o' -type f | sort)
+  # ⚠ NOT EVERY .o UNDER A CMake TREE BELONGS TO THE CORE, AND THE STRAYS DEFINE main().
+  #
+  # Three kinds, and it took a link failure to find the third. CMake proves the compiler works by
+  # building CMakeFiles/<version>/CompilerId*/CMakeC*CompilerId.o and leaves it there; its feature
+  # checks leave objects in CMakeScratch/ and CMakeTmp/; and check_ipo_supported() configures and
+  # builds AN ENTIRE SUB-PROJECT under CMakeFiles/_CMakeLTOTest-C/, whose objects sit in a
+  # perfectly ordinary-looking boo.dir/. swanstation:
+  #
+  #     ld.lld: error: duplicate symbol: main
+  #       >>> .../CMakeFiles/_CMakeLTOTest-C/bin/CMakeFiles/boo.dir/main.c.o
+  #       >>> .../CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/main.cpp.o
+  #
+  # ⚠ SO "IT IS IN A <target>.dir" IS NOT THE TEST, and that was the first rule written here. What
+  # every one of these has in common is a component under CMakeFiles/ that is not a target: a
+  # version number, or a name CMake prefixes with an underscore for exactly this reason.
+  mapfile -t objs < <(find "$src" -name '*.o' -type f \
+      -not -path '*/CMakeFiles/[0-9]*.[0-9]*/*' -not -path '*/CMakeFiles/_*/*' \
+      -not -path '*/CMakeScratch/*' -not -path '*/CMakeTmp/*' | sort)
   if [[ ${#objs[@]} -eq 0 ]]; then
-    err="$(grep -m1 -E 'error:|No such file|No rule' "$WORK/$core.log" | cut -c1-46)"
+    err="$(grep -m1 -E 'error:|CMake Error|No such file|No rule' "$WORK/$core.log" | cut -c1-46)"
     report "$core" COMPILE - "$commit" "${err:-no objects; single-shot link?}"
     continue
   fi
