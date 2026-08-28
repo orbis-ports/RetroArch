@@ -78,6 +78,7 @@ static void set_dl_err(void)
  *
  * @return Library handle on success, otherwise NULL.
  **/
+#if defined(ORBIS)
 /* ⚠ THE MODULE'S GLOBAL CONSTRUCTORS DO NOT RUN BY THEMSELVES ON THIS CONSOLE, AND THE FRONTEND
  * HAS TO DO IT. Measured 2026-08-24, and it took a control run to see it.
  *
@@ -178,6 +179,7 @@ static void dylib_orbis_run_init_array(dylib_t lib, const char *path)
    if (ran)
       RARCH_LOG("[PS4] ran %u global constructor(s) for %s\n", ran, path);
 }
+#endif /* ORBIS */
 
 dylib_t dylib_load(const char *path)
 {
