@@ -246,12 +246,81 @@ unexercised.
 * It must NOT carry the copy it shipped with, if that copy predates this port - `libretro-2048`'s
   still has `#include <orbisFile.h>`. `ps4/build-core.sh --common` points it at the frontend's.
 
+### Audio, confirmed — and the two things that had to be got right
+
+A clean 300 Hz tone from `libretro-samples/audio/audio_no_callback`, built as a PRX and dropped
+into `/data/retroarch/cores` with no reinstall. Two defects stood between the driver and that, and
+both are worth carrying to any other consumer of this API.
+
+**1. `sceAudioOutInit` returns ALREADY_INIT on the second call, and the constant was wrong.**
+RetroArch initialises its audio driver twice — once at startup, again when content loads — so the
+second call in a process always fails this way. The driver tolerated `0x8026000d` and bailed on
+anything else, which killed audio at content load with "Failed to initialize audio driver".
+
+    0x8026000D  ORBIS_AUDIO_OUT_ERROR_OUT_OF_MEMORY
+    0x8026000E  ORBIS_AUDIO_OUT_ERROR_ALREADY_INIT
+
+⚠ The wrong number came from `~/src/ps4doom/platform/doom_sound_ps4.c`, transcribed together with
+a comment naming it ALREADY_INIT. **That comment is wrong there too** and has never shown, because
+ps4doom initialises audio once. Worth fixing there before it travels again. Use the SDK's named
+constant; a magic number carries its explanation with it, and a wrong explanation travels just as
+well as a right one.
+
+**2. `sceAudioOutOutput` blocks until the grain is CONSUMED, so the port needs a thread.**
+When it returns, nothing is queued behind it. Fed from RetroArch's main loop — which also blocks on
+vsync — the port runs dry between the last write of one frame and the first of the next, and a dry
+port clicks once per frame. That is exactly what the first working build did.
+
+It is also a throughput problem: at 48 kHz and 60 fps a frame is ~3.1 grains at 5.33 ms each, so
+16.6 ms of vsync plus 16.6 ms of audio serialises into 33 ms — 30 fps.
+
+The driver now has a dedicated thread permanently inside `sceAudioOutOutput`, pulling from a ring
+that `write()` fills. An empty ring plays silence rather than skipping the call: the port takes
+exactly one grain and will not take a partial one, so something must be handed to it either way.
+Same shape as ps4doom's mixer thread and as `switch_thread_audio.c` in this tree.
+
+### 1080p holds 60 Hz, measured
+
+PLAN.md Phase 3 said to settle 1920x1080 against 1280x720 by measurement and not by choosing up
+front. Measured, on hardware, over several minutes:
+
+    300 frames: scale 6124 us/frame, frame 16683 us (59.9 fps)
+
+Stable to within 30 microseconds across every report. So:
+
+* **The frontend is paced by the display, not by itself.** 16683 us is the vsync interval; nothing
+  is costing an extra refresh.
+* **The scale costs 6.1 ms of a 16.67 ms budget — 37%.** That leaves ~10.5 ms per frame for a core.
+* **1080p stays.** 720p would roughly halve the scale, and there is no reason to spend the
+  resolution to buy time nothing needs yet.
+
+⚠ The measurement is a 320x240 source. Point-scaling cost is dominated by DESTINATION pixels, so a
+higher-resolution core moves this number much less than it moves its own; but a core that needs
+more than 10.5 ms per frame will not hold 60 Hz, and 720p is then the lever - as a runtime option,
+not a new default.
+
+⚠ And it is measured with the default filter. `video_smooth` selects SCALER_TYPE_BILINEAR instead
+of POINT, which is a different and larger number. Nobody has measured that one.
+
+### Audio under load, measured
+
+    audio: 1875 grains, 10 underruns
+    audio: 3750 grains, 10 underruns
+    audio: 5625 grains, 10 underruns
+
+Ten underruns while the pipeline fills, then flat for as long as the run lasts. And a
+free confirmation that the thread keeps the port's clock exactly: 1875 grains per 10 s times 256
+frames is 48 000 frames a second, to the sample.
+
+100% underruns while sitting in the menu is correct, not a fault: there is no core, the ring is
+empty, and the thread plays silence to keep the port's continuity. A thread that skipped the call
+instead would have to prime the port again on the way back into a game.
+
 ### Still unconfirmed
 
-* **Audio.** The port opens and the volume is set, but 2048 makes no sound, so nothing has proved a
-  sample reached the speakers. Needs a core with audio and no content requirement.
-* **60 Hz at 1080p.** 2048 is not a load. A core drawing a full framebuffer every frame is.
 * **A large PRX.** 185 KB proves the mechanism, not the scale.
+* **A demanding core.** Nothing has yet asked for more than a fraction of the 10.5 ms of headroom.
+* **The bilinear scaler path.**
 
 ### A rough edge worth fixing
 
