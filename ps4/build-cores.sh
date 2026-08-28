@@ -131,14 +131,19 @@ if [[ $LIST -eq 1 ]]; then
   awk '!/^[[:space:]]*(#|$)/ {printf "%-26s %s\n", $1, $6}' "$RECIPE" ${RECIPE_EXTRA:+"$RECIPE_EXTRA"} | sort
   exit 0
 fi
-# ⚠ --all IS STILL GENERIC ONLY, ON PURPOSE, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT.
-# The CMAKE cores are buildable now (see the toolchain file below) but nothing is known about what
-# they COST: dolphin, citra and pcsx2 are each larger than anything in the GENERIC list, and a
-# sweep is already eight shards against a 25-minute per-core cap. Name them individually until
-# there is a measured time for each; then they can join this line with the weights in
-# ps4/CORE-STATUS.md updated to match.
+# ⚠ --all TAKES CMAKE TOO, AND LEAVING IT OUT COST A RELEASE. The exclusion was deliberate while
+# this port had no CMake toolchain file - it has one now - but it outlived its reason by exactly
+# one release: run 33211929629 swept, went green, and published the same 101 cores as before,
+# silently omitting swanstation, arduous and thepowdertoy, all three of which had built by hand
+# that day. A core that builds and reaches no index is indistinguishable from one that does not
+# build at all.
+#
+# The cost this used to worry about is real but bounded: every core, CMAKE included, is capped by
+# --core-timeout, and one that fails records a verdict, which is data rather than damage.
+# ⚠ ps4/shard-cores.sh MUST DRAW FROM THE SAME TWO FILES AND THE SAME TWO BUILD TYPES. Where the
+# sweep and the sharder disagree, the difference is a core nobody ever sees.
 if [[ $ALL -eq 1 ]]; then
-  mapfile -t CORES < <(awk '!/^[[:space:]]*(#|$)/ && $6=="GENERIC" {print $1}' \
+  mapfile -t CORES < <(awk '!/^[[:space:]]*(#|$)/ && ($6=="GENERIC" || $6=="CMAKE") {print $1}' \
       "$RECIPE" ${RECIPE_EXTRA:+"$RECIPE_EXTRA"} | sort -u)
 fi
 [[ ${#CORES[@]} -gt 0 ]] || { echo "build-cores: name a core, or pass --all" >&2; exit 2; }

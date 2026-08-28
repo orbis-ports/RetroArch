@@ -55,8 +55,22 @@ done
 
 # --- the core set ------------------------------------------------------------------------------
 
-# The recipe's GENERIC cores.
-mapfile -t SET < <(awk '!/^[[:space:]]*(#|$)/ && $6=="GENERIC" {print $1}' "$RECIPE")
+# ⚠ GENERIC *AND* CMAKE, AND FROM ps4/core-recipe-extra AS WELL AS THE RECIPE. Getting either
+# half wrong publishes a release that silently omits cores that built fine:
+#
+#   * CMAKE was excluded while this port had no toolchain file for it. It has one now, and
+#     swanstation, arduous and thepowdertoy build - but a sweep that still filters on
+#     $6=="GENERIC" leaves all three out of every shard, so they reach no index and no user.
+#   * core-recipe-extra carries cores libretro-super's recipe does not have. dosbox_pure is the
+#     port's only working DOS core and lives only there; a sharder reading $RECIPE alone has
+#     never heard of it.
+#
+# Both were true of run 33211929629, which went green and published 101 cores - the same 101 as
+# before, with none of the four built that day. A sweep must draw from exactly what
+# build-cores.sh would.
+RECIPE_EXTRA="$HERE/core-recipe-extra"
+mapfile -t SET < <(awk '!/^[[:space:]]*(#|$)/ && ($6=="GENERIC" || $6=="CMAKE") {print $1}' \
+    "$RECIPE" ${RECIPE_EXTRA:+$([[ -f "$RECIPE_EXTRA" ]] && echo "$RECIPE_EXTRA")} | sort -u)
 
 # Plus whatever core_make_flags() in build-cores.sh overrules the build type for. Parsed, not
 # copied: see the note at the top.
