@@ -118,7 +118,7 @@ One core proving the path works is enough for now; the rest wait for matching co
 | `mednafen_pce` | NEC - PC Engine / SuperGrafx / CD (Beetle PCE) | 6,3M | `ae99235` | untested | |
 | `mednafen_pce_fast` | NEC - PC Engine / CD (Beetle PCE FAST) | 5,4M | `bebe2b1` | untested | |
 | `mednafen_pcfx` | NEC - PC-FX (Beetle PC-FX) | 2,8M | `0580dee` | untested | |
-| `mednafen_psx` | Sony - PlayStation (Beetle PSX) | 14M | `ef51860` | plays |  |
+| `mednafen_psx` | Sony - PlayStation (Beetle PSX) | 14M | `ef51860` | plays | ⚠ WITHHELD - PS4_CORE_DROP. Upstream, so the interpreter: ~38% of realtime where the fork holds full speed. Use `mednafen_psx_hw` |
 | `mednafen_psx_hw` | Sony - PlayStation (Beetle PSX HW) | 14M | `ef51860` | plays | ⚠ the harness build is UPSTREAM beetle and overwrote the fork's - restored; test the fork, not this |
 | `mednafen_saturn` | Sega - Saturn (Beetle Saturn) | 12M | `ed549bd` | untested | |
 | `mednafen_supergrafx` | NEC - PC Engine SuperGrafx (Beetle SuperGrafx) | 4,6M | `3c6fcd3` | untested | |
@@ -128,7 +128,7 @@ One core proving the path works is enough for now; the rest wait for matching co
 | `mesen-s` | Nintendo - SNES / SFC / Game Boy / Color (Mesen-S) | 4,2M | `9e4fdeb` | plays |  |
 | `mrboom` | Mr.Boom (Bomberman) | 9,2M | `40ac320` | plays |  |
 | `mu` | Palm OS (Mu) | 1,4M | `f9d34a0` | plays |  |
-| `mupen64plus_next` | Nintendo - Nintendo 64 (Mupen64Plus-Next) | 8,3M | `f275caf+5` | plays | **60 fps** with GLideN64 + HLE RSP over the GL context driver - 5.2 ms of work in a 16.7 ms frame. ⚠ Set `Framebuffer Emulation` to False: with it on, depth is wrong. ParaLLEl-RDP still selectable and still capped near 25 fps by its LLE RSP |
+| `mupen64plus_next` | Nintendo - Nintendo 64 (Mupen64Plus-Next) | 8,3M | `f275caf+8` | plays | **60 fps** with GLideN64 + HLE RSP over the GL context driver - 5.2 ms of work in a 16.7 ms frame. `Framebuffer Emulation` now works too (patch 0008; it used to lose the depth buffer every frame). ⚠ `GPU shader depth write` is gone from the options on purpose - it hung the console. ParaLLEl-RDP still selectable and still capped near 25 fps by its LLE RSP |
 | `nekop2` | NEC - PC-98 (Neko Project II) | 2,1M | `5fdbb21` | untested | |
 | `neocd` | SNK - Neo Geo CD (NeoCD) | 2,9M | `8f2d42c` | untested | |
 | `nestopia` | Nintendo - NES / Famicom (Nestopia) | 7,1M | `6c2d242` | broken | loads and runs, green screen, exits cleanly - renders wrong, not a crash |

@@ -1,0 +1,60 @@
+diff --git a/custom/GLideN64/mupenplus/Config_mupenplus.cpp b/custom/GLideN64/mupenplus/Config_mupenplus.cpp
+--- a/custom/GLideN64/mupenplus/Config_mupenplus.cpp
++++ b/custom/GLideN64/mupenplus/Config_mupenplus.cpp
+@@ -230,5 +230,33 @@
+ 		LoadCustomSettings(false);
+ 	}
+ 
++#ifdef __ORBIS__
++	/* ⚠ ON THIS CONSOLE THIS OPTION DOES NOT DEGRADE, IT TAKES THE MACHINE DOWN.
++	 *
++	 * Measured 2026-08-28. Shadows of the Empire, the same ROM and the same build, one core
++	 * option apart. With EnableFragmentDepthWrite False the core reports 650 frames in 8972 ms
++	 * two seconds after "Init new dynarec". With it True the log stops at that same line and
++	 * NOTHING follows: no first frame, no profile window, 100% audio underruns for 56 seconds,
++	 * and then the system pthread pool is exhausted -
++	 *
++	 *     [ScePthread/System] Internal Memory is running out.
++	 *     - Please see the following technote: .../technotes/view/235
++	 *
++	 * repeated ten thousand times. The frontend never renders again, the PS button does not get
++	 * the shell back, and Close Application from outside wedges the console. That is not a
++	 * setting a user can be allowed to reach from a menu.
++	 *
++	 * ⚠ AND THE CLAMP IS HERE RATHER THAN AT THE OPTION, BECAUSE THE OPTION IS NOT THE ONLY WAY
++	 * IN. LoadCustomSettings above parses generalEmulation\enableFragmentDepthWrite out of
++	 * GLideN64's per-game ini, and it runs LAST when GLideN64IniBehaviour is 0. Removing the core
++	 * option alone would leave a per-game profile able to set it. Clamped after every writer and
++	 * before validate(), so there is one place to remove when the cause is understood.
++	 *
++	 * The cause is NOT understood. Writing gl_FragDepth defeats early-Z, which is a frame-rate
++	 * story and not a hang, so the interesting question is what allocates pthread objects without
++	 * bound between dynarec init and the first frame. ps4/HANDOFF.md carries what is known. */
++	config.generalEmulation.enableFragmentDepthWrite = 0;
++#endif
++
+ 	config.validate();
+ }
+diff --git a/libretro/libretro_core_options.h b/libretro/libretro_core_options.h
+--- a/libretro/libretro_core_options.h
++++ b/libretro/libretro_core_options.h
+@@ -508,6 +508,11 @@
+         "False"
+ #endif
+     },
++    /* ⚠ NOT OFFERED ON ORBIS. Setting this to True hangs the core before its first frame and
++     * then exhausts the system pthread pool, which takes the whole console with it - measured
++     * 2026-08-28, see the clamp in custom/GLideN64/mupenplus/Config_mupenplus.cpp. The clamp is
++     * what makes it safe; this only stops a menu offering the switch. */
++#ifndef __ORBIS__
+     {
+         CORE_NAME "-EnableFragmentDepthWrite",
+         "GPU shader depth write",
+@@ -526,6 +531,7 @@
+         "True"
+ #endif
+     },
++#endif /* !__ORBIS__ */
+ #if !defined(VC) && !defined(HAVE_OPENGLES)
+     {
+         CORE_NAME "-EnableN64DepthCompare",

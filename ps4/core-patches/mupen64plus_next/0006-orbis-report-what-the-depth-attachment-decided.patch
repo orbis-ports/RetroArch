@@ -1,0 +1,107 @@
+diff --git a/GLideN64/src/FrameBuffer.cpp b/GLideN64/src/FrameBuffer.cpp
+index 68cf2bf..bee2261 100644
+--- a/GLideN64/src/FrameBuffer.cpp
++++ b/GLideN64/src/FrameBuffer.cpp
+@@ -1004,6 +1004,32 @@ void FrameBufferList::fillBufferInfo(void * _pinfo, u32 _size)
+ 	}
+ }
+ 
++#ifdef __ORBIS__
++/* ⚠ WHY THIS REPORTS AT ALL, AND WHY ONLY HERE.
++ *
++ * GLideN64 is compiled with LOG_LEVEL LOG_NONE, so every warning it writes about this platform -
++ * including GLInfo's "your GPU does not support..." lines - is discarded before it is formatted.
++ * On a console with no other channel that is silence by construction.
++ *
++ * The line below is the one decision in the framebuffer path that can turn depth testing off
++ * without an error anywhere: if the depth buffer's texture is not the width the colour buffer
++ * expects, the depth attachment is dropped and the FBO is rendered into with NO DEPTH BUFFER.
++ * Every triangle then passes, and the picture is ordered by draw order rather than by distance.
++ *
++ * ⚠ AND THE TEST IS STRICTER ON GLES THAN ANYWHERE ELSE. WeakBlitFramebuffer is isGLESX, so this
++ * platform takes the == branch while desktop GL takes a branch that tolerates a difference of one
++ * pixel or a larger depth texture. A depth buffer is created once, sized to whichever colour
++ * buffer was current at the time (DepthBuffer::initDepthBufferTexture returns early if the texture
++ * exists), so a game that pairs one depth buffer with colour buffers of two widths loses depth on
++ * the second - on GLES only.
++ *
++ * Bounded at four lines because orbis_report goes to klog, which costs 8-15 ms a line. Four is
++ * enough to say WHICH buffer and what the widths were; a fifth says nothing the fourth did not. */
++static unsigned orbis_depth_drops_left = 4;
++extern "C" void orbis_report(const char *tag, const char *fmt, ...)
++	__attribute__((format(printf, 2, 3)));
++#endif
++
+ void FrameBufferList::attachDepthBuffer()
+ {
+ 	FrameBuffer * pCurrent = config.frameBufferEmulation.enable == 0 ? &m_list.back() : m_pCurrent;
+@@ -1032,8 +1058,23 @@ void FrameBufferList::attachDepthBuffer()
+ 			pDepthBuffer->setDepthAttachment(pCurrent->m_FBO, bufferTarget::DRAW_FRAMEBUFFER);
+ 			if (config.frameBufferEmulation.N64DepthCompare != Config::dcDisable)
+ 				pDepthBuffer->bindDepthImageTexture(pCurrent->m_FBO);
+-		} else
++		} else {
++#ifdef __ORBIS__
++			if (orbis_depth_drops_left != 0) {
++				--orbis_depth_drops_left;
++				orbis_report("gliden64",
++					"depth attachment DROPPED for colour buffer %08x: depth texture is %u wide, "
++					"colour is %u (m_width %u vs %u). This FBO renders with no depth buffer.",
++					pCurrent->m_startAddress,
++					Context::DepthFramebufferTextures
++						? pDepthBuffer->m_pDepthBufferTexture->width
++						: pDepthBuffer->m_depthRenderbufferWidth,
++					pCurrent->m_pTexture->width,
++					pCurrent->m_width, pDepthBuffer->m_width);
++			}
++#endif
+ 			pCurrent->m_pDepthBuffer = nullptr;
++		}
+ 	} else
+ 		pCurrent->m_pDepthBuffer = nullptr;
+ 
+diff --git a/GLideN64/src/Graphics/OpenGLContext/opengl_GLInfo.cpp b/GLideN64/src/Graphics/OpenGLContext/opengl_GLInfo.cpp
+index c1e51b5..d67a8e9 100644
+--- a/GLideN64/src/Graphics/OpenGLContext/opengl_GLInfo.cpp
++++ b/GLideN64/src/Graphics/OpenGLContext/opengl_GLInfo.cpp
+@@ -15,6 +15,14 @@
+ 
+ using namespace opengl;
+ 
++#ifdef __ORBIS__
++/* GLideN64 is built with LOG_LEVEL LOG_NONE, so every warning this function writes is discarded
++ * before it is formatted. These are the five decisions that shape what depth ends up meaning on
++ * this platform, and none of them is visible any other way. One line, once, at context creation. */
++extern "C" void orbis_report(const char *tag, const char *fmt, ...)
++	__attribute__((format(printf, 2, 3)));
++#endif
++
+ static
+ void APIENTRY on_gl_error(GLenum source,
+ 						GLenum type,
+@@ -271,4 +279,25 @@ void GLInfo::init() {
+ 	glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, NULL, GL_TRUE);
+ 	glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+ #endif
++
++#ifdef __ORBIS__
++	/* ⚠ enableClipping and enableFragmentDepthWrite are a PAIR and this build splits them.
++	 * The vertex shader emits `gl_Position.z /= 8.0` whenever enableClipping is set - forced to 1
++	 * for every GLES context a few lines above - and the only code that scales it back lives in
++	 * writeDepth(), which is compiled to `return 0.0;` when enableFragmentDepthWrite is 0. That is
++	 * this build's configuration: mupen64plus-next defaults EnableFragmentDepthWrite to False
++	 * under HAVE_OPENGLES. Depth ordering survives the /8 because it is monotonic; near-plane
++	 * clipping does not, which is what the pair was for. Printed so the combination is on the
++	 * record rather than inferred from two headers. */
++	orbis_report("gliden64",
++		"GL %d.%d %s | depthTexture %d weakBlit(GLES) %d noPerspective %d imageTextures %d | "
++		"fbEmulation %u fragDepthWrite %u clipping %u n64DepthCompare %u copyDepthToRDRAM %u",
++		majorVersion, minorVersion, isGLESX ? "ES" : "core",
++		(int)depthTexture, (int)isGLESX, (int)noPerspective, (int)imageTextures,
++		config.frameBufferEmulation.enable,
++		config.generalEmulation.enableFragmentDepthWrite,
++		config.generalEmulation.enableClipping,
++		(unsigned)config.frameBufferEmulation.N64DepthCompare,
++		(unsigned)config.frameBufferEmulation.copyDepthToRDRAM);
++#endif
+ }

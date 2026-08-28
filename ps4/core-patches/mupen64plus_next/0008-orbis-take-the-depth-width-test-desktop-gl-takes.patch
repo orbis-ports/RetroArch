@@ -1,0 +1,178 @@
+diff --git a/custom/GLideN64/mupenplus/Config_mupenplus.cpp b/custom/GLideN64/mupenplus/Config_mupenplus.cpp
+--- a/custom/GLideN64/mupenplus/Config_mupenplus.cpp
++++ b/custom/GLideN64/mupenplus/Config_mupenplus.cpp
+@@ -139,6 +139,114 @@
+ 	}
+ }
+ 
++#ifdef __ORBIS__
++/* A knob file, because every other way of varying these on this console is either unavailable or
++ * dangerous.
++ *
++ * ⚠ NOT AN ENVIRONMENT VARIABLE. The SDK's libc.a is a real static musl, so the eboot and every
++ * .prx it loads carry their own copy with their own `environ`; setenv() in the frontend is
++ * invisible here. That cost a measurement once already - ORBIS_NCPU was written into the env file,
++ * the console relaunched, and the core reported the unchanged value from a clean-looking run.
++ *
++ * ⚠ AND NOT A CORE OPTION. A core option is what took the console down on 2026-08-28: a menu entry
++ * is reachable by accident, applies live, and there is no way to interrupt the result. A file has
++ * to be put there deliberately over FTP, is visible to anyone reading the console, and is removed
++ * the same way. Same reasoning as /data/retroarch-profile, and the same shape.
++ *
++ *     /data/retroarch-gliden64        KEY=VALUE, one per line, # comments, blank lines ignored
++ *
++ *       enableClipping=0              the /8 in the vertex shader that nothing scales back
++ *       enableFragmentDepthWrite=1    ⚠ HANGS THE CONSOLE. See the clamp below.
++ *       n64DepthCompare=0|1|2         disabled / fast / compatible - no core option exists on GLES
++ *       copyDepthToRDRAM=0|1|2        off / software / from memory
++ *       depthWidthLoose=0             restore upstream's GLES width test, which drops the depth
++ *                                     attachment whenever the two differ by a pixel. On by
++ *                                     default here because that drop is the bug.
++ *
++ * Every value that differs from the shipped default is reported, because a variant run that says
++ * nothing reads exactly like a run of the defaults - which is the way this port has fooled itself
++ * more than once. */
++extern "C" void orbis_report(const char *tag, const char *fmt, ...)
++	__attribute__((format(printf, 2, 3)));
++
++/* Consumed in GLideN64/src/FrameBuffer.cpp, attachDepthBuffer().
++ *
++ * ⚠ DEFAULT 1, WHICH IS A FIX AND NOT AN EXPERIMENT. See the comment at the use site: the strict
++ * width test is what was dropping the depth attachment, reproduced away from this console on a
++ * different GPU and a different driver. `depthWidthLoose=0` in the knob file restores upstream's
++ * behaviour, which is what to set if this ever has to be shown again. */
++extern "C" int orbis_gliden64_depth_width_loose = 1;
++
++static int orbis_exp_clipping        = -1;
++static int orbis_exp_frag_depth      = -1;
++static int orbis_exp_n64_depth_cmp   = -1;
++static int orbis_exp_copy_depth      = -1;
++static int orbis_exp_depth_loose     = -1;
++
++static void orbis_read_experiment_file(void)
++{
++	FILE *f = fopen("/data/retroarch-gliden64", "r");
++	char line[160];
++
++	orbis_exp_clipping = orbis_exp_frag_depth = orbis_exp_n64_depth_cmp = -1;
++	orbis_exp_copy_depth = orbis_exp_depth_loose = -1;
++
++	if (f == NULL)
++		return;
++
++	while (fgets(line, sizeof(line), f) != NULL) {
++		char *eq, *key = line, *val;
++		while (*key == ' ' || *key == '\t')
++			key++;
++		if (*key == '#' || *key == '\n' || *key == '\r' || *key == '\0')
++			continue;
++		eq = strchr(key, '=');
++		if (eq == NULL)
++			continue;
++		*eq = '\0';
++		val = eq + 1;
++
++		if      (!strcmp(key, "enableClipping"))           orbis_exp_clipping      = atoi(val);
++		else if (!strcmp(key, "enableFragmentDepthWrite")) orbis_exp_frag_depth    = atoi(val);
++		else if (!strcmp(key, "n64DepthCompare"))          orbis_exp_n64_depth_cmp = atoi(val);
++		else if (!strcmp(key, "copyDepthToRDRAM"))         orbis_exp_copy_depth    = atoi(val);
++		else if (!strcmp(key, "depthWidthLoose"))          orbis_exp_depth_loose   = atoi(val);
++	}
++	fclose(f);
++}
++
++static void orbis_apply_experiment_file(void)
++{
++	if (orbis_exp_clipping >= 0) {
++		config.generalEmulation.enableClipping = (u32)orbis_exp_clipping;
++		orbis_report("gliden64", "experiment file: enableClipping=%d", orbis_exp_clipping);
++	}
++	if (orbis_exp_n64_depth_cmp >= 0) {
++		config.frameBufferEmulation.N64DepthCompare = orbis_exp_n64_depth_cmp;
++		orbis_report("gliden64", "experiment file: n64DepthCompare=%d", orbis_exp_n64_depth_cmp);
++	}
++	if (orbis_exp_copy_depth >= 0) {
++		config.frameBufferEmulation.copyDepthToRDRAM = orbis_exp_copy_depth;
++		orbis_report("gliden64", "experiment file: copyDepthToRDRAM=%d", orbis_exp_copy_depth);
++	}
++	if (orbis_exp_depth_loose >= 0) {
++		orbis_gliden64_depth_width_loose = orbis_exp_depth_loose != 0;
++		orbis_report("gliden64", "experiment file: depthWidthLoose=%d", orbis_exp_depth_loose);
++	}
++	/* ⚠ LAST, AND LOUD. This is the one that hangs the core before its first frame and then
++	 * exhausts the system pthread pool. It is reachable here on purpose - if the fault has to be
++	 * reproduced on hardware there must be a way to ask for it - but a file left behind from an
++	 * old experiment must never look like an ordinary boot. */
++	if (orbis_exp_frag_depth > 0) {
++		config.generalEmulation.enableFragmentDepthWrite = 1;
++		orbis_report("gliden64",
++			"⚠ experiment file: enableFragmentDepthWrite=1 - this has hung this console before, "
++			"with no first frame and the system pthread pool exhausted. "
++			"Delete /data/retroarch-gliden64 to get back.");
++	}
++}
++#endif
++
+ extern "C" void Config_LoadConfig()
+ {
+ 	u32 hacks = config.generalEmulation.hacks;
+@@ -231,6 +339,8 @@
+ 	}
+ 
+ #ifdef __ORBIS__
++	orbis_read_experiment_file();
++
+ 	/* ⚠ ON THIS CONSOLE THIS OPTION DOES NOT DEGRADE, IT TAKES THE MACHINE DOWN.
+ 	 *
+ 	 * Measured 2026-08-28. Shadows of the Empire, the same ROM and the same build, one core
+@@ -256,6 +366,8 @@
+ 	 * story and not a hang, so the interesting question is what allocates pthread objects without
+ 	 * bound between dynarec init and the first frame. ps4/HANDOFF.md carries what is known. */
+ 	config.generalEmulation.enableFragmentDepthWrite = 0;
++
++	orbis_apply_experiment_file();
+ #endif
+ 
+ 	config.validate();
+diff --git a/GLideN64/src/FrameBuffer.cpp b/GLideN64/src/FrameBuffer.cpp
+--- a/GLideN64/src/FrameBuffer.cpp
++++ b/GLideN64/src/FrameBuffer.cpp
+@@ -1028,6 +1028,25 @@
+ static unsigned orbis_depth_drops_left = 4;
+ extern "C" void orbis_report(const char *tag, const char *fmt, ...)
+ 	__attribute__((format(printf, 2, 3)));
++
++/* ⚠ THIS IS THE FIX, AND IT IS ON BY DEFAULT. Measured away from the console on 2026-08-28 -
++ * mupen64plus-next built for Linux with GLES3, Shadows of the Empire, the same ROM by md5:
++ *
++ *     depth attachment DROPPED for colour buffer 0000027f:
++ *     depth texture 640 wide, colour 639 (m_width 320 vs 320)      x5672 in twenty-five seconds
++ *
++ * EVERY FRAME, so every frame rendered with no depth buffer at all. The colour texture is
++ * m_width * m_scale rounded down; the depth texture was created before its colour buffer existed
++ * and took the window width instead. One pixel apart, and the GLES branch above tests ==.
++ *
++ * ⚠ AND IT IS NOT THIS PORT'S DRIVER. The same run on the host's native radeonsi - no zink, no
++ * RADV-on-Liverpool, no thunks of ours - drops just as often. Any GLES3 machine running this core
++ * with framebuffer emulation has it; desktop GL does not, because the branch below it tolerates a
++ * larger depth texture and a one-pixel difference in m_width, and that is exactly what is used
++ * here. With it, the drops go to zero and Mesa reports no error it was not already reporting.
++ *
++ * Set from /data/retroarch-gliden64; `depthWidthLoose=0` puts upstream's test back. */
++extern "C" int orbis_gliden64_depth_width_loose;
+ #endif
+ 
+ void FrameBufferList::attachDepthBuffer()
+@@ -1044,6 +1063,12 @@
+ 
+ 		bool goodDepthBufferTexture = false;
+ 		if (Context::DepthFramebufferTextures) {
++#ifdef __ORBIS__
++			if (orbis_gliden64_depth_width_loose)
++				goodDepthBufferTexture = pDepthBuffer->m_pDepthBufferTexture->width >= pCurrent->m_pTexture->width ||
++											std::abs(static_cast<s32>(pCurrent->m_width) - static_cast<s32>(pDepthBuffer->m_width)) < 2;
++			else
++#endif
+ 			if (Context::WeakBlitFramebuffer)
+ 				goodDepthBufferTexture = pDepthBuffer->m_pDepthBufferTexture->width == pCurrent->m_pTexture->width;
+ 			else
