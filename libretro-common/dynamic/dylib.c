@@ -135,6 +135,9 @@ static void dylib_orbis_forget(dylib_t lib)
    }
 }
 
+/* ps4_log: RARCH_LOG is not guaranteed to reach the console channel. */
+#include "../../ps4/ps4_log.h"
+
 static void dylib_orbis_run_init_array(dylib_t lib, const char *path)
 {
    typedef void (*orbis_ctor_t)(void);
@@ -178,6 +181,24 @@ static void dylib_orbis_run_init_array(dylib_t lib, const char *path)
 
    if (ran)
       RARCH_LOG("[PS4] ran %u global constructor(s) for %s\n", ran, path);
+
+   /* ⚠ WHERE THE MODULE LANDED, BECAUSE NOTHING ELSE SAYS IT ANY MORE. A crash used to be located
+    * by taking the kernel's dump - it prints each module's text range - and subtracting. Since
+    * orbis-compat's signal handlers were connected the process SURVIVES a SIGSEGV and idles, so
+    * the kernel writes no dump at all: the fault address arrives with nothing to measure it
+    * against. One exported symbol is enough, because its offset inside the .elf is known on the
+    * build machine:
+    *
+    *     module base = <printed address> - <retro_run's address in the core's .elf>
+    *
+    * retro_run specifically: every libretro core has it, ps4/build-cores.sh already refuses to
+    * publish a module without it, and llvm-nm on the .elf gives the other half. */
+   {
+      void *probe = NULL;
+      if (sceKernelDlsym(mod, "retro_run", &probe) == 0 && probe)
+         ps4_log("dylib: %s has retro_run at %p - subtract its .elf address for the module base",
+               path, probe);
+   }
 }
 #endif /* ORBIS */
 

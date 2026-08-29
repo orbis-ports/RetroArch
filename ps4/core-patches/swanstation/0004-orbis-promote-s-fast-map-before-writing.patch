@@ -1,0 +1,80 @@
+From: PS4 port
+Subject: [PATCH] orbis: promote s_fast_map before writing to it
+
+Writing the first entry of a static array faulted:
+
+    fatal: signal 11 - SIGSEGV (bad address), si_code 2, fault address 0x803f61000
+    CPU::CodeCache::AllocateFastMap
+
+⚠ si_code 2 is SEGV_ACCERR - MAPPED BUT NOT PERMITTED - not SEGV_MAPERR. The console's own klog
+called the same fault "page not present", which sent the first day of investigation after a
+missing-memory bug that does not exist: a probe allocating and touching every page of 1, 8, 32,
+64, 105, 128, 160 and 256 MiB through malloc passed with zero mismatches.
+
+The address is the answer. This module loads at 0x800870000 and s_fast_map links at 0x36f1000;
+the sum is the fault address exactly. So the memory is this module's OWN .bss, and it is not
+writable.
+
+⚠ THIS .prx DECLARES 50 MB OF .bss AGAINST 259 KiB OF FILE DATA - s_code_storage alone is 48 MB -
+and the module loader does not give writable pages for all of it. s_fast_map sits roughly 49 MB
+in. Whatever the limit is, it is below that and above the .bss that works.
+
+ps4/orbis_exec_mem.c already records this shape for mupen64plus, where a 32 MB static array inside
+a module has to be promoted before the recompiler writes to it. That case wants execute; this one
+only wants write. s_code_storage needs no line here because it reaches JitCodeBuffer::Initialize,
+which mprotects it already.
+
+⚠ AND THIS IS A PLATFORM FINDING, NOT A swanstation ONE. Any core with a large .bss will meet it,
+and it will look like a different bug each time.
+
+diff --git a/src/core/cpu_code_cache.cpp b/src/core/cpu_code_cache.cpp
+--- a/src/core/cpu_code_cache.cpp
++++ b/src/core/cpu_code_cache.cpp
+@@ -1,4 +1,8 @@
+ #include "cpu_code_cache.h"
++#ifdef __ORBIS__
++#include <cerrno>
++#include <sys/mman.h>
++#endif
+ #include "bus.h"
+ #include "common/log.h"
+ #include "cpu_core.h"
+@@ -100,6 +104,38 @@
+ 
+ static void AllocateFastMap()
+ {
++#ifdef __ORBIS__
++  // ⚠ THE MODULE'S OWN .bss IS NOT ALL WRITABLE ON THIS CONSOLE, AND THAT IS WHAT KILLED THIS
++  // FUNCTION. Measured: writing s_fast_map[0] faulted with
++  //
++  //     fatal: signal 11 - SIGSEGV, si_code 2, fault address 0x803f61000
++  //
++  // si_code 2 is SEGV_ACCERR - mapped, but not permitted - and 0x803f61000 is exactly this
++  // module's load base plus s_fast_map's link address. This .prx declares 50 MB of .bss against
++  // 259 KiB of file data (s_code_storage alone is 48 MB), and the module loader does not appear
++  // to hand out writable pages for all of it; s_fast_map sits about 49 MB in.
++  //
++  // The same shape is already recorded for mupen64plus in ps4/orbis_exec_mem.c: a large static
++  // array inside a module needs its pages PROMOTED before use. That one wants execute; this one
++  // only wants write. s_code_storage does not need a line here because it reaches
++  // JitCodeBuffer::Initialize, which mprotects it already.
++  //
++  // ⚠ ROUNDED OUTWARDS. sceKernelMprotect works in 16 KiB granules - the platform's real page
++  // size, not the 4096 most code assumes - so rounding the base up would leave the first pages
++  // unprotected, which are precisely the ones written first.
++  {
++    const uintptr_t granule = 16u * 1024u;
++    uintptr_t       base    = reinterpret_cast<uintptr_t>(s_fast_map) & ~(granule - 1);
++    uintptr_t       end     = (reinterpret_cast<uintptr_t>(s_fast_map) + sizeof(s_fast_map)
++                               + granule - 1) & ~(granule - 1);
++    if (mprotect(reinterpret_cast<void*>(base), end - base, PROT_READ | PROT_WRITE) != 0)
++      Log_ErrorPrintf("orbis: mprotect(s_fast_map, %zu KiB) failed, errno %d - the write below "
++                      "will fault", (size_t)((end - base) / 1024), errno);
++    else
++      Log_InfoPrintf("orbis: s_fast_map promoted to read-write, %zu KiB at %p",
++                     (size_t)((end - base) / 1024), reinterpret_cast<void*>(base));
++  }
++#endif
+   static constexpr VirtualMemoryAddress ranges[][2] = {
+     {0x00000000, 0x00800000}, // RAM
+     {0x1F000000, 0x1F800000}, // EXP1

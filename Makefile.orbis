@@ -492,6 +492,7 @@ endif
 OBJ     += ps4/orbis_kbd_probe.o
 OBJ     += ps4/orbis_mouse_probe.o
 OBJ     += ps4/orbis_crash_handlers.o
+OBJ     += ps4/orbis_alloc_probe.o
 
 # ⚠ -Werror IS DELIBERATELY OFF, and the old build's was load-bearing for nothing:
 # it was only ever exercised by a CI job that linked HAVE_STATIC_DUMMY against stub

@@ -1,0 +1,59 @@
+From: PS4 port
+Subject: [PATCH] orbis: actually disable fastmem when its handler will not install
+
+    fatal: signal 11 - SIGSEGV (bad address), si_code 1, fault address 0
+    mc_trapno 0xc (page fault), mc_addr 0, mc_rip 0x249303801, mc_rflags 0x10206
+
+⚠ mc_rip IS NOT IN ANY MODULE. 0x249303801 is heap - the recompiler's OWN GENERATED CODE - while
+the core loads at 0x800870000. So the fault is not in swanstation's C++; it is in code swanstation
+wrote, dereferencing a base pointer of zero.
+
+That pointer is Bus::m_fastmem_base. InitializeFastmem returns early when the page-fault handler
+cannot be installed - which it cannot here, the log says so - and the early return SKIPS the two
+calls immediately below it:
+
+    Bus::UpdateFastmemViews(mode);
+    CPU::UpdateFastmemBase();
+
+⚠ AND BOTH CALL SITES DISCARD THE FAILURE, which is what turns a missing feature into a crash:
+
+    if (g_settings.IsUsingFastmem() && !InitializeFastmem()) { }
+
+An empty block. So the setting stays on, m_fastmem_base stays nullptr, and the recompiler keeps
+emitting loads and stores through it. This makes the failure path do what the success path does:
+put the mode back to Disabled and tell the CPU, so the generated code stops addressing through a
+pointer that was never set.
+
+The handler itself is a separate question - this kernel delivers signals with FreeBSD's original
+(sig, code, scp) signature unless SA_SIGINFO carries FreeBSD's value, which orbis-compat now
+corrects; whether swanstation's own installer can be made to work here is untested.
+
+diff --git a/src/core/cpu_code_cache.cpp b/src/core/cpu_code_cache.cpp
+--- a/src/core/cpu_code_cache.cpp
++++ b/src/core/cpu_code_cache.cpp
+@@ -1003,6 +1003,25 @@
+                                                 s_code_buffer.GetTotalSize(), handler))
+   {
+     Log_ErrorPrintf("Failed to install page fault handler");
++#ifdef __ORBIS__
++    // ⚠ TURNING FASTMEM OFF FOR REAL, BECAUSE FAILING TO INSTALL THE HANDLER DOES NOT DO IT.
++    // The two calls below this block - UpdateFastmemViews and UpdateFastmemBase - are skipped by
++    // this early return, and BOTH callers ignore the result:
++    //
++    //     if (g_settings.IsUsingFastmem() && !InitializeFastmem()) { }
++    //
++    // So m_fastmem_base stays nullptr while the recompiler goes on emitting code that addresses
++    // guest memory THROUGH it. Measured on hardware: the fault was at address 0, with mc_rip in
++    // the recompiler's own generated code rather than in any module -
++    //
++    //     fatal: signal 11 - SIGSEGV, si_code 1 (SEGV_MAPERR), fault address 0
++    //     mc_trapno 0xc, mc_addr 0, mc_rip 0x249303801
++    //
++    // Disabling it here is the difference between "fastmem is unavailable" and "fastmem is
++    // unavailable and the generated code does not know".
++    Bus::UpdateFastmemViews(CPUFastmemMode::Disabled);
++    CPU::UpdateFastmemBase();
++#endif
+     return false;
+   }
+ 

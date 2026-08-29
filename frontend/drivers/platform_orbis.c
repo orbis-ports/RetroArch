@@ -86,6 +86,7 @@ static enum frontend_fork orbis_fork_mode = FRONTEND_FORK_NONE;
 #if defined(ORBIS_NET_TRACE)
 void orbis_net_probe(void);
 void orbis_install_crash_handlers(void);
+void orbis_alloc_probe(void);
 void orbis_kbd_probe(void);
 void orbis_mouse_probe(void);
 #endif
@@ -204,6 +205,7 @@ static void frontend_orbis_get_env(int *argc, char *argv[],
     * something dies. orbis-compat has carried these handlers since the beginning and this
     * frontend never called them - see ps4/orbis_crash_handlers.cpp. */
    orbis_install_crash_handlers();
+   orbis_alloc_probe();
    orbis_kbd_probe();
    orbis_mouse_probe();
 }
