@@ -22,7 +22,7 @@ Do this once, before browsing the Core Downloader. Core metadata is not shipped 
 so on a fresh install the downloader lists `.prx` filenames instead of core names until those
 files arrive. Everything works either way; only the names are missing.
 
-Then **Online Updater → Core Downloader** lists 103 cores. Download one and it is ready to use.
+Then **Online Updater → Core Downloader** lists 104 cores. Download one and it is ready to use.
 
 ## Quitting
 
@@ -84,7 +84,7 @@ killed outright there and never gets to shut itself down, so Quit is the better 
 
 ## What is here
 
-- 103 cores, built for this console, at `cores.prx0.com`
+- 104 cores, built for this console, at `cores.prx0.com`
 - Nintendo 64 at 60 fps (GLideN64)
 - PlayStation at 50 fps (Beetle PSX HW, Lightrec, Vulkan renderer)
 - Online Updater: cores, core info, databases, thumbnails, assets

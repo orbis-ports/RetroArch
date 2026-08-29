@@ -668,11 +668,18 @@ report() { # core result size commit note
 # is a user choosing it over mednafen_psx_hw, which works, holds 50 fps, and is already the
 # PlayStation core this port offers. Remove the name here the day it boots a game.
 #
+# play is the PlayStation 2 core, and it is withheld for a different reason: it WORKS and it is
+# too slow to be worth anyone's time. Measured on hardware, Grand Theft Auto III: 4-12 fps, with
+# CPS2VM::UpdateEe taking 93% of a 178 ms frame. Play! runs EE, both vector units and the IOP in
+# one thread, so the other five Jaguar cores cannot help. Offering it would cost every user who
+# tries it an hour and teach them this port is slow. It is kept building because the four patches
+# under it are real platform findings - see ps4-mesa-docs - and because PS5 changes the arithmetic.
+#
 # ⚠ Dropping a core does not remove what is already published. The publish job prunes bucket
 # objects the new index does not name, so the removal happens on the next full run - and only a
 # full run, because a subset run publishes nothing.
 core_dropped() { # core -> 0 if this core is deliberately withheld
-  case " ${PS4_CORE_DROP-mednafen_psx swanstation} " in *" $1 "*) return 0 ;; esac
+  case " ${PS4_CORE_DROP-mednafen_psx swanstation play} " in *" $1 "*) return 0 ;; esac
   return 1
 }
 
