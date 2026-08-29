@@ -85,6 +85,7 @@ static enum frontend_fork orbis_fork_mode = FRONTEND_FORK_NONE;
 
 #if defined(ORBIS_NET_TRACE)
 void orbis_net_probe(void);
+void orbis_install_crash_handlers(void);
 void orbis_kbd_probe(void);
 void orbis_mouse_probe(void);
 #endif
@@ -199,6 +200,10 @@ static void frontend_orbis_get_env(int *argc, char *argv[],
 
    /* Whether this process may read a USB keyboard at all. Gated on /data/retroarch-kbd-probe
     * existing, so it ships inert and needs no rebuild to run - ps4/orbis_kbd_probe.c. */
+   /* ⚠ BEFORE THE PROBES AND BEFORE ANY CORE, because the whole point is to be listening when
+    * something dies. orbis-compat has carried these handlers since the beginning and this
+    * frontend never called them - see ps4/orbis_crash_handlers.cpp. */
+   orbis_install_crash_handlers();
    orbis_kbd_probe();
    orbis_mouse_probe();
 }
