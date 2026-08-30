@@ -1,0 +1,310 @@
+From: PS4 port
+Subject: [PATCH] orbis: turn the recompiler on, without the fastmem it cannot have
+
+melondsds shipped with -DENABLE_JIT=OFF because ARMJIT_Memory.cpp would not compile:
+
+    ARMJIT_Memory.cpp:214:34: error: no member named 'CONTEXT_PC' in '__ucontext'
+    ARMJIT_Memory.cpp:218:18: error: no member named 'CONTEXT_PC' in '__ucontext'
+
+⚠ THAT IS THE WHOLE OF IT. With ENABLE_JIT=ON and nothing else changed, ONE object out of the
+build fails - ARMJIT_Memory.cpp - and it fails on those two lines. The entire ARM-to-x64
+recompiler compiles: ARMJIT.cpp, ARMJIT_Global.cpp, every file under ARMJIT_x64/, dolphin's
+x64Emitter and x64CPUDetect, and the ARMJIT_Linkage.S assembly. A DS emulator on a pure
+interpreter is a different machine from one with a recompiler, so this is worth the patch.
+
+⚠ AND CONTEXT_PC CANNOT BE GIVEN AN ARM HERE. melonDS names a per-OS member of the signal
+context; the file has arms for Windows, Linux, Apple, FreeBSD and NetBSD, and none matches
+because this SDK's libc++ does `#undef __FreeBSD__` and this is a C++ translation unit. Supplying
+one would be a guess: the SDK ships musl's ucontext (uc_mcontext.gregs[]) while the kernel passes
+FreeBSD's, and orbis-compat's crash handler has already dumped thirty-two words of this exact
+pointer on hardware and recorded that NONE of them was a text address. The offset of rip on this
+console is not known, and this handler WRITES the field it names. Same conclusion as
+flycast/0001-orbis-no-usable-segfault-context.patch and play/0004.
+
+So fastmem goes off and the recompiler stays on - which melonDS supports directly: FastMemory is
+a runtime flag and ARMJIT_Memory::IsFastMemSupported() is the choke point every path routes
+through (ARMJIT.cpp:497, `args.FastMemory = args.FastMemory && IsFastMemSupported()`).
+
+⚠ AND THE PAGE-SIZE TEST WOULD HAVE SAID YES, WHICH IS THE TRAP. IsFastMemSupported() accepts
+`PageSize == RegularPageSize || PageSize == LargePageSize`, and ARMJIT_Memory.h:53 defines
+LargePageSize as 0x4000 - exactly this console's 16 KiB granule. Left alone it would enable
+fastmem, install the handler, and rewrite a program counter read from an offset nobody has
+measured. The check is short-circuited explicitly rather than left to the arithmetic.
+
+⚠ AND THE HANDLER IS NOT INSTALLED AT ALL, which matters beyond fastmem. RegisterFaultHandler
+takes SIGSEGV process-wide, which would take it from orbis-compat's crash reporter - the only
+thing on this console that turns a fault into a diagnosis. And the handler's first act is to
+dereference NDS::Current, a thread_local that is null on every thread not running the emulator,
+so any unrelated fault would become a null dereference inside the SIGSEGV handler.
+
+⚠ THE CODE BUFFER NEEDED NO REDESIGN, WHICH IS THE PLEASANT SURPRISE. melonDS already allocates
+its JIT memory as `u8 CodeMemory[...]` in .bss, already aligns it to 16 KiB, and already promotes
+it in place with one mprotect - the exact shape flycast had to be rewritten into
+(flycast/0002, /0003). Being in .bss means it is inside the module image, so the recompiler's
+rel32 calls into its own code reach by construction and the `offset is too big` failure flycast
+hit with an mmap'd cache cannot happen. Only the promotion call is swapped: mprotect is not
+interposed on this platform, while ps4/orbis_exec_mem.c rounds to the 16 KiB granule, uses
+sceKernelMprotect, proves the result by executing six bytes out of the block, and reports
+granted-or-refused per range in the console log.
+
+⚠ WHAT THE MODULE NEEDS AT LINK TIME: orbis_exec_mem_promote, from ps4/orbis_exec_mem.c in
+liborbis-core-support.a. It is an archive member, so it is pulled only because this reference
+exists - and that archive is rebuilt only when it is ABSENT. Delete it before relinking.
+
+⚠ AND A SECOND WALL BEHIND THE FIRST, FOUND ON HARDWARE: THE 8 GiB RESERVATION.
+
+With fastmem off and the recompiler on, the console granted the 128 MiB code buffer - the largest
+promotion this port has ever asked for - and then died at content load:
+
+    fatal: signal 11 - SIGSEGV, si_code 2 (SEGV_ACCERR), addr 0000000001017fff
+    fatal: rip 00000008008eea00  trapno 12  err 7
+
+rip is memset+0x50 in this module (the movdqu store loop, so rdi is the destination), err 7 is
+present + write + user, and 0x01017fff is inside the FRONTEND's r-x text - a write to somebody
+else's code, which is why it is ACCERR and not an unmapped address.
+
+The destination is arithmetic, not a guess. ARMJIT_Memory's constructor opens with
+
+    MemoryBase = (u8*)mmap(nullptr, VirtmemAreaSize, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
+
+and never asks whether it worked - nor does the MAP_FIXED mmap after it. VirtmemAreaSize is
+AddrSpaceSize*2 + MemoryTotalSize = 8.0 GiB, because the two fastmem mirrors are 4 GiB each. This
+console will not reserve that. ⚠ AND MAP_FAILED IS (void*)-1 HERE, NOT NULL, so the failure does
+not read as a null pointer to anything downstream: every block pointer becomes `offset - 1`, a
+SMALL address that lands wherever else the process has mapped things. melonDS then clears the
+blocks, and the first one through MemoryBase reports it:
+
+    MemBlockDTCMOffset          = 0x01018000
+    (u8*)-1 + 0x01018000        = 0x01017fff        <- the fault address, to the byte
+
+⚠ AND THE FIX IS TO STOP ASKING, NOT TO CHECK AND BAIL. The 8 GiB is ENTIRELY for the mirrors;
+the emulator needs MemoryTotalSize - about 17 MiB - of ordinary writable memory. Since
+IsFastMemSupported() is already false here, the reservation, the shm_open, the ftruncate and the
+MAP_FIXED mapping are all dead weight. melonDS already ships the allocation for exactly this
+situation one branch up - `MemoryBase = new u8[MemoryTotalSize]`, its old-Windows path - so this
+takes that, nulls the two mirror pointers, and pairs the destructor with delete[].
+
+⚠ AND THE MELONDS SOURCES ARE FETCHED, WHICH IS WHY THIS PATCH LOOKS THE WAY IT DOES.
+build/_deps/melonds-src does not exist when the port applies its patches, so nothing this
+repository's patch tree can do reaches it. FetchContent's own PATCH_COMMAND is the mechanism for
+that, and it runs once, at populate. So this patch adds the melonDS diff as a file in THIS
+repository and teaches fetch_dependency() to pass it through. Any other FetchContent-based core
+that needs a dependency fixed will need the same shape.
+
+diff --git a/cmake/FetchDependencies.cmake b/cmake/FetchDependencies.cmake
+index 7265cb2..f11f10e 100644
+--- a/cmake/FetchDependencies.cmake
++++ b/cmake/FetchDependencies.cmake
+@@ -23,9 +23,21 @@ macro(define_git_dependency_vars name default_url default_tag)
+     endif ()
+ endmacro()
+ 
++# ⚠ ARGN IS AN OPTIONAL PATCH FILE, AND IT IS THE ONLY WAY TO REACH A FETCHED SOURCE.
++# The PS4 port applies its per-core patches to THIS repository's checkout before CMake runs, so
++# nothing it can do reaches build/_deps - those trees do not exist yet at that point. A dependency
++# that needs a platform fix therefore has to be patched by the populate step itself, which is what
++# FetchContent's PATCH_COMMAND is for. It runs once, when the source is first checked out.
+ function(fetch_dependency name default_url default_tag)
+     define_git_dependency_vars(${name} ${default_url} ${default_tag})
+ 
++    set(patch_args "")
++    if (ARGN AND NOT FETCHCONTENT_SOURCE_DIR_${VAR_NAME})
++        list(GET ARGN 0 patch_file)
++        message(STATUS "Patching ${name} with ${patch_file}")
++        set(patch_args PATCH_COMMAND "${GIT_EXECUTABLE}" apply --ignore-whitespace "${patch_file}")
++    endif()
++
+     if (FETCHCONTENT_SOURCE_DIR_${VAR_NAME})
+         message(STATUS "Using ${name}: ${FETCHCONTENT_SOURCE_DIR_${VAR_NAME}} (local)")
+     else()
+@@ -36,12 +48,14 @@ function(fetch_dependency name default_url default_tag)
+         ${name}
+         GIT_REPOSITORY "${${VAR_NAME}_REPOSITORY_URL}"
+         GIT_TAG "${${VAR_NAME}_REPOSITORY_TAG}"
++        ${patch_args}
+     )
+ 
+     FetchContent_GetProperties(${name})
+ endfunction()
+ 
+-fetch_dependency(melonDS "https://github.com/melonDS-emu/melonDS" "7117178")
++fetch_dependency(melonDS "https://github.com/melonDS-emu/melonDS" "7117178"
++        "${CMAKE_SOURCE_DIR}/ps4-patches/melonds-orbis-jit-no-fastmem.patch")
+ fetch_dependency(libretro-common "https://github.com/libretro/libretro-common" "ad9124f")
+ fetch_dependency("embed-binaries" "https://github.com/andoalon/embed-binaries" "078b62b")
+ fetch_dependency(glm "https://github.com/g-truc/glm" "e7970a8")
+diff --git a/ps4-patches/melonds-orbis-jit-no-fastmem.patch b/ps4-patches/melonds-orbis-jit-no-fastmem.patch
+new file mode 100644
+index 0000000..a1e170a
+--- /dev/null
++++ b/ps4-patches/melonds-orbis-jit-no-fastmem.patch
+@@ -0,0 +1,169 @@
++diff --git a/src/ARMJIT_Global.cpp b/src/ARMJIT_Global.cpp
++index c9432cbf..05b2cef2 100644
++--- a/src/ARMJIT_Global.cpp
+++++ b/src/ARMJIT_Global.cpp
++@@ -1,6 +1,13 @@
++ #include "ARMJIT_Global.h"
++ #include "ARMJIT_Memory.h"
++ 
+++#ifdef __ORBIS__
+++/* Defined in RetroArch/ps4/orbis_exec_mem.c, which the port's build harness links into every
+++ * core through liborbis-core-support.a. Declared rather than included: that file ships no
+++ * header a fetched dependency could reach. */
+++extern "C" int orbis_exec_mem_promote(void *addr, size_t len);
+++#endif
+++
++ #ifdef _WIN32
++ #include <windows.h>
++ #else
++@@ -102,6 +109,22 @@ void Init()
++             VirtualProtect(GetAlignedCodeMemoryStart(), CodeMemoryAlignedSize, PAGE_EXECUTE_READWRITE, &dummy);
++         #elif defined(APPLE_AARCH64)
++             // Apple aarch64 always uses dynamic allocation
+++        #elif defined(__ORBIS__)
+++            // ⚠ sceKernelMprotect, NOT mprotect, AND IT IS NOT INTERCHANGEABLE HERE. This kernel
+++            // refuses PROT_EXEC at map time and grants it afterwards, but only in 16 KiB units and
+++            // only through Sony's own call; RetroArch/ps4/orbis_exec_mem.c does that, rounds the
+++            // range outwards to the granule, and then PROVES the promotion by writing six bytes of
+++            // x86-64 into the block and calling them. It also reports granted-or-refused for each
+++            // range in the console log, which is the only way to tell "this console will not do
+++            // that" from "we asked wrong".
+++            //
+++            // CodeMemory is a .bss array, so it is inside the module image and the recompiler's
+++            // rel32 calls into its own code reach by construction - the failure flycast hit when
+++            // its cache was mmap'd two gigabytes away cannot happen here.
+++            // The result is deliberately not logged here: orbis_exec_mem.c prints its own
+++            // granted-or-refused line for every range it is asked about, with the Sony error
+++            // code spelled out, which is strictly more than this call site could say.
+++            (void)orbis_exec_mem_promote(GetAlignedCodeMemoryStart(), CodeMemoryAlignedSize);
++         #else
++             mprotect(GetAlignedCodeMemoryStart(), CodeMemoryAlignedSize, PROT_EXEC | PROT_READ | PROT_WRITE);
++         #endif
++diff --git a/src/ARMJIT_Memory.cpp b/src/ARMJIT_Memory.cpp
++index 748b6710..cc2301dd 100644
++--- a/src/ARMJIT_Memory.cpp
+++++ b/src/ARMJIT_Memory.cpp
++@@ -187,6 +187,23 @@ LONG ARMJIT_Memory::ExceptionHandler(EXCEPTION_POINTERS* exceptionInfo)
++     return EXCEPTION_CONTINUE_SEARCH;
++ }
++ 
+++#elif defined(__ORBIS__)
+++
+++// ⚠ THE PLAYSTATION 4 CANNOT NAME THE FAULTING INSTRUCTION, so this handler cannot exist.
+++// CONTEXT_PC above has no arm for this platform and cannot be given one: the SDK ships musl's
+++// ucontext (uc_mcontext.gregs[]) while the kernel passes FreeBSD's, and orbis-compat's crash
+++// handler has already dumped thirty-two words of this exact pointer on hardware and recorded
+++// that NONE of them was a text address - the offset of rip is not something to look up here,
+++// it is something still to be measured. Naming a field would be a guess dressed up as a
+++// register, and this handler WRITES the one it names.
+++// The body is empty rather than the file's, and RegisterFaultHandler below does not install
+++// it, so nothing reads or writes a context. IsFastMemSupported() returns false to match:
+++// fastmem is the only feature that needs this, and the JIT itself does not.
+++void ARMJIT_Memory::SigsegvHandler(int sig, siginfo_t* info, void* rawContext)
+++{
+++    (void)sig; (void)info; (void)rawContext;
+++}
+++
++ #else
++ 
++ static struct sigaction OldSaSegv;
++@@ -739,7 +756,12 @@ u32 ARMJIT_Memory::PageShift = 0;
++ 
++ bool ARMJIT_Memory::IsFastMemSupported()
++ {
++-#ifdef __APPLE__
+++// ⚠ __ORBIS__: not "unsupported page size" - unsupported fault handler. The test below would
+++// SAY YES here, because this console's page granule is 16 KiB and that is exactly
+++// LargePageSize. Fastmem needs a SIGSEGV handler that rewrites the faulting instruction
+++// pointer, and this kernel does not hand one over in any layout we can name - see
+++// SigsegvHandler above.
+++#if defined(__APPLE__) || defined(__ORBIS__)
++     return false;
++ #else
++     static bool initialised = false;
++@@ -779,6 +801,13 @@ void ARMJIT_Memory::RegisterFaultHandler()
++     {
++         Log(LogLevel::Error, "Could not load new Windows virtual memory functions, fast memory is disabled.\n");
++     }
+++#elif defined(__ORBIS__)
+++    // ⚠ NOT INSTALLED, AND NOT ONLY BECAUSE IT WOULD BE USELESS. This is a process-wide
+++    // handler: taking SIGSEGV here would take it away from orbis-compat's crash reporter, which
+++    // is the only thing on this console that turns a fault into a diagnosis. Worse, the handler's
+++    // first act is to dereference NDS::Current - a thread_local that is null on every thread that
+++    // is not running the emulator - so a fault anywhere else in the process would become a null
+++    // dereference INSIDE the SIGSEGV handler. With fastmem off there is nothing for it to do.
++ #else
++     struct sigaction sa;
++     sa.sa_handler = nullptr;
++@@ -806,6 +835,8 @@ void ARMJIT_Memory::UnregisterFaultHandler()
++         FreeLibrary(KernelBaseDll);
++         KernelBaseDll = nullptr;
++     }
+++#elif defined(__ORBIS__)
+++    // Nothing was installed; see RegisterFaultHandler.
++ #else
++     sigaction(SIGSEGV, &OldSaSegv, nullptr);
++ #ifdef __APPLE__
++@@ -879,6 +910,34 @@ ARMJIT_Memory::ARMJIT_Memory(melonDS::NDS& nds) : NDS(nds)
++         // old Windows version
++         MemoryBase = new u8[MemoryTotalSize];
++     }
+++#elif defined(__ORBIS__)
+++    // ⚠ NO 8 GiB RESERVATION HERE, AND NOTHING BELOW IT EITHER. The POSIX arm reserves
+++    // VirtmemAreaSize = AddrSpaceSize*2 + MemoryTotalSize = 8.0 GiB of PROT_NONE address space so
+++    // that the two 4 GiB fastmem mirrors have somewhere to live. This console will not do that,
+++    // and melonDS never asks whether it worked:
+++    //
+++    //     MemoryBase = (u8*)mmap(nullptr, VirtmemAreaSize, PROT_NONE, ...);   // unchecked
+++    //
+++    // MAP_FAILED is (void*)-1 here, not NULL, so a failed reservation does not look like a null
+++    // pointer to anything downstream - it makes every block pointer `offset - 1`, a SMALL address
+++    // that lands in whatever else the process has mapped down there. Measured on hardware, exactly:
+++    //
+++    //     fatal: signal 11 - SIGSEGV, si_code 2 (SEGV_ACCERR), addr 0000000001017fff
+++    //     fatal: rip 00000008008eea00        <- memset+0x50, the movdqu store loop
+++    //
+++    //     MemBlockDTCMOffset                        = 0x01018000
+++    //     (u8*)-1 + 0x01018000                      = 0x01017fff   <- to the byte
+++    //
+++    // and 0x01017fff is inside the FRONTEND's r-x text mapping, which is why it faults as a WRITE
+++    // TO A PRESENT PAGE (err 7) rather than as an unmapped address. The first block melonDS clears
+++    // through MemoryBase is what reports it; DTCM happens to be that block.
+++    //
+++    // ⚠ AND WITH FASTMEM OFF THE RESERVATION IS NOT WANTED IN THE FIRST PLACE. The 8 GiB is
+++    // ENTIRELY for the mirrors; the emulator itself needs MemoryTotalSize - about 17 MiB - of
+++    // ordinary writable memory. IsFastMemSupported() already returns false on this platform (see
+++    // above), so this takes the allocation melonDS already ships for the same situation on old
+++    // Windows, one branch up.
+++    MemoryBase = new u8[MemoryTotalSize];
++ #else
++     MemoryBase = (u8*)mmap(nullptr, VirtmemAreaSize, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
++ 
++@@ -917,6 +976,13 @@ ARMJIT_Memory::ARMJIT_Memory(melonDS::NDS& nds) : NDS(nds)
++ #endif
++     FastMem9Start = MemoryBase+MemoryTotalSize;
++     FastMem7Start = static_cast<u8*>(FastMem9Start)+AddrSpaceSize;
+++#ifdef __ORBIS__
+++    // Nothing was reserved, so these address two mirrors that do not exist. Null rather than
+++    // one-past-a-17-MiB-heap-block: IsFastMemSupported() is false so nothing should read them,
+++    // and if that ever stops being true the null is at least a stated absence.
+++    FastMem9Start = nullptr;
+++    FastMem7Start = nullptr;
+++#endif
++ }
++ 
++ ARMJIT_Memory::~ARMJIT_Memory() noexcept
++@@ -963,6 +1029,13 @@ ARMJIT_Memory::~ARMJIT_Memory() noexcept
++     {
++         delete[] MemoryBase;
++     }
+++#elif defined(__ORBIS__)
+++    // Paired with `new u8[MemoryTotalSize]` above. No munmap: nothing was mapped. No MemoryFile
+++    // either - the shm_open/ftruncate dance below is only there to back the fastmem mirrors.
+++    delete[] MemoryBase;
+++    MemoryBase = nullptr;
+++    FastMem9Start = nullptr;
+++    FastMem7Start = nullptr;
++ #else
++     if (MemoryBase)
++     {

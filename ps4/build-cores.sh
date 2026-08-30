@@ -671,7 +671,7 @@ core_cmake_flags() { # core -> extra -D arguments, appended after the recipe's
     # melonDS::AdapterData and PCAP_IF_* whether that mode is configured or not. dylib.c is
     # dropped from the source list by this core's patch instead; ps4/core-patches/melondsds
     # carries the reason.
-    melondsds) echo "-DENABLE_OPENGL=OFF -DENABLE_JIT=OFF -DHAVE_GETADDRINFO=1" ;;
+    melondsds) echo "-DENABLE_OPENGL=OFF -DHAVE_GETADDRINFO=1" ;;
     # ⚠ ORBIS IS NOT A VARIABLE CMake KNOWS - IT IS THE ONE THE PATCH BELOW READS. Panda3DS's
     # glad builds src/glad_glx.c for every non-Windows, non-Android, non-Apple system, and GLX
     # means <X11/X.h>, which this SDK does not have. CMAKE_SYSTEM_NAME is FreeBSD here and real
@@ -684,6 +684,41 @@ core_cmake_flags() { # core -> extra -D arguments, appended after the recipe's
     # .so; there is nothing on this console for it to attach to, so the honest configuration is
     # the one that does not compile its API at all.
     trident) echo "-DORBIS=ON -DENABLE_RENDERDOC_API=OFF" ;;
+    # ⚠ WITHOUT THIS THE CORE HAS NO LANGUAGE RUNTIME AT ALL, AND IT IS A SEGFAULT RATHER
+    # THAN A MISSING FEATURE. BUILD_STATIC defaults ON only for ANDROID, EMSCRIPTEN, the 3DS, the
+    # Switch and BAREMETALPI (CMakeLists.txt:28); CMAKE_SYSTEM_NAME is FreeBSD here, so it came
+    # out OFF and TIC-80 built its script backends as SEPARATE SHARED OBJECTS for a frontend to
+    # dlopen. Nothing dlopens anything in a .prx.
+    #
+    # OFF also leaves TIC_RUNTIME_STATIC undefined, and src/script.c puts the WHOLE Scripts[]
+    # initialiser behind it - so the table is all NULL, tic_add_script() is never called, and
+    # tic_get_script() falls through to its last line:
+    #
+    #     static const tic_script empty;          // zero-filled: every function pointer NULL
+    #     return *Scripts ? *Scripts : &empty;
+    #
+    # tic_core_tick then runs tic_init_vm(core, code, &empty), which calls config->init - a null
+    # function pointer - for EVERY cart. Measured on hardware: SIGSEGV, SEGV_MAPERR, fault
+    # address 0x28 at the `callq *0x28(%rax)` that ends retro_run, %rax = core->currentScript,
+    # 0x28 = tic_script::close. -flto (TIC-80 puts it in CMAKE_C_FLAGS_RELEASE itself) had turned
+    # the guaranteed null call into `unreachable` and erased the `if(core->currentVM)` guard and
+    # the whole tail of tic_core_tick with it, so the crash landed one call EARLIER than the
+    # source suggests. The same core.c at -O3 without LTO still emits the guard.
+    #
+    # ⚠ SO THE FIX IS THE CONFIGURATION, NOT A NULL CHECK. Guarding the deref would only move
+    # the failure to config->init being null a few lines later; a TIC-80 with no script backend
+    # cannot run a cart at all. ON links lua+luaapi into tic80core and defines both
+    # TIC_RUNTIME_STATIC and TIC_BUILD_WITH_LUA, which is what puts Lua in Scripts[].
+    #
+    # ⚠ AND WASM, BECAUSE THE CARTS THIS CONSOLE WILL BE FED ARE NOT ALL LUA. BUILD_WITH_WASM
+    # defaults to BUILD_WITH_ALL, which is OFF, so a plain BUILD_STATIC build understands Lua and
+    # nothing else. Every cart written in Nim, C, Rust or Zig - all four of TIC-80's own
+    # templates/ trees - compiles to a wasm3 module and is stored in the cart as CHUNK_BINARY
+    # (type 19); templates/nim/demo/bunny.tic is 14401 bytes of it. Those carts do not crash
+    # without this, tic_get_script falls back to *Scripts and Lua reports a syntax error, but a
+    # core that cannot open four of the five templates upstream ships is not finished. wasm3 is
+    # vendored (vendor/wasm3) and portable C.
+    tic80) echo "-DBUILD_STATIC=ON -DBUILD_WITH_WASM=ON" ;;
     *)    echo "" ;;
   esac
 }

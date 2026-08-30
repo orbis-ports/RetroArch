@@ -1,0 +1,112 @@
+From: PS4 port
+Subject: [PATCH] orbis: this console has POSIX semaphore headers and no POSIX semaphores
+
+The core loaded, ran, and died with two uncaught exceptions:
+
+    [orbis] libc++abi: terminating with uncaught exception of type
+            std::__1::system_error: sem_wait: Invalid argument
+    [orbis] libc++abi: terminating with uncaught exception of type
+            std::__1::system_error: sem_post: Invalid argument
+
+src/libretro/std/semaphore.hpp picks a counting_semaphore per platform, and this SDK answers
+to __unix__, so it took yamc::posix::counting_semaphore - confirmed in the linked module,
+which carries yamc::posix::counting_semaphore<2147483647>::acquire() and ::release(). That
+class calls ::sem_init, ::sem_wait and ::sem_post directly.
+
+⚠ THE SDK'S sem_* ARE FreeBSD KERNEL SEMAPHORES, MEASURED IN THE LINKED CORE RATHER THAN READ
+OUT OF THE HEADERS:
+
+    sem_post:      jmp   ksem_post@plt
+    sem_trywait:   jmp   ksem_trywait@plt
+    sem_wait:      xorl  %esi, %esi ; jmp sem_timedwait -> ksem_timedwait@plt
+    sem_init:      testl %esi, %esi          ; pshared
+                   jne   -> errno = 1 (EPERM), return -1
+                   movl  %edx, %esi ; jmp ksem_init@plt
+
+Those ksem_* entry points do not work for this process, and the header describes something the
+kernel implements differently - the same shape of defect as the SYS_gettid aliasing that
+ps4/orbis_cxa_guard.c corrects.
+
+⚠ AND THE CONSTRUCTOR HIDES IT, WHICH IS WHY TWO LATER CALLS FAIL AND NOT THE CREATION.
+posix_semaphore.hpp:
+
+    ::sem_init(&sem_, 0, (unsigned int)desired);
+    // counting_semaphore constructor throws nothing.
+
+The return value is discarded. sem_ keeps whatever was in that heap allocation, so every
+acquire and release afterwards hands the kernel an id that was never valid, gets EINVAL, and
+throws - from two different call sites, with nothing pointing at the initialization that
+actually failed.
+
+⚠ THIS IS THE FOURTH ARM OF A FILE WHOSE ENTIRE JOB IS CHOOSING ONE, not a new primitive.
+yamc already ships a portable counting_semaphore over std::mutex and std::condition_variable,
+it implements every member melonDS DS uses - acquire, release, try_acquire, try_acquire_for -
+and this port has already made both primitives work (ps4/orbis_cv_fix.cpp replaces
+std::condition_variable's members in libc++.a). Interposing the POSIX semaphore family instead
+would be a platform primitive to maintain for one vendored dependency: nothing else here uses
+it - RetroArch's own ssem_* is mutex-and-condvar in rthreads.c, and the frontend does not
+reference sem_init at all.
+
+⚠ AND IT GOES FIRST, ahead of __cpp_lib_semaphore. If libc++ ever reports <semaphore> here its
+__libcpp_semaphore_* are POSIX sem_t on this platform too, and would fail in the same way.
+
+diff --git a/src/libretro/std/semaphore.hpp b/src/libretro/std/semaphore.hpp
+index 839dd2d..4c4f888 100644
+--- a/src/libretro/std/semaphore.hpp
++++ b/src/libretro/std/semaphore.hpp
+@@ -17,7 +17,54 @@
+ #ifndef MELONDS_DS_STD_SEMAPHORE_HPP
+ #define MELONDS_DS_STD_SEMAPHORE_HPP
+ 
+-#ifdef __cpp_lib_semaphore
++/* ⚠ THE PLAYSTATION 4 HAS POSIX SEMAPHORE HEADERS AND NO WORKING POSIX SEMAPHORES, and this
++ * arm goes FIRST because both branches below it would walk into that.
++ *
++ * This file already picks an implementation per platform; the __unix__ arm takes
++ * yamc::posix::counting_semaphore, which calls ::sem_init / ::sem_wait / ::sem_post directly.
++ * On a console that ends the core:
++ *
++ *     [orbis] libc++abi: terminating with uncaught exception of type
++ *             std::__1::system_error: sem_wait: Invalid argument
++ *     [orbis] libc++abi: terminating with uncaught exception of type
++ *             std::__1::system_error: sem_post: Invalid argument
++ *
++ * The SDK's sem_* are thin wrappers over FreeBSD's kernel semaphore syscalls - measured in a
++ * linked core, sem_post is `jmp ksem_post@plt`, sem_wait tail-calls sem_timedwait into
++ * ksem_timedwait, and sem_init(sem, pshared, value) refuses a non-zero pshared with EPERM and
++ * otherwise tail-calls ksem_init. Those ksem_* entry points do not work for this process.
++ *
++ * ⚠ AND THE FAILURE IS SILENT UNTIL MUCH LATER, WHICH IS WHY BOTH LATER CALLS FAIL AND NOT THE
++ * CONSTRUCTOR. posix_semaphore.hpp's constructor is
++ *
++ *     ::sem_init(&sem_, 0, (unsigned int)desired);
++ *     // counting_semaphore constructor throws nothing.
++ *
++ * - the return value is DISCARDED. So sem_ keeps whatever was in that heap allocation, and
++ * every acquire and release afterwards hands the kernel a semaphore id that was never valid
++ * and gets EINVAL, from two different call sites, with nothing to say the initialization was
++ * the thing that failed.
++ *
++ * ⚠ SO THIS IS NOT A WORKAROUND AND NOT A NEW PLATFORM PRIMITIVE - IT IS THE FOURTH ARM OF A
++ * FILE WHOSE ENTIRE JOB IS CHOOSING ONE. yamc ships a portable counting_semaphore built on
++ * std::mutex and std::condition_variable for exactly this case, it implements every member
++ * melonDS DS uses (acquire, release, try_acquire, try_acquire_for), and this port has already
++ * made both of those primitives work - see ps4/orbis_cv_fix.cpp in the RetroArch tree, which
++ * replaces std::condition_variable's members in libc++.a. Nothing else in this port uses POSIX
++ * semaphores: RetroArch's own ssem_* is mutex-and-condvar in rthreads.c and the frontend does
++ * not reference sem_init at all, so there is nothing here worth interposing a whole POSIX
++ * semaphore family for.
++ *
++ * ⚠ FIRST, NOT AFTER __cpp_lib_semaphore. If libc++ ever reports <semaphore>, its
++ * __libcpp_semaphore_* are POSIX sem_t on this platform too and would fail the same way. */
++#if defined(__ORBIS__)
++#include <yamc_semaphore.hpp>
++
++namespace std {
++    template <std::ptrdiff_t least_max_value = YAMC_SEMAPHORE_LEAST_MAX_VALUE>
++    using counting_semaphore = yamc::counting_semaphore<least_max_value>;
++}
++#elif defined(__cpp_lib_semaphore)
+ #include <semaphore>
+ #elif defined(WIN32)
+ #include <win_semaphore.hpp>
