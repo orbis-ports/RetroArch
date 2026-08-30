@@ -1,0 +1,41 @@
+diff --git a/include/tic80_config.h b/include/tic80_config.h
+index 2e1cc27..5155f50 100644
+--- a/include/tic80_config.h
++++ b/include/tic80_config.h
+@@ -78,3 +78,16 @@
+ #if defined(ANDROID) || defined(__ANDROID__) || defined(BAREMETALPI) || defined(__3DS__) || defined(__SWITCH__)
+ #   define TIC80_FFT_UNSUPPORTED 1
+ #endif
++
++// PS4 (OpenOrbis) belongs in the same bucket as the consoles above: the FFT feature reads a live
++// audio CAPTURE device through miniaudio, and not one of miniaudio's backends (WASAPI, DirectSound,
++// WinMM, CoreAudio, ALSA, PulseAudio, JACK, sndio, audio4, OSS, AAudio, OpenSL, Web Audio) exists
++// here, so FFT_Open could only ever fail at runtime. Leaving it on is not merely useless, it does
++// not compile: src/ext/fft.c is the only user of src/ext/miniaudio.h, and miniaudio's Win32 file
++// and device paths use wide-string literals. clang emits L"" as int[] for the x86-64 SysV ABI while
++// the OpenOrbis SDK's musl-derived bits/alltypes.h says `typedef unsigned short wchar_t`, so every
++// such literal is a hard -Wincompatible-pointer-types error. That disagreement is the SDK's to
++// settle; this guard simply stops TIC-80 from depending on it.
++#if defined(__ORBIS__) || defined(__PS4__)
++#   define TIC80_FFT_UNSUPPORTED 1
++#endif
+diff --git a/src/fftdata.c b/src/fftdata.c
+index 400d243..3c8a824 100644
+--- a/src/fftdata.c
++++ b/src/fftdata.c
+@@ -1,4 +1,8 @@
+-#ifndef TIC80_FFT_UNSUPPORTED
++// NOT guarded by TIC80_FFT_UNSUPPORTED, unlike upstream. This file holds no miniaudio and no
++// capture code at all - only the shared data block and a printf logger - and src/core/core.c
++// reads fftEnabled/fftData unconditionally (core.c:444). Compiling it out therefore does not
++// remove the dependency, it turns a compile error into `undefined symbol: fftEnabled` at link.
++// Left in, fftEnabled is false, core.c skips the call, and the stubs in ext/fft.c do the rest.
+ #include "fftdata.h"
+ #include <stdarg.h>
+ #include <stdbool.h>
+@@ -64,4 +68,4 @@ void FFT_DebugLog(FFT_LogLevel level, const char* format, ...)
+     }
+ #endif
+ }
+-#endif
++

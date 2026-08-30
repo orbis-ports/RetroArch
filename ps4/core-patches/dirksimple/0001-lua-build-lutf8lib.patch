@@ -1,0 +1,12 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index ee9f364..00fdd04 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -163,6 +163,7 @@ set(LUA_SOURCES
+     thirdparty/lua/src/ldblib.c
+     thirdparty/lua/src/lmathlib.c
+     thirdparty/lua/src/lcorolib.c
++    thirdparty/lua/src/lutf8lib.c
+     thirdparty/lua/src/loadlib.c
+ )
+ # loslib.c and liolib.c use system()/popen() which are unavailable on iOS/tvOS

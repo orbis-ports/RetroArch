@@ -1,0 +1,108 @@
+From: PS4 port
+Subject: [PATCH] orbis: promote the code caches in place instead of remapping
+
+0002 keeps the three dynarec code caches as 16 KiB-aligned arrays in the module's own .bss, which
+settles proximity for Xbyak's rel32 by construction. This settles permission, and it has to,
+because on this console a static array that large is neither writable nor executable as loaded.
+
+Both halves of that are already measured platform facts rather than guesses about flycast:
+
+  - EXECUTE. The kernel refuses PROT_EXEC at map time and grants it afterwards through
+    sceKernelMprotect. ps4/orbis_exec_mem.c does exactly that for mupen64plus's 32 MiB in-module
+    recompiler buffer, and it does not trust the return code: sceKernelQueryMemoryProtection
+    reports what a range was MAPPED with rather than what mprotect has since made it, so the
+    promotion is proved by writing six bytes of x86-64 into the block and CALLING them.
+
+  - WRITE. swanstation faulted with SEGV_ACCERR - mapped but not permitted - writing the first
+    element of a static array 49 MB into its own .bss. The module loader does not hand out
+    writable pages for all of a large .bss. flycast declares roughly 47 MB of it, so SH4_TCB is
+    squarely in that territory. One mprotect to RWX answers both questions at once.
+
+WHY NOT region_set_exec, WHICH IS ALREADY THERE. It rounds with PAGE_MASK - 4095 here, while the
+granule is 16384 - and on failure it does not stop: control falls through to munmap() plus a fresh
+mmap(), which hands back a far pointer and reproduces `offset is too big` with an extra step. A
+refusal has to end the function, not redirect it.
+
+THE THREE-BUFFER CASE NEEDED A CHANGE IN orbis_exec_mem.c ITSELF, and it is worth naming because
+it would have been silent. That function was written for mupen64plus, which has one buffer, so it
+cached a single answer and returned it for every later call - "asked twice means asked about the
+same pages". flycast asks three times about three different ranges. Under the old rule ARM7_TCB
+and the AICA DSP buffer would have been reported executable without anything ever mprotecting
+them, and the first write into either would have faulted exactly the way s_fast_map did. The cache
+is now per range; it is still a cache, because a repeat call for pages already promoted must not
+re-run the stub check over generated code.
+
+Left open deliberately: a refusal returns false and flycast's callers verify() on it, so a console
+that will not promote these pages aborts with orbis_exec_mem's own report in the log rather than
+clamping to the interpreter the way mupen64plus does. Clamping is a bigger change than this one
+and is worth making only if the refusal is ever actually observed.
+
+diff --git a/core/linux/posix_vmem.cpp b/core/linux/posix_vmem.cpp
+index 2d42410..2c43d6e 100644
+--- a/core/linux/posix_vmem.cpp
++++ b/core/linux/posix_vmem.cpp
+@@ -20,6 +20,13 @@
+ #define MAP_NOSYNC 0
+ #endif
+ 
++#ifdef __ORBIS__
++/* Defined in RetroArch/ps4/orbis_exec_mem.c, which the port's build harness links into every
++ * module. Declared rather than included because that file belongs to the frontend's tree and
++ * this one is upstream's - the patch stays a patch. */
++extern "C" int orbis_exec_mem_promote(void *addr, size_t len);
++#endif
++
+ #ifdef __ANDROID__
+ #include <linux/ashmem.h>
+ 
+@@ -248,6 +255,42 @@ void create_mappings(const Mapping *vmem_maps, unsigned nummaps) {
+ // Prepares the code region for JIT operations, thus marking it as RWX
+ bool prepare_jit_block(void *code_area, size_t size, void **code_area_rwx)
+ {
++#ifdef __ORBIS__
++	// ⚠ THE BUFFER THE CALLER BROUGHT, OR NOTHING - THERE IS NO SECOND CHOICE HERE.
++	// Every fallback below this point ends in mmap(), and on this kernel mmap answers wherever it
++	// likes: measured blocks at 0x899200000 and 0x8074d4000 against a module at 0x800870000.
++	// Xbyak emits rel32 for calls and jumps leaving generated code, so a cache more than 2 GiB
++	// from the module's text does not run slower, it throws:
++	//
++	//     libc++abi: terminating with uncaught exception of type Xbyak::Error: offset is too big
++	//
++	// core/oslib/virtmem.h's __ORBIS__ arm therefore keeps the caches as 16 KiB-aligned arrays in
++	// the module's own .bss, where proximity is true by construction. What is left is permission.
++	//
++	// ⚠ AND region_set_exec BELOW IS NOT THE WAY TO GET IT. It mprotects a range it rounds with
++	// PAGE_MASK - 4095 here, while this console's granule is 16384 - and on failure it does not
++	// stop, it falls through to the munmap/mmap path and hands back a far pointer, which is the
++	// abort above with an extra step. It also cannot tell a granted protection from an honoured
++	// one: sceKernelQueryMemoryProtection reports what a range was MAPPED with, not what mprotect
++	// has since made it, so neither the return code nor a read-back is evidence.
++	//
++	// ps4/orbis_exec_mem.c is this port's answer and it proves the promotion by writing six bytes
++	// of x86-64 into the block and CALLING them. It also covers the other half of the platform
++	// fact: a module's own .bss this far in is not necessarily writable either - swanstation
++	// faulted with SEGV_ACCERR on a static array 49 MB into its .bss - and one mprotect to RWX
++	// answers both questions at once.
++	//
++	// Left open deliberately: a refusal returns false and flycast's callers verify() on it, so a
++	// console that will not promote these pages aborts with orbis_exec_mem's own report in the log
++	// rather than clamping to the interpreter. Clamping is a bigger change than this one and is
++	// worth making only if the refusal is ever actually observed.
++	if (code_area != nullptr && orbis_exec_mem_promote(code_area, size))
++	{
++		*code_area_rwx = code_area;
++		return true;
++	}
++	return false;
++#else
+     // Try to map is as RWX, this fails apparently on OSX (and perhaps other systems?)
+ 	if (code_area != nullptr && region_set_exec(code_area, size))
+     {
+@@ -279,6 +322,7 @@ bool prepare_jit_block(void *code_area, size_t size, void **code_area_rwx)
+ #endif
+     *code_area_rwx = ret_ptr;
+     return true;
++#endif
+ }
+ 
+ void release_jit_block(void *code_area, size_t size)

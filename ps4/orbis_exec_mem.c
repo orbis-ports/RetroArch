@@ -56,8 +56,29 @@ static const char *orbis_exec_err(int32_t rc)
 }
 
 /* -1 not asked, 0 refused, 1 granted and executed. "Not asked" and "refused" lead to opposite
- * decisions about the recompiler, so they are not allowed to share a value. */
+ * decisions about the recompiler, so they are not allowed to share a value. This one is the
+ * WHOLE MODULE's verdict - the AND of every range asked about - because a caller reading it is
+ * choosing a CPU mode for the emulator, not for one buffer. Per-range answers live in the table
+ * below. */
 static int orbis_exec_state = -1;
+
+/* ⚠ ONE CACHED ANSWER WAS RIGHT FOR ONE BUFFER AND SILENTLY WRONG FOR THREE.
+ *
+ * This function was written for mupen64plus, which has a single code buffer, so "asked twice
+ * means asked about the same pages" held and the first answer could be returned for every later
+ * call. flycast breaks that assumption: it has THREE separate in-module caches - SH4_TCB 11 MiB,
+ * ARM7_TCB 4 MiB and the AICA DSP's 32 KiB - and each one is a different range that has to be
+ * mprotected on its own. Under the old rule the second and third calls returned 1 without
+ * touching those pages, and the first write into them would have faulted with SEGV_ACCERR the
+ * way swanstation's s_fast_map did - a bug that looks like a recompiler bug and is not one.
+ *
+ * So the cache is now per range, and it is still a cache for the reason it always was: a repeat
+ * call for pages already promoted must NOT re-run the stub check, which writes six bytes over
+ * whatever the recompiler has since generated there. Four slots is one more than this port's
+ * hungriest core needs. */
+#define ORBIS_EXEC_MAX_PROMOTED 4
+static struct { uintptr_t base, end; int ok; } orbis_exec_promoted[ORBIS_EXEC_MAX_PROMOTED];
+static unsigned orbis_exec_promoted_n;
 
 /* ⚠ EVERY REPORT GOES THROUGH orbis_report AND NOT THROUGH log_cb. This file is linked into cores
  * that have not been given a libretro logger yet at the point the probe runs - the first caller
@@ -101,24 +122,32 @@ static int orbis_exec_verify(void *at)
 }
 
 /* Promote an existing range to read-write-execute. Returns 1 if code can be written and run
- * there, 0 if it cannot. Idempotent: the answer is cached, because a caller that asks twice
- * is asking about the same pages and a second stub call would overwrite generated code. */
+ * there, 0 if it cannot. Idempotent PER RANGE: an answer already given for pages that cover this
+ * request is returned as it stands, because a second stub call would overwrite generated code.
+ * Distinct ranges are each promoted on their own - see the table above for why that is not the
+ * same statement. */
 int orbis_exec_mem_promote(void *addr, size_t len)
 {
    uintptr_t base = (uintptr_t)addr;
    uintptr_t end  = base + len;
    int32_t   rc;
+   int       ok;
+   unsigned  i;
 
-   if (orbis_exec_state >= 0)
-      return orbis_exec_state;
-
-   /* ⚠ ROUNDED OUTWARDS, NOT INWARDS. sceKernelMprotect takes 16 KiB units and the array is
-    * only guaranteed 4 KiB aligned, so rounding the base UP would leave the first pages of
-    * the buffer unpromoted - and the recompiler writes its first block exactly there. Rounding
-    * down covers whatever else shares that granule, which is other .bss of this module and no
-    * more dangerous for being executable than the buffer beside it. */
+   /* ⚠ ROUNDED OUTWARDS, NOT INWARDS. sceKernelMprotect takes 16 KiB units and a caller's array
+    * may be no better than 4 KiB aligned (mupen64plus's is), so rounding the base UP would leave
+    * the first pages of the buffer unpromoted - and the recompiler writes its first block exactly
+    * there. Rounding down covers whatever else shares that granule, which is other .bss of this
+    * module and no more dangerous for being executable than the buffer beside it. A caller that
+    * would rather not share at all can align its array to ORBIS_GRANULE and then the promoted
+    * range is exactly the array; flycast's three code caches do that. */
    base &= ~(uintptr_t)(ORBIS_GRANULE - 1);
    end   = (end + (ORBIS_GRANULE - 1)) & ~(uintptr_t)(ORBIS_GRANULE - 1);
+
+   /* Already covered? Then the pages are as they were left and the stub must not run again. */
+   for (i = 0; i < orbis_exec_promoted_n; i++)
+      if (base >= orbis_exec_promoted[i].base && end <= orbis_exec_promoted[i].end)
+         return orbis_exec_promoted[i].ok;
 
    rc = sceKernelMprotect((void*)base, (size_t)(end - base), ORBIS_PROT_RWX);
    if (rc != 0)
@@ -127,15 +156,33 @@ int orbis_exec_mem_promote(void *addr, size_t len)
                       "sceKernelMprotect returned 0x%08x. The recompiler has nowhere to write "
                       "and must not be used.",
               (void*)base, (unsigned long)((end - base) / 1024), (unsigned)rc);
-      orbis_exec_state = 0;
-      return 0;
+      ok = 0;
+   }
+   else
+   {
+      ok = orbis_exec_verify(addr) ? 1 : 0;
+      orbis_report("exec_mem", "%lu KiB at %p is %s",
+              (unsigned long)(len / 1024), addr,
+              ok ? "writable and executable" : "NOT executable");
    }
 
-   orbis_exec_state = orbis_exec_verify(addr) ? 1 : 0;
-   orbis_report("exec_mem", "%lu KiB at %p is %s",
-           (unsigned long)(len / 1024), addr,
-           orbis_exec_state ? "writable and executable" : "NOT executable");
-   return orbis_exec_state;
+   /* ⚠ THE MODULE-WIDE VERDICT ONLY EVER GETS WORSE. One buffer the console will not run is
+    * enough to make the recompiler unusable, and a later range that happens to succeed does not
+    * undo that. */
+   orbis_exec_state = (orbis_exec_state < 0) ? ok : (orbis_exec_state && ok);
+
+   if (orbis_exec_promoted_n < ORBIS_EXEC_MAX_PROMOTED)
+   {
+      orbis_exec_promoted[orbis_exec_promoted_n].base = base;
+      orbis_exec_promoted[orbis_exec_promoted_n].end  = end;
+      orbis_exec_promoted[orbis_exec_promoted_n].ok   = ok;
+      orbis_exec_promoted_n++;
+   }
+   else
+      orbis_report("exec_mem", "no slot to record %p - a repeat request for these pages will "
+                   "re-run the stub check and overwrite generated code", (void*)base);
+
+   return ok;
 }
 
 /* What the promotion decided, for callers that must choose a CPU mode before the recompiler

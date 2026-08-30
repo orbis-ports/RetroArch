@@ -1,0 +1,62 @@
+diff --git a/libpcsxcore/lightrec/plugin.c b/libpcsxcore/lightrec/plugin.c
+index ecc5883..a37a2ff 100644
+--- a/libpcsxcore/lightrec/plugin.c
++++ b/libpcsxcore/lightrec/plugin.c
+@@ -9,6 +9,31 @@
+ #include <sys/mman.h>
+ #endif
+ 
++#ifdef __ORBIS__
++/* ⚠ THE ONE THING THIS CONSOLE WILL NOT DO IS HAND OUT EXECUTABLE PAGES FROM mmap().
++ *
++ * Two independent reasons, both measured on hardware rather than read anywhere. MAP_ANON is
++ * 0x1002 on this kernel while the SDK's musl header says 0x0020, so the flags word below is
++ * already wrong before the protection is considered; and PROT_EXEC asked for at MAP time is
++ * refused with EACCES - understood and declined on policy, not malformed. Executable memory
++ * here comes from Sony's physical allocator, mapped read-write and promoted with
++ * sceKernelMprotect afterwards, which the policy does grant.
++ *
++ * That is not restated here. RetroArch/ps4/orbis_exec_mem.c does it once - including the
++ * 16 KiB granule every size is rounded to, and a six-byte stub it calls to prove the promotion
++ * was honoured rather than merely granted - and the port's build harness links it into every
++ * core through liborbis-core-support.a. Declared and not included because the file ships no
++ * header; mupen64plus-rsp-paraLLEl's arm in this port declares it the same way.
++ *
++ * ⚠ AND THE FAILURE IT REPLACES WAS SILENT. mmap returns (void*)-1 here, not NULL, so
++ * `code_buffer` would have been a non-null pointer that MAP_FAILED catches only because the
++ * comparison below is written against MAP_FAILED - and anything downstream reading it as
++ * "allocated" would have been writing recompiled code to address -1.
++ */
++extern void *orbis_exec_mem_alloc(size_t size);
++extern void  orbis_exec_mem_free(void *addr, size_t size);
++#endif
++
+ #include "lightrec.h"
+ #include "../cdrom.h"
+ #include "../gpu.h"
+@@ -412,7 +437,11 @@ static int lightrec_plugin_init(void)
+ 	lightrec_map[PSX_MAP_PARALLEL_PORT].address = psxRegs.ptrs.psxP;
+ 
+ 	if (!LIGHTREC_CUSTOM_MAP) {
+-#if P_HAVE_MMAP
++#if defined(__ORBIS__)
++		code_buffer = orbis_exec_mem_alloc(CODE_BUFFER_SIZE);
++		if (!code_buffer)
++			return -ENOMEM;
++#elif P_HAVE_MMAP
+ 		code_buffer = mmap(0, CODE_BUFFER_SIZE,
+ 				   PROT_EXEC | PROT_READ | PROT_WRITE,
+ 				   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+@@ -703,7 +732,11 @@ static void lightrec_plugin_shutdown(void)
+ 	lightrec_destroy(lightrec_state);
+ 
+ 	if (!LIGHTREC_CUSTOM_MAP) {
+-#if P_HAVE_MMAP
++#if defined(__ORBIS__)
++		/* munmap alone would leave the physical pages allocated: direct memory is released by
++		 * the offset the allocator returned, which is a second handle this file never sees. */
++		orbis_exec_mem_free(code_buffer, CODE_BUFFER_SIZE);
++#elif P_HAVE_MMAP
+ 		munmap(code_buffer, CODE_BUFFER_SIZE);
+ #else
+ 		free(code_buffer);

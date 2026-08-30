@@ -1,0 +1,124 @@
+From: PS4 port
+Subject: [PATCH] orbis: a link-level address header, and a TLS initialiser create-fself insists on
+
+Two things this SDK does not have, both of which stop the module at a different stage.
+
+⚠ <net/if_dl.h>, WHICH IS THE ONLY BSD HEADER MISSING FROM AN OTHERWISE COMPLETE SET.
+
+    _deps/melonds-src/src/net/Net_PCap.cpp:35:22: fatal error: 'net/if_dl.h' file not found
+
+melonDS walks getifaddrs() and reads each adapter's MAC out of the AF_LINK entry, which on every
+BSD means struct sockaddr_dl from <net/if_dl.h>. This SDK ships <ifaddrs.h>, <net/if.h> and
+AF_LINK in <sys/socket.h>; it just has no <net/if_dl.h>. src/libretro/orbis-compat/net/if_dl.h is
+the FreeBSD declaration, unchanged, and the include directory is added next to the one melonDS's
+own src/net already gets.
+
+Net_PCap.cpp is fetched, so it cannot be patched from here - and it does not need to be. It
+dlopen()s libpcap at run time and reports the direct-mode adapter list as empty when that fails,
+which is the truthful answer on a console. What the file has to do is COMPILE, because the core's
+own net/net.cpp and platform/lan.cpp name melonDS::LibPCap and melonDS::AdapterData
+unconditionally; without it the link was missing six symbols and a typeinfo.
+
+⚠ AND ONE UNDEFINED WEAK SYMBOL, WHICH ld.lld ACCEPTS AND create-fself DOES NOT.
+
+    Failed to build FSELF: missing library for symbol (_ZTHN7melonDS3NDS7CurrentE)
+
+melonDS::NDS::Current is a constant-initialised `thread_local NDS*`. core/core.cpp reads it
+through the header, so it goes through the TLS wrapper _ZTW..., and that wrapper calls the
+initialiser _ZTH... behind a WEAK reference - which is never defined, because a constant
+initialiser needs no initialiser function. Correct ELF, and every desktop build does exactly
+this. create-fself maps every remaining undefined symbol to a library NID, finds nothing that
+exports this one, and refuses the whole module (with exit status 0, which is why the harness
+checks for the file rather than the status).
+
+ps4/orbis_weak_stubs.c in the RetroArch tree answers the same complaint for zstd's trace hooks
+and for glsm_ctl and explains it in full, but it cannot answer this one: the name is the C++
+mangling of one core's variable and would mean nothing in a file every core links. So the
+definition goes here - a no-op, which is exactly what the wrapper does when the weak reference
+resolves to null, and weak itself so that a melonDS which one day does need dynamic
+initialisation here overrides it.
+
+diff --git a/src/libretro/CMakeLists.txt b/src/libretro/CMakeLists.txt
+index 0ed8016..8d91de5 100644
+--- a/src/libretro/CMakeLists.txt
++++ b/src/libretro/CMakeLists.txt
+@@ -191,6 +191,7 @@ if (HAVE_NETWORKING)
+     )
+ 
+     target_include_directories(melondsds_libretro SYSTEM PRIVATE "${melonDS_SOURCE_DIR}/src/net")
++    target_include_directories(melondsds_libretro SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/orbis-compat")
+ 
+     if (HAVE_NETWORKING_DIRECT_MODE)
+         target_sources(melondsds_libretro PRIVATE
+@@ -200,6 +201,8 @@ if (HAVE_NETWORKING)
+     endif()
+ endif ()
+ 
++target_sources(melondsds_libretro PRIVATE orbis-compat/tls_init.cpp)
++
+ if (TRACY_ENABLE)
+     target_sources(melondsds_libretro PRIVATE tracy/memory.cpp)
+ 
+diff --git a/src/libretro/orbis-compat/net/if_dl.h b/src/libretro/orbis-compat/net/if_dl.h
+new file mode 100644
+index 0000000..68d120e
+--- /dev/null
++++ b/src/libretro/orbis-compat/net/if_dl.h
+@@ -0,0 +1,28 @@
++/* net/if_dl.h - the BSD link-level socket address, for the PlayStation 4 SDK.
++ *
++ * melonDS's src/net/Net_PCap.cpp walks getifaddrs() and reads an adapter's MAC out of the
++ * AF_LINK entry, which on every BSD means <net/if_dl.h> and struct sockaddr_dl. This SDK ships
++ * <ifaddrs.h>, <net/if.h> and AF_LINK in <sys/socket.h> - it simply has no <net/if_dl.h>, so
++ * the one thing missing is this declaration. It is the FreeBSD layout, unchanged.
++ */
++#ifndef _NET_IF_DL_H_
++#define _NET_IF_DL_H_
++
++#include <sys/types.h>
++#include <sys/socket.h>
++
++struct sockaddr_dl {
++	unsigned char	sdl_len;	/* Total length of sockaddr */
++	unsigned char	sdl_family;	/* AF_LINK */
++	unsigned short	sdl_index;	/* if != 0, system given index for interface */
++	unsigned char	sdl_type;	/* interface type */
++	unsigned char	sdl_nlen;	/* interface name length, no trailing 0 reqd. */
++	unsigned char	sdl_alen;	/* link level address length */
++	unsigned char	sdl_slen;	/* link layer selector length */
++	char		sdl_data[46];	/* minimum work area, can be larger;
++					   contains both if name and ll address */
++};
++
++#define LLADDR(s) ((caddr_t)((s)->sdl_data + (s)->sdl_nlen))
++
++#endif /* _NET_IF_DL_H_ */
+diff --git a/src/libretro/orbis-compat/tls_init.cpp b/src/libretro/orbis-compat/tls_init.cpp
+new file mode 100644
+index 0000000..f0b956f
+--- /dev/null
++++ b/src/libretro/orbis-compat/tls_init.cpp
+@@ -0,0 +1,23 @@
++/* A definition for melonDS::NDS::Current's TLS initialiser, for the PlayStation 4.
++ *
++ * melonDS::NDS::Current is `static thread_local NDS* Current;`, defined in NDS.cpp as nullptr.
++ * A translation unit that reads it through the header - core/core.cpp here - goes through the
++ * TLS wrapper _ZTW..., and that wrapper calls the initialiser _ZTH... behind a WEAK reference,
++ * because a constant-initialised thread_local needs no initialiser and none is emitted. Leaving
++ * it undefined is correct ELF and every desktop build does exactly that.
++ *
++ * create-fself does not agree. It maps every remaining undefined symbol to a library NID,
++ * finds no library exporting this one, and refuses the module - with exit status 0:
++ *
++ *     Failed to build FSELF: missing library for symbol (_ZTHN7melonDS3NDS7CurrentE)
++ *
++ * ps4/orbis_weak_stubs.c in the RetroArch tree answers the same complaint for zstd's trace hooks
++ * and for glsm_ctl, and says why in full. It cannot answer this one: the name is a C++ mangling
++ * of one core's variable and would mean nothing in a file every core links.
++ *
++ * So: a no-op, which is precisely what the wrapper does when the reference resolves to null,
++ * and WEAK so that a melonDS which one day does need dynamic initialisation here wins over it.
++ */
++extern "C" void melondsds_orbis_nds_current_tls_init(void) asm("_ZTHN7melonDS3NDS7CurrentE");
++
++__attribute__((weak)) void melondsds_orbis_nds_current_tls_init(void) {}

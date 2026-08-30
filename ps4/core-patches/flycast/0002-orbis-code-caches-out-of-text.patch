@@ -1,0 +1,94 @@
+From: PS4 port
+Subject: [PATCH] orbis: the dynarec code caches leave .text but stay in the module
+
+Two separate facts about these three arrays, and conflating them cost a hardware round trip.
+
+FACT ONE - THE SECTION NAME IS FATAL. core/oslib/virtmem.h puts each dynarec code cache in a
+section literally named ".text". ps4/orbis-module.ld collects *(.text .text.*) into one output
+section and an output section carries the UNION of its inputs' flags, so a writable array that is
+merely NAMED .text stamps SHF_WRITE on the module's whole text:
+
+    core/hw/sh4/dyna/driver.cpp.o   .text  WA  0xb00000   (SH4_TCB,    11 MiB)
+    core/hw/arm7/arm7_rec.cpp.o     .text  WA  0x400000   (ARM7_TCB,    4 MiB)
+    core/hw/aica/dsp_x64.cpp.o      .text  WA  0x008000   (CodeBuffer, 32 KiB)
+
+They are WA, not WAX, which is why searching every object, archive and toolchain library for a
+writable-EXECUTABLE input section found nothing. ld.lld will not keep a writable and a read-only
+executable range in one PT_LOAD, so it split the text, and the second half began at whatever
+offset the first ended on - 0x155cb38, not a multiple of this console's 16 KiB page:
+
+    [rtld] ERROR scan_phdr:697: segment #1 of "(null)" is not page aligned.
+    [rtld] ERROR self_load_shared_object:1757: found illegal segment header in
+           /data/retroarch/cores/flycast_libretro.prx
+    [rtld] syscall load_prx failed due to 0x00000008
+
+FACT TWO - THE ARRAY ITSELF IS LOAD-BEARING. An earlier version of this patch declared
+`static u8 *Name;` instead, copying the _WIN32/__APPLE__ arm at the top of the same chain. That
+loads, and then dies: virtmem::prepare_jit_block falls through to a plain mmap, and this kernel
+answers it wherever it likes - blocks measured at 0x899200000 and 0x8074d4000 against a module at
+0x800870000. Xbyak emits rel32 for calls and jumps out of generated code, so more than 2 GiB
+between the cache and the module's text is not a slowdown:
+
+    libc++abi: terminating with uncaught exception of type Xbyak::Error: offset is too big
+
+0.2 s after a module that finally loaded. So the array stays: inside the module's own image,
+proximity is true by construction and cannot regress with the kernel's mood. Only the section name
+goes, and an ordinary .bss array carries no SHF_EXECINSTR for anything to split on.
+
+ALIGNMENT IS 16 KiB, NOT 4096, AND THAT IS THE PLATFORM'S PAGE. What the array needs instead of
+a link-time flag is run-time permission, which core/linux/posix_vmem.cpp's __ORBIS__ arm takes
+from sceKernelMprotect - a call that works in 16 KiB granules and rounds OUTWARDS. At alignas(4096)
+that rounding would drag whichever neighbouring .bss shares the first and last granule into an
+executable mapping. At alignas(0x4000) the promoted range is exactly the array; measured on the
+built module, the three symbols sit at offsets 0x4000, 0x1004000 and 0x4000 of .bss sections that
+are themselves 16384-aligned, with sizes 0xb00000, 0x400000 and 0x8000.
+
+Result: three PT_LOADs, .text back to AX, and 15 MiB of PROGBITS zeroes gone from the shipped
+file (39M -> 24M) because .bss is NOBITS.
+
+diff --git a/core/oslib/virtmem.h b/core/oslib/virtmem.h
+index 1a62db5..ce5c947 100644
+--- a/core/oslib/virtmem.h
++++ b/core/oslib/virtmem.h
+@@ -7,6 +7,41 @@
+ #define DECLARE_CODE_CACHE(Name, Size) alignas(4096) static u8 Name[Size];
+ #elif defined(__OpenBSD__)
+ #define DECLARE_CODE_CACHE(Name, Size) alignas(4096) static u8 Name[Size] __attribute__((section(".openbsd.mutable")));
++#elif defined(__ORBIS__)
++// ⚠ THE ARRAY STAYS; ONLY THE SECTION NAME GOES. Two separable facts got conflated once here
++// already and the conflation cost a hardware round trip, so both are written down.
++//
++// FACT ONE - THE NAME IS FATAL. The __unix__ arm below puts each cache in a section literally
++// named ".text". ps4/orbis-module.ld collects *(.text .text.*) into one output section and an
++// output section's flags are the UNION of its inputs', so a writable array that is merely NAMED
++// .text stamps SHF_WRITE on the module's whole text. ld.lld will not keep a writable and a
++// read-only executable range in one PT_LOAD, so it splits the segment, and the second half starts
++// at whatever offset the first ended on - 0x155cb38, not a multiple of this console's 16 KiB
++// page. The loader checks:
++//
++//     [rtld] ERROR scan_phdr:697: segment #1 of "(null)" is not page aligned.
++//     [rtld] syscall load_prx failed due to 0x00000008
++//
++// FACT TWO - THE ARRAY IS LOAD-BEARING, AND A NULL POINTER HERE IS NOT THE ANSWER. Declaring
++// `static u8 *Name;` like the _WIN32/__APPLE__ arm above makes virtmem::prepare_jit_block fall
++// through to a plain mmap, and this kernel answers that wherever it likes - blocks have come back
++// at 0x899200000 and 0x8074d4000 while the module sat at 0x800870000. Xbyak writes rel32 for
++// calls and jumps out of generated code, so more than 2 GiB between the cache and the module's
++// text is not a slowdown, it is an abort, and it was measured as one:
++//
++//     libc++abi: terminating with uncaught exception of type Xbyak::Error: offset is too big
++//
++// A static array is inside the module's own image, so proximity is true by construction and
++// cannot regress. An ordinary .bss array carries no SHF_EXECINSTR and nothing splits.
++//
++// ⚠ alignas IS 16 KiB, NOT 4096, AND THAT IS THE PLATFORM'S PAGE. What the array then needs is
++// execute permission at run time, which core/linux/posix_vmem.cpp's __ORBIS__ arm gets through
++// sceKernelMprotect - and that call works in 16 KiB granules and rounds OUTWARDS. At 4096 the
++// rounding would drag whichever neighbouring .bss shares the first and last granule into an
++// executable mapping. Aligning the array to the real granule makes the promoted range exactly
++// the array. (The same 16 KiB granule is why the module's own .bss needs promoting to be
++// WRITABLE this far in at all - see the swanstation s_fast_map patch, same platform fact.)
++#define DECLARE_CODE_CACHE(Name, Size) alignas(0x4000) static u8 Name[Size];
+ #elif defined(__unix__) || defined(__SWITCH__) || defined(__HAIKU__)
+ #define DECLARE_CODE_CACHE(Name, Size) alignas(4096) static u8 Name[Size] __attribute__((section(".text")));
+ #else

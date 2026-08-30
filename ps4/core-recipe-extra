@@ -17,3 +17,18 @@
 # Appended to whatever --recipe points at, and a name here WINS over the same name in the recipe,
 # so this file can also correct a stale line rather than only add a missing core.
 dosbox_pure libretro-dosbox_pure https://github.com/schellingb/dosbox-pure.git main YES GENERIC Makefile .
+# ⚠ CORRECTION, NOT AN ADDITION: the recipe says `master`, which upstream no longer has.
+# git ls-remote https://github.com/nesbox/TIC-80.git lists clay, custom-menu, lovebyte,
+# luajit, main - and no master. Nothing is wrong with the core; the recipe went stale.
+tic80 libretro-tic80 https://github.com/nesbox/TIC-80.git main YES CMAKE Makefile builddir -DBUILD_PLAYER=OFF -DBUILD_SOKOL=OFF -DBUILD_SDL=OFF -DBUILD_DEMO_CARTS=OFF -DBUILD_LIBRETRO=ON
+# ⚠ CORRECTION, NOT AN ADDITION, AND THE STALE FIELD IS THE SUBDIRECTORY. The recipe says the
+# build directory is backends/platform/libretro/build; upstream has no such directory and has
+# not for years - README.md there says `cd scummvm/backends/platform/libretro && make`. A
+# subdirectory that does not exist makes build-cores.sh fall back to the clone root, where make
+# meets ScummVM's OWN top-level Makefile and stops on
+#     Makefile:122: *** You need to run ./configure before you can run make.
+# which reads as a core needing an autotools step. It does not: the libretro backend's Makefile
+# is self-contained. It fetches its own dependencies (libretro-deps, libretro-common) into
+# backends/platform/libretro/deps and runs scripts/configure_engines.sh itself, both from
+# $(shell ...) at parse time, so `make` alone is the whole build and GENERIC is the right type.
+scummvm libretro-scummvm https://github.com/libretro/scummvm.git master YES GENERIC Makefile backends/platform/libretro

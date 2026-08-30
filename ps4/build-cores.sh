@@ -405,7 +405,23 @@ fi
 CORE_SUPPORT_LIB="$WORK/liborbis-core-support.a"
 if [[ ! -f "$CORE_SUPPORT_LIB" ]]; then
   _sup=()
-  for _s in orbis_gl_forward.c orbis_exec_mem.c orbis_abort_report.c orbis_profile.c orbis_cv_fix.cpp; do
+  # ⚠ orbis_thread_atexit FILLS A HOLE BETWEEN TWO SDK LIBRARIES AND NOT ONE IN ANY CORE:
+  # libc++.a's __cxa_thread_atexit forwards to __cxa_thread_atexit_impl, which every other libc
+  # exports and this one does not, so the first core with a thread_local destructor (flycast) got
+  # `undefined symbol: __cxa_thread_atexit_impl ... in archive .../libc++.a`. Archive member, like
+  # the rest of these: a core with no thread-locals does not carry it. See that file for why it is
+  # a real implementation rather than a stub that returns 0.
+  # ⚠ orbis_cxa_guard REPLACES libc++abi's FUNCTION-LOCAL-STATIC GUARDS, and it is a correction
+  # rather than a preference. This SDK's headers alias SYS_gettid to __NR_getpid, so libc++abi's
+  # PlatformThreadID() compiles to syscall(20) and hands back the PROCESS id - the same value on
+  # every thread. Its recursion check then reads "the thread initialising this static is me" for
+  # ANY two threads, and melondsds aborted on hardware with
+  #     [orbis] libc++abi: __cxa_guard_acquire detected recursive initialization
+  # 6.5 seconds into content load, with no recursive initialization anywhere in the module - it
+  # was melonDS's renderer thread and the main thread contending on one static, which is the case
+  # guards exist to handle. The number is baked into the PREBUILT libc++.a, so correcting the SDK
+  # header fixes nothing; the three entry points have to be defined ahead of it. See that file.
+  for _s in orbis_gl_forward.c orbis_exec_mem.c orbis_abort_report.c orbis_profile.c orbis_thread_atexit.c orbis_cxa_guard.c orbis_cv_fix.cpp; do
     # ⚠ orbis_cv_fix REPLACES A MEMBER OF libc++.a AND SO MUST BE COMPILED THE SAME WAY THE CORES
     # ARE - libc++'s own headers first. It defines std::condition_variable's members, so a
     # different <condition_variable> than the cores see would be a different class.
@@ -446,6 +462,77 @@ core_make_flags() {
   case "$1" in
     mupen64plus_next) echo "HAVE_THR_AL=1 WITH_DYNAREC=x86_64 FORCE_GLES3=1" ;;
     parallel_n64)     echo "HAVE_PARALLEL=1 HAVE_PARALLEL_RSP=1 HAVE_THR_AL=1 WITH_DYNAREC=x86_64" ;;
+    # ⚠ TWO VARIABLES THIS CORE SPELLS DIFFERENTLY FROM THE REST, AND BOTH ARE PLATFORM FACTS.
+    #
+    # HAVE_PHYSICAL_CDROM=0: the harness's blanket HAVE_CDROM=0 above does nothing here, because
+    # pcsx_rearmed gates the feature on its OWN variable and only defines -DHAVE_CDROM downstream
+    # of it (Makefile:438). Left at its default 1, it compiles deps/libretro-common/cdrom/cdrom.c,
+    # whose send-command call is written as an #if ladder over __linux__ / _WIN32 / __APPLE__ with
+    # no #else - so on this console the `if (...)` vanishes and the compiler meets a bare `else`:
+    #
+    #     deps/libretro-common/cdrom/cdrom.c:894:7: error: expected expression
+    #
+    # Every console arm in Makefile.libretro already sets this to 0. It is passthrough to a HOST
+    # CD device, which this console does not have.
+    #
+    # LIGHTREC_CUSTOM_MAP=0: the unix arm turns it on whenever `uname` says Linux (Makefile.libretro
+    # :161) - a test about the BUILD machine, not the target - and it selects libpcsxcore/lightrec/
+    # mem.c, which is Linux-only source: MAP_HUGETLB, MAP_HUGE_SHIFT and SYS_memfd_create, none of
+    # which exist here.
+    #
+    #     libpcsxcore/lightrec/mem.c:51:15: error: use of undeclared identifier 'MAP_HUGETLB'
+    #     libpcsxcore/lightrec/mem.c:82:25: error: use of undeclared identifier 'SYS_memfd_create'
+    #
+    # Turning it off is the same choice osx and every console but the Wii U make. What it costs is
+    # the four mirrors of the emulated machine's RAM at 0x00000000/0x200000/0x400000/0x600000, which
+    # lightrec then reaches through its lookup tables instead (DISABLE_MEM_LUTS=0 is already in the
+    # recipe's flags). What it does NOT cost is the recompiler: the code buffer moves to
+    # lightrec_plugin_init's own allocation, and patch 0001 gives that one a PS4 arm.
+    pcsx_rearmed)     echo "HAVE_PHYSICAL_CDROM=0 LIGHTREC_CUSTOM_MAP=0" ;;
+    # ⚠ FOUR VARIABLES, AND THE FIRST IS A CORRECTNESS BUG THAT COMPILES SILENTLY.
+    #
+    # BUILD_64BIT=1: the libretro backend's Makefile decides word size from the NAME of the
+    # platform - `ifeq (,$(findstring 64,$(platform) $(TOOLSET)))` at Makefile:21 - and
+    # `platform=unix` contains no "64", so it settles on 32 and emits -DSIZEOF_SIZE_T=4 with no
+    # -DSCUMM_64BITS. The uname fallback that would have got this right sits in the `else` arm
+    # that naming a platform explicitly skips. Nothing fails: ScummVM's Common::String, its
+    # serializer and its savegame code just get told size_t is four bytes on a target where it is
+    # eight. `Platform is unix 32bit` in the log is the only tell. This is x86_64.
+    #
+    # LITE=1: builds the engine set in backends/platform/libretro/lite_engines.list - SCUMM,
+    # SCI, AGI, AGOS, Kyra, Sky, Sword 1/2, Gob, Saga, Tinsel and the rest of the classic
+    # adventures, 32 of them. The full set is 2069 -> 8500 translation units, four times the
+    # build for engines that are mostly not what anyone reaches for this core to play. It is
+    # upstream's own supported subset and not a workaround; drop it the day the sweep has the
+    # clock for the whole tree.
+    #
+    # FORCE_OPENGLNONE=1: the unix arm sets HAVE_OPENGL := 1 - DESKTOP GL, resolved at runtime by
+    # GLAD - and this port has no desktop GL at all, only GLES 3.1 through zink. FORCE_OPENGLES2=1
+    # is the other arm and may well be the better answer one day; the surface renderer is what
+    # gets this core to a first working build, and libretro-graphics-surface.o is built either way.
+    #
+    # ⚠ USE_IMGUI=, AND THE EMPTY VALUE IS THE WHOLE POINT - USE_IMGUI=0 TURNS IT ON.
+    # backends/module.mk:558 adds the ImGui objects under `ifdef USE_IMGUI`, which in make asks
+    # whether the variable is NON-EMPTY, not whether it is true. Makefile.common:133 knows that
+    # and rewrites a non-1 value to the empty string - but a variable set on the COMMAND LINE
+    # outranks every assignment in a makefile, so USE_IMGUI=0 survives that line, stays non-empty,
+    # and builds the whole of ImGui while -DUSE_IMGUI is correctly absent from the compile line.
+    # Measured: the objects were there and the link failed exactly as it had before.
+    #
+    # ⚠ AND IT IS THE OTHER HALF OF FORCE_OPENGLNONE RATHER THAN A SEPARATE CHOICE.
+    # ScummVM's ImGui layer is its developer debugger overlay and it draws through the OpenGL
+    # backend, which the line above just turned off - so it is dead weight here whatever it does.
+    # Left on it is also the ONLY thing that stopped this core linking:
+    #
+    #     undefined symbol: FT_GlyphSlot_Embolden      backends/imgui/misc/freetype/
+    #     undefined symbol: FT_GlyphSlot_Oblique       imgui_freetype.cpp
+    #
+    # Both live in freetype's src/base/ftsynth.c, which dependencies.mk does NOT list among the
+    # freetype objects it builds. That is invisible on a desktop, where sharedlibs_is_lib_available
+    # finds a system -lfreetype and links the whole library; here nothing outside the sysroot is
+    # linkable, every one of those probes answers "no", and the build gets exactly the object list
+    # that file names. No engine asks for component_imgui, so nothing is lost.
+    scummvm)          echo "BUILD_64BIT=1 LITE=1 FORCE_OPENGLNONE=1 USE_IMGUI=" ;;
     *)                echo "" ;;
   esac
 }
@@ -496,7 +583,141 @@ cmake_build_target() { # -> the target to build, from $core and $cbuild in scope
 core_cmake_flags() { # core -> extra -D arguments, appended after the recipe's
   case "$1" in
     play) echo "-DUSE_GLES=ON" ;;
+    # ⚠ THIS WAS -DUSE_GLES=ON FIRST, AND THAT ANSWERED THE WRONG QUESTION. The wall is
+    # flycast's GL backend chain (CMakeLists.txt around line 220): `ANDROID OR USE_GLES` takes
+    # GLES3 and never looks for a library, `elseif(USE_OPENGL)` calls find_package(OpenGL
+    # REQUIRED), and on a Linux host that means libGLX and an X11 this SDK does not have.
+    # USE_GLES=ON short-circuits the arm before it runs, so it configured and built - and then
+    # died on hardware after 1856 frames:
+    #
+    #     fatal: signal 11 - SIGSEGV, si_code 1 (SEGV_MAPERR), fault address 0x54
+    #     ... backtrace frame 0x800b2733a = retro_run+0x29a, the return address of
+    #         `callq glsm_ctl` in `if (isOpenGL(config::RendererType)) glsm_ctl(UNBIND, nullptr)`
+    #
+    # ⚠ BECAUSE USE_GLES LEFT USE_OPENGL ON, AND USE_OPENGL IS WHAT PICKS THE DEFAULT RENDERER.
+    # core/cfg/option.h:416 reads, in this order: USE_DX11, USE_DX9, `!defined(USE_OPENGL)` ->
+    # Vulkan, else -> OpenGL. With USE_OPENGL defined the default RendererType is OpenGL, and
+    # `#if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES)` compiles a glsm_ctl BIND/UNBIND pair
+    # into retro_run that fires whenever RendererType is OpenGL or OpenGL_OIT. The frontend had
+    # negotiated Vulkan and retro_vk_context_reset had run, so glsm's rglgen table was never
+    # resolved and every entry point in it was still null.
+    #
+    # ⚠ AND THE RENDERER THIS CONSOLE SHOULD USE IS VULKAN, NOT GLES, WHICH MAKES THE FIX THE
+    # HONEST CONFIGURATION RATHER THAN A DODGE. GL here is Mesa's zink, which is a translation
+    # layer ON TOP OF the same Vulkan; a GLES flycast would go through zink to reach the driver
+    # the Vulkan renderer talks to directly. The Vulkan path is also the one already proven on
+    # hardware - retro_vk_context_reset, 1856 frames presented, 16-31 ms a frame, GPU never
+    # waiting. So: no GL at all.
+    #
+    # -DUSE_OPENGL=OFF does the whole job at once, and USE_GLES stays at its OFF default:
+    #   - the find_package(OpenGL) arm is skipped, which is what USE_GLES was hired for;
+    #   - HAVE_OPENGL and HAVE_OPENGLES go undefined, so the glsm_ctl calls in retro_run and the
+    #     whole GL context_reset path are not compiled - the crash site ceases to exist rather
+    #     than being null-checked;
+    #   - core/rend/CMakeLists.txt and core/wsi/CMakeLists.txt drop the GL renderer, the GL WSI
+    #     and glsm.c/glsym_es3.c;
+    #   - and the RendererOption default becomes RenderType::Vulkan, so even a path that leaves
+    #     it untouched now lands on the renderer this console actually has.
+    # HAVE_OIT survives: every use of it that matters is `defined(HAVE_OIT) || defined(HAVE_VULKAN)
+    # || defined(HAVE_D3D11)`, and USE_VULKAN is on.
+    flycast) echo "-DUSE_OPENGL=OFF" ;;
+    # ⚠ FOUR CAPABILITY STATEMENTS, AND -D IS THE ONLY LEVER THERE IS. melondsds pulls melonDS,
+    # libretro-common, libslirp and zlib in with FetchContent, so their sources live under
+    # build/_deps and only exist AFTER configure - the patch step below runs before that, from the
+    # clone root, and cannot reach them. Anything wrong in a fetched dependency has to be turned
+    # off at configure time or not at all.
+    #
+    #   ENABLE_OPENGL=OFF - it is what the configure decides on its own anyway (no GL library and
+    #     no GL headers in the SDK, so HAVE_OPENGL comes out empty), but it decides too late.
+    #     melonds-ds sets ENABLE_OGLRENDERER from ENABLE_OPENGL's DEFAULT before it fetches
+    #     melonDS, and melonDS's own option() honours that normal variable - so the renderer's
+    #     sources are already in the `core` target by the time HAVE_OPENGL is FORCEd off, and they
+    #     compile without the include directory the same `if (HAVE_OPENGL)` would have added:
+    #         .../src/PlatformOGL.h:14:10: fatal error: 'PlatformOGLPrivate.h' file not found
+    #     Five files, and the header is right there in src/libretro. -D on the command line seeds
+    #     the cache before that first set() reads it, which is early enough.
+    #   ENABLE_JIT=OFF - melonDS's x64 recompiler catches its own page faults and resumes them by
+    #     writing the saved program counter, which it reaches through a per-OS CONTEXT_PC macro:
+    #         ARMJIT_Memory.cpp:214:34: error: no member named 'CONTEXT_PC' in '__ucontext'
+    #     This SDK's ucontext is neither the Linux nor the BSD shape melonDS knows, and a console
+    #     that maps nothing W+X would not run the recompiler even if it named the field right.
+    #   HAVE_GETADDRINFO=1 - ⚠ ANSWERING A CONFIGURE CHECK BY HAND, WHICH THIS FILE OTHERWISE
+    #     REFUSES TO DO, so here is the measurement. The check comes out EMPTY, libretro-common
+    #     then takes its HAVE_SOCKET_LEGACY arm and declares a `struct addrinfo` of its own, and
+    #     the SDK's netdb.h has already declared one:
+    #         net_compat.h:263:8: error: redefinition of 'addrinfo'
+    #     But getaddrinfo IS in libc.a, and it links - what it does not link against is the check's
+    #     link line. libc's getaddrinfo drags in resolvconf.c, which calls sceNetGetDnsInfo, and
+    #     that lives in libSceNet:
+    #         ld.lld: error: undefined symbol: sceNetGetDnsInfo
+    #         >>> referenced by resolvconf.c in archive .../lib/libc.a
+    #     The CORE's link line below carries -lSceNet and the CHECK's does not, so the check is
+    #     answering about a link nothing here performs. Reproduced by hand both ways: the same
+    #     translation unit fails without -lSceNet and links with it.
+    #     ⚠ AND ENABLE_NETWORKING=OFF IS NOT THE WAY OUT - it is not a configuration melonDS DS
+    #     supports. src/libretro/CMakeLists.txt adds melonDS's src/net to the include path only
+    #     inside `if (HAVE_NETWORKING)`, while ten of the core's own sources - libretro.cpp among
+    #     them - include <Net.h> unconditionally, so turning it off costs the entry points:
+    #         libretro.cpp:1:10: fatal error: 'Net.h' file not found
+    #     ⚠ THE GENERAL FIX IS THE CHECK LINK LINE, NOT THIS -D. Putting -lSceNet (and
+    #     -lSceUserService) into CMAKE_C_STANDARD_LIBRARIES above would make every core's checks
+    #     answer about the link this harness actually performs. That changes what EVERY CMake core
+    #     configures to, so it is written down here rather than done in passing.
+    # ⚠ AND ENABLE_DYNAMIC STAYS ON, WHICH IS THE OPPOSITE OF WHAT ITS ERRORS SUGGEST. The
+    # fetched libretro-common's dylib.c does not build here, and turning HAVE_DYNAMIC off to be
+    # rid of it also turns off HAVE_NETWORKING_DIRECT_MODE, which is what puts melonDS's pcap
+    # header on the include path - and the core's own net/net.cpp and platform/lan.cpp name
+    # melonDS::AdapterData and PCAP_IF_* whether that mode is configured or not. dylib.c is
+    # dropped from the source list by this core's patch instead; ps4/core-patches/melondsds
+    # carries the reason.
+    melondsds) echo "-DENABLE_OPENGL=OFF -DENABLE_JIT=OFF -DHAVE_GETADDRINFO=1" ;;
+    # ⚠ ORBIS IS NOT A VARIABLE CMake KNOWS - IT IS THE ONE THE PATCH BELOW READS. Panda3DS's
+    # glad builds src/glad_glx.c for every non-Windows, non-Android, non-Apple system, and GLX
+    # means <X11/X.h>, which this SDK does not have. CMAKE_SYSTEM_NAME is FreeBSD here and real
+    # FreeBSD does have GLX, so keying the patch on that would be a lie about a whole platform;
+    # this says what is actually true - the same thing -D__ORBIS__ on the compile line says.
+    # ⚠ AND RENDERDOC OFF, WHICH IS A CAPABILITY STATEMENT RATHER THAN A WORKAROUND. Panda3DS
+    # defaults ENABLE_RENDERDOC_API to ON, and third_party/renderdoc/renderdoc_app.h ends its
+    # calling-convention chain in `#error "Unknown platform"` for anything that is not Windows,
+    # Linux, FreeBSD or Apple. RenderDoc is a desktop GPU debugger that attaches over a loaded
+    # .so; there is nothing on this console for it to attach to, so the honest configuration is
+    # the one that does not compile its API at all.
+    trident) echo "-DORBIS=ON -DENABLE_RENDERDOC_API=OFF" ;;
     *)    echo "" ;;
+  esac
+}
+
+# ⚠ THE OBJECT SWEEP BELOW HAS NO ARCHIVE SEMANTICS, AND SOME TREES CARRY A LIBRARY TWICE.
+#
+# A real link hands ld a few objects and then some .a files, and an archive member is pulled in
+# ONLY if it still resolves something undefined. This harness links every .o under the tree
+# directly, which is what makes a partial `-k` build collectable - and it also means a second,
+# unused copy of a library stops being lazy and becomes a duplicate definition.
+#
+# flycast: the core target compiles core/deps/lzma (the full 7-Zip SDK, for .7z ROMs) and also
+# links chdr-static, whose own tree builds core/deps/libchdr/deps/lzma-24.05 into a static
+# `lzma`. Eleven of those sources overlap and seven of them collide -
+#
+#     ld.lld: error: duplicate symbol: LzmaDec_DecodeToDic
+#       >>> .../CMakeFiles/flycast_libretro.dir/core/deps/lzma/LzmaDec.c.o
+#       >>> .../core/deps/libchdr/deps/lzma-24.05/CMakeFiles/lzma.dir/src/LzmaDec.c.o
+#
+# 57 symbols over Alloc, Delta, LzFind, Lzma86Dec, LzmaDec, LzmaEnc and Sort.
+#
+# ⚠ DROPPING THE ARCHIVE'S COPY IS NOT A COIN TOSS - IT IS WHAT UPSTREAM'S OWN LINK DOES. The
+# core's objects come first on every real flycast link, so they define those symbols before lld
+# ever opens lzma.a, and not one of those members is extracted on Linux or Android either. Keeping
+# the other side would be the deviation.
+#
+# ⚠ AND THIS IS PER-CORE ON PURPOSE, NOT A GENERAL "SAME BASENAME WINS" RULE. The sweep already
+# de-duplicates two targets that built one source list side by side (the zlib/zlibstatic shape
+# noted below); this is the other shape - two DIFFERENT vendored copies of one upstream library,
+# in different directories, at different versions - and there is no way to tell it apart from two
+# genuinely unrelated files that happen to share a name without knowing the tree.
+core_object_excludes() { # core -> find(1) path globs whose objects must not be linked
+  case "$1" in
+    flycast) echo '*/libchdr/deps/lzma-24.05/*' ;;
+    *)       echo "" ;;
   esac
 }
 
@@ -871,9 +1092,41 @@ for core in "${CORES[@]}"; do
   # ⚠ SO "IT IS IN A <target>.dir" IS NOT THE TEST, and that was the first rule written here. What
   # every one of these has in common is a component under CMakeFiles/ that is not a target: a
   # version number, or a name CMake prefixes with an underscore for exactly this reason.
+  #
+  # ⚠ AND A FOURTH KIND: ONE SOURCE COMPILED TWICE, BY TWO TARGETS IN THE SAME DIRECTORY. Not a
+  # stray this time - both copies are real, wanted objects of a real target, and both define every
+  # symbol in the file. The classic is a dependency that adds a shared and a static library from
+  # one source list; zlib's CMakeLists does exactly that, `zlib` beside `zlibstatic`, and a core
+  # that pulls zlib in through FetchContent gets both object sets under _deps/zlib-build.
+  # melondsds:
+  #
+  #     ld.lld: error: duplicate symbol: adler32_z
+  #       >>> .../_deps/zlib-build/CMakeFiles/zlib.dir/adler32.c.o
+  #       >>> .../_deps/zlib-build/CMakeFiles/zlibstatic.dir/adler32.c.o
+  #
+  # 105 of those, the whole of zlib twice. The rule below keeps ONE object per (binary directory,
+  # path under the target dir) and drops the rest, first in sort order winning so the choice does
+  # not depend on the order `find` walked the tree. It fires only where two sibling targets built
+  # the SAME relative source, which is the shape above and is a link error as it stands - on a core
+  # with no such pair it removes nothing, and it cannot remove an object that has no twin.
+  # ⚠ THE KEY IS THE BINARY DIRECTORY, NOT THE TARGET, and it has to stay that way: matching on the
+  # target name is what lets `zlib` and `zlibstatic` look like two unrelated targets. And it is
+  # scoped to one CMakeFiles/ deliberately - two targets built from one source list are added by
+  # one CMakeLists and land side by side, while the same file name under two different binary
+  # directories is two different sources and both are kept.
+  # ⚠ AND IT STILL SEARCHES $src, NOT $cbuild - see the note above about gearboy.
+  # $(core_object_excludes) is a list of globs and must word-split - hence the disable below.
+  # shellcheck disable=SC2086
+  objexcl=(); for p in $(core_object_excludes "$core"); do objexcl+=(-not -path "$p"); done
   mapfile -t objs < <(find "$src" -name '*.o' -type f \
       -not -path '*/CMakeFiles/[0-9]*.[0-9]*/*' -not -path '*/CMakeFiles/_*/*' \
-      -not -path '*/CMakeScratch/*' -not -path '*/CMakeTmp/*' | sort)
+      -not -path '*/CMakeScratch/*' -not -path '*/CMakeTmp/*' \
+      ${objexcl[@]+"${objexcl[@]}"} | sort \
+    | awk 'match($0, /\/CMakeFiles\/[^\/]+\.dir\//) {
+             key = substr($0, 1, RSTART) substr($0, RSTART + RLENGTH)
+             if (key in seen) next
+             seen[key] = 1
+           } { print }')
   if [[ ${#objs[@]} -eq 0 ]]; then
     err="$(grep -m1 -E 'error:|CMake Error|No such file|No rule' "$WORK/$core.log" | cut -c1-46)"
     report "$core" COMPILE - "$commit" "${err:-no objects; single-shot link?}"

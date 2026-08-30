@@ -1,0 +1,78 @@
+From: PS4 port
+Subject: [PATCH] orbis: the libretro-common files this link can use, and the ones it cannot
+
+melonDS DS fetches libretro-common with FetchContent and names the files it wants one by one.
+Three of those names are wrong for a static PS4 module, in both directions.
+
+⚠ THE CORE'S OWN LINK IS A SHARED MODULE EVERYWHERE ELSE, AND THAT HIDES TWO OF THESE.
+melondsds_libretro is a MODULE library on every other platform, and a shared object may leave a
+symbol undefined for the dynamic loader to find later. This port links every object into one
+static .prx with no loader, so:
+
+    ld.lld: error: undefined symbol: strcasestr_retro__
+    >>> referenced by file_list.c
+
+  + compat/compat_strcasestr.c. lists/file_list.c calls strcasestr, compat/strcasestr.h rewrites
+    that to strcasestr_retro__ wherever the platform has none of its own, and the file that
+    defines it was not in the list. It is sitting right there in the fetched tree.
+
+    ld.lld: error: undefined symbol: rxml_load_document
+    >>> referenced by logiqx_dat.c
+
+  - formats/logiqx_dat/logiqx_dat.c. Its only undefined symbol is rxml_load_document, and the
+    obvious fix - add formats/xml/rxml.c beside it - does not work here:
+
+        rxml.c:30:10: fatal error: '../../deps/yxml/yxml.h' file not found
+
+    rxml parses with yxml, which lives in RetroArch's deps/ and NOT in the libretro-common
+    repository this core fetches, so that file cannot be built from this tree at all. Nothing in
+    the core references logiqx_dat_* - checked over every object in the build - and a DAT-file
+    reader is not something melonDS DS uses. Dropping the caller is the honest fix; adding a
+    parser the fetched tree does not contain is not.
+
+⚠ AND ONE FILE THAT THIS TREE ALREADY HAS A BETTER COPY OF.
+
+  - dynamic/dylib.c. Its ORBIS arm does not compile against this SDK - it calls dlerror() with
+    nothing declaring it and casts to a SceKernelModule these headers do not name - and the copy
+    in RetroArch's own libretro-common, which this port has fixed, is linked into every core
+    anyway as liborbis-retro-common.a. dylib_load, dylib_proc, dylib_close and dylib_error are
+    all defined there, so removing the fetched one costs nothing and stops the error.
+
+    ⚠ Turning HAVE_DYNAMIC off instead is not the way out: it also turns off
+    HAVE_NETWORKING_DIRECT_MODE, which is what puts melonDS's pcap header on the include path,
+    and the core's own net/net.cpp and platform/lan.cpp name melonDS::AdapterData and PCAP_IF_*
+    whether that mode is configured or not.
+
+diff --git a/cmake/libretro-common.cmake b/cmake/libretro-common.cmake
+index cb2c495..131deab 100644
+--- a/cmake/libretro-common.cmake
++++ b/cmake/libretro-common.cmake
+@@ -8,6 +8,7 @@ target_sources(libretro-common PRIVATE
+     ${libretro-common_SOURCE_DIR}/audio/resampler/drivers/sinc_resampler.c
+     ${libretro-common_SOURCE_DIR}/compat/compat_fnmatch.c
+     ${libretro-common_SOURCE_DIR}/compat/compat_posix_string.c
++    ${libretro-common_SOURCE_DIR}/compat/compat_strcasestr.c
+     ${libretro-common_SOURCE_DIR}/compat/compat_strldup.c
+     ${libretro-common_SOURCE_DIR}/compat/fopen_utf8.c
+     ${libretro-common_SOURCE_DIR}/encodings/encoding_base64.c
+@@ -26,7 +27,6 @@ target_sources(libretro-common PRIVATE
+     ${libretro-common_SOURCE_DIR}/formats/image_texture.c
+     ${libretro-common_SOURCE_DIR}/formats/image_transfer.c
+     ${libretro-common_SOURCE_DIR}/formats/json/rjson.c
+-    ${libretro-common_SOURCE_DIR}/formats/logiqx_dat/logiqx_dat.c
+     ${libretro-common_SOURCE_DIR}/formats/m3u/m3u_file.c
+     ${libretro-common_SOURCE_DIR}/formats/png/rpng.c
+     ${libretro-common_SOURCE_DIR}/formats/png/rpng_encode.c
+@@ -66,12 +66,6 @@ add_common_definitions(libretro-common)
+ target_include_directories(libretro-common PRIVATE ${CMAKE_SOURCE_DIR}/src/libretro)
+ target_compile_definitions(libretro-common PRIVATE HAVE_GLSYM_PRIVATE HAVE_RPNG)
+ 
+-if (HAVE_DYNAMIC)
+-    target_sources(libretro-common PRIVATE
+-        ${libretro-common_SOURCE_DIR}/dynamic/dylib.c
+-    )
+-endif ()
+-
+ if (HAVE_EGL)
+     target_link_libraries(libretro-common PUBLIC OpenGL::EGL)
+ endif ()

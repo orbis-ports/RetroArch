@@ -1,0 +1,12 @@
+diff --git a/vendor/Panda3DS/src/core/renderer_gl/textures.cpp b/vendor/Panda3DS/src/core/renderer_gl/textures.cpp
+index 7f4c31bf..58fdaeac 100644
+--- a/vendor/Panda3DS/src/core/renderer_gl/textures.cpp
++++ b/vendor/Panda3DS/src/core/renderer_gl/textures.cpp
+@@ -1,6 +1,7 @@
+ #include "renderer_gl/textures.hpp"
+ #include "colour.hpp"
+ #include <array>
++#include <vector>
+ 
+ using namespace Helpers;
+ 

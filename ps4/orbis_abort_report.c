@@ -41,6 +41,9 @@
 
 #define ORBIS_ABORT_LOG "/data/retroarch-abort.log"
 
+/* Re-entrancy flag for the file copy below; see the note at the fopen. */
+static int s_in_report;
+
 void orbis_report(const char *tag, const char *fmt, ...)
 {
    char    line[1024];
@@ -60,12 +63,38 @@ void orbis_report(const char *tag, const char *fmt, ...)
    sceKernelDebugOutText(0, line);
 
    /* ⚠ APPEND, NOT TRUNCATE. A core can abort during the menu's info read and again when it is
-    * loaded for real, and the first message is usually the one that explains the second. */
-   if ((f = fopen(ORBIS_ABORT_LOG, "a")))
+    * loaded for real, and the first message is usually the one that explains the second.
+    *
+    * ⚠ AND GUARDED, BECAUSE THE FILE COPY IS THE ONLY PART OF THIS THAT CAN COME BACK HERE.
+    * fopen reaches orbis-compat's interposed open(), which calls anchorPath(), which calls
+    * anchorRoot() - a function-local static. Today that is a cycle on paper and not in practice:
+    * anchorPath returns on the first character of an ABSOLUTE path, before it ever touches the
+    * guard, and ORBIS_ABORT_LOG is absolute. From anchorPath in a linked core:
+    *
+    *     80e5e:  cmpl   $0x2f, %eax           ; '/'
+    *     80e61:  je     0x80f39               ; ...returns here
+    *     80e6d:  movzbl _ZGVZN5orbis10anchorRootEvE4root(%rip), %eax   ; guard, only after that
+    *
+    * So this is defence in depth against the day someone gives it a relative path or another
+    * interposer grows a static of its own - and the day is worth guarding against, because the
+    * consequence changed. It used to be a second abort message; with ps4/orbis_cxa_guard.c
+    * answering the guards it would be a DEADLOCK, the process parked on a condition variable
+    * waiting for an initializer that is itself waiting for this report to finish.
+    *
+    * klog above is deliberately outside the guard: sceKernelDebugOutText is a direct kernel call
+    * that cannot re-enter anything here, so the message still gets out even when the file copy is
+    * skipped. A global rather than a thread-local flag - two threads reporting at once lose one
+    * FILE copy and keep both klog lines, and a thread-local in the abort path would be one more
+    * thing that has to work while the process is dying. */
+   if (__atomic_exchange_n(&s_in_report, 1, __ATOMIC_ACQ_REL) == 0)
    {
-      fputs(line, f);
-      fflush(f);
-      fclose(f);
+      if ((f = fopen(ORBIS_ABORT_LOG, "a")))
+      {
+         fputs(line, f);
+         fflush(f);
+         fclose(f);
+      }
+      __atomic_store_n(&s_in_report, 0, __ATOMIC_RELEASE);
    }
 }
 

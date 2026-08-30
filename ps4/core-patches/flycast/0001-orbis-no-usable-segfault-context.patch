@@ -1,0 +1,103 @@
+From: PS4 port
+Subject: [PATCH] orbis: no usable segfault context on this kernel
+
+flycast's SIGSEGV handler rewrites fastmem accesses in place, which means reading rip, rsp, r9
+and rdi out of the third argument the kernel hands a signal handler. It cannot be done here yet,
+and the file that would do it does not even compile:
+
+    core/linux/context.cpp:121:47: error: use of undeclared identifier 'REG_RIP'
+    core/linux/context.cpp:122:48: error: use of undeclared identifier 'REG_RSP'
+    core/linux/context.cpp:123:47: error: use of undeclared identifier 'REG_R9'
+    core/linux/context.cpp:124:48: error: use of undeclared identifier 'REG_RDI'
+
+Two things collide there. The first is that this build lands in context.cpp's `__unix__` arm -
+glibc's mcontext_t, gregs[REG_RIP] - even though the target triple is x86_64-pc-freebsd12 and
+clang really does predefine __FreeBSD__ for it. The SDK's own libc++ takes it back:
+
+    openorbis/include/c++/v1/__config:12: #undef __FreeBSD__
+
+and context.cpp is a C++ file that has already pulled in libc++ headers by the time it tests the
+macro. The second is that the arm it lands in does not compile anyway: the SDK ships musl's
+<bits/signal.h>, whose REG_RIP and friends are behind #ifdef _GNU_SOURCE, and this build defines
+_BSD_SOURCE instead. The FreeBSD arm above it would not have compiled either - that same
+mcontext_t has gregs[23] and no mc_rip to name.
+
+So the declared layout is Linux's and the kernel is FreeBSD's, and the two are already known not
+to agree. orbis-compat's crash handler dumps thirty-two words of this exact pointer on hardware
+and records that NONE of them was a text address, which is why it reaches for backtrace() to find
+the faulting instruction instead. Until that offset is measured and written down, naming a field
+here would be a guess dressed up as a register.
+
+This is the same shape as play/0004: a platform where the fault handler cannot be given what it
+exists to read, and the honest answer is to turn off the one thing that reads it rather than to
+feed it something plausible. context_from_segfault/context_to_segfault become documented no-ops,
+and the caller stops asking - a zeroed host_context_t handed to sh4Dynarec->rewrite() would be
+worse than no fastmem, because it would patch code at pc 0.
+
+What is lost is the fastmem fixup. What is kept is the rest of the handler: the net-rollback RAM
+watcher, the RAM and VRAM write protection and the FPCB jump-table lock all key on si->si_addr
+alone and are untouched.
+
+diff --git a/core/linux/common.cpp b/core/linux/common.cpp
+index 9e20784..ad53605 100644
+--- a/core/linux/common.cpp
++++ b/core/linux/common.cpp
+@@ -56,6 +56,7 @@ void fault_handler(int sn, siginfo_t * si, void *segfault_ctx)
+ 	if (addrspace::bm_lockedWrite((u8*)si->si_addr))
+ 		return;
+ 
++#ifndef __ORBIS__
+ 	// fast mem access rewriting
+ 	host_context_t ctx;
+ 	context_from_segfault(&ctx, segfault_ctx);
+@@ -66,6 +67,15 @@ void fault_handler(int sn, siginfo_t * si, void *segfault_ctx)
+ 	}
+ 
+ 	ERROR_LOG(COMMON, "SIGSEGV @ %p invalid access to %p", (void *)ctx.pc, si->si_addr);
++#else
++	// ⚠ NO REWRITE HERE, BECAUSE THERE IS NO CONTEXT TO REWRITE FROM. core/linux/context.cpp's
++	// __ORBIS__ arm says it in full: this SDK declares musl's mcontext_t while the kernel
++	// passes FreeBSD's, and the offset of rip in what actually arrives has been dumped on
++	// hardware without being identified. Everything above this point still works - the
++	// rollback watcher, the RAM and VRAM write protection and the FPCB lock all key on
++	// si->si_addr alone - so what is lost is the fastmem fixup, not fault handling.
++	ERROR_LOG(COMMON, "SIGSEGV invalid access to %p", si->si_addr);
++#endif
+ #endif
+ 
+ #ifdef __SWITCH__
+diff --git a/core/linux/context.cpp b/core/linux/context.cpp
+index 461ff26..1a56f00 100644
+--- a/core/linux/context.cpp
++++ b/core/linux/context.cpp
+@@ -97,7 +97,29 @@ static void context_segfault(host_context_t* hostctx, void* segfault_ctx)
+ 		#error "Unsupported OS"
+ 	#endif
+ #elif HOST_CPU == CPU_X64
+-	#if defined(__FreeBSD__) || defined(__DragonFly__)
++	#if defined(__ORBIS__)
++		// ⚠ THIS CONSOLE'S SIGNAL CONTEXT LAYOUT IS NOT KNOWN, SO NO REGISTER IS READ HERE.
++		// The SDK ships musl's <bits/signal.h>: a mcontext_t of gregs[23] with REG_RIP and
++		// friends behind #ifdef _GNU_SOURCE, which is not defined on this build - hence the
++		// `use of undeclared identifier 'REG_RIP'` that the __unix__ arm below fails with. The
++		// FreeBSD arm above cannot run either, and not only because the SDK's libc++ __config
++		// does `#undef __FreeBSD__` before this file gets here: that same mcontext_t has no
++		// mc_rip to name.
++		//
++		// So the declared layout is Linux's and the kernel is FreeBSD's, and the port has
++		// already measured that the two do not agree - orbis-compat's crash handler dumps
++		// thirty-two words of this very pointer and reports that NONE of them was a text
++		// address, which is why it falls back to backtrace() for the faulting instruction.
++		// Until that offset is measured and written down, any field named here would be a
++		// guess dressed up as a register.
++		//
++		// The caller in core/linux/common.cpp is patched to match: the fastmem rewrite is the
++		// only thing that reads this context, and it does not run on this platform. A zeroed
++		// host_context_t handed to sh4Dynarec->rewrite() would be worse than no fastmem - it
++		// would patch code at pc 0.
++		(void)hostctx;
++		(void)segfault_ctx;
++	#elif defined(__FreeBSD__) || defined(__DragonFly__)
+ 		bicopy<ToSegfault>(hostctx->pc, MCTX(.mc_rip));
+ 		bicopy<ToSegfault>(hostctx->rsp, MCTX(.mc_rsp));
+ 		bicopy<ToSegfault>(hostctx->r9, MCTX(.mc_r9));
