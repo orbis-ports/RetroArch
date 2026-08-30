@@ -1,0 +1,647 @@
+From: PS4 port
+Subject: [PATCH] orbis: nvmem on direct memory
+
+nvmem has been off here, so every emulated SH4 memory access goes through addrspace::readt's
+handler table. It is off because virtmem::init's first act fails:
+
+    mem_region_reserve(NULL, 0x28820000)
+      -> mmap(NULL, 648.125 MiB, PROT_NONE, MAP_PRIVATE|MAP_ANON, -1, 0)
+
+⚠ AND THE FLAGS WORD IS CORRECT, WHICH COST A WHOLE INVESTIGATION TO ESTABLISH. An earlier reading
+said MAP_ANON was musl's Linux 0x20 here. It is not: $TC/include/sys/mman.h carries musl's values
+and then ends with `#include <bits/mman.h>`, which #undefs them and substitutes FreeBSD's, so
+MAP_ANON is 0x1000 and 0x1002 is exactly right. orbis-compat/src/orbis_mmap.cpp:54 has a standing
+static_assert to the same effect.
+
+The kernel refuses it on the POOL. Anonymous memory is FLEXIBLE memory - a per-process budget
+measured at about 417 MiB at the first instruction of boot, shared with everything musl's malloc
+has ever grown into - and this asks for 648 MiB of it. Direct memory had 4 601 856 KiB idle at the
+same instant.
+
+⚠ AND TEACHING mmap TO ANSWER WOULD FIX HALF A PROBLEM. Step two is create_mappings, which maps
+ONE backing at SEVERAL fixed addresses: that is what the SH4's RAM mirrors are. This SDK has no
+shm_open and no memfd_create, so there is no object to map twice, and beetle-psx-libretro's
+Lightrec backing left the sentence for it - mmap has no way to say "the same physical pages again,
+over there". Sony's allocator does; repeated sceKernelMapDirectMemory with one phys offset has
+been measured on this console giving eight simultaneous coherent views.
+
+⚠ THE COMMITTED MEMORY IS SMALL AND ONLY THE ADDRESS SPACE IS LARGE, which is the shape of the
+fix. 88 MiB of backing, 128 MiB of FPCB jump table, and 512 MiB of holes that must FAULT - because
+a hole is how a fastmem access to a hardware register becomes a call to a handler.
+
+    sceKernelReserveVirtualRange   the 648 MiB, with an alignment ladder - see below
+    sceKernelAllocateDirectMemory  one 88 MiB physical range, the thing the mirrors are views of
+    sceKernelMapDirectMemory       MAP_FIXED, phys+offset, once per mirror
+    mprotect                       region_lock/unlock, rounded to 16 KiB rather than 4096
+
+⚠ THE ALIGNMENT CONTRACT OF sceKernelReserveVirtualRange IS IN NO ORACLE THIS PORT HAS, so it is
+measured rather than assumed. The prototype is real ($TC/include/orbis/libkernel.h:379, four
+parameters, no names) and the symbol is real (llvm-nm finds it defined in libkernel.so at 0xeb44).
+What `align` accepts is nowhere: three separate SDK copies on this workstation declare it unnamed,
+unemups4's syscall-metadata dump records four unnamed arguments, and the FreeBSD 9 oracles,
+mesa-ps4 and orbis-compat have between them never called it once. So the code asks at 16 KiB,
+64 KiB, 2 MiB and 0 in turn and logs which one the kernel took. One run turns the unknown into a
+number; a wrong guess costs a log line rather than a session.
+
+⚠ THE FPCB IS COMMITTED WHOLE, WHICH UPSTREAM DELIBERATELY DOES NOT DO. Every other platform
+leaves the 128 MiB jump table PROT_NONE and pages it in on fault. Direct memory has no such state
+- sceKernelMapDirectMemory COMMITS EAGERLY - so it is paid for up front. This is not new spending:
+with nvmem off the same table is a 128 MiB malloc out of the 417 MiB flexible budget, so this
+HANDS 128 MiB BACK to the frontend's heap and takes it from a 4.39 GiB pool instead. bm_reset is
+patched to refill directly, which is the call it already makes today.
+
+⚠ AND THE MIRRORS ARE PROVEN INSIDE init(), because create_mappings cannot fail safely. It
+verify()s every mirror, at content load, long after ram_base has been published - so a refusal
+there is die() in a core that was working, rather than a fallback. init() therefore maps one
+granule of the backing at two of the four Area 3 addresses, writes through one view and reads
+through the other, both ways, before it says yes.
+
+Every failure path returns false and leaves *vmem_base_addr untouched. addrspace::reserve()
+ignores the return value and reads ram_base, so false means ram_base stays null, initMappings()
+takes its "nvmem is DISABLED" branch, and the core behaves exactly as it did before this patch.
+That is a core at 46-48 fps, and it is the floor this patch is not allowed to fall below.
+
+Requires patch 0004: without the fastmem rewrite the first dynamic access to a hardware register
+is a fatal SIGSEGV rather than a one-time call-site fixup.
+
+diff --git a/core/linux/posix_vmem.cpp b/core/linux/posix_vmem.cpp
+--- a/core/linux/posix_vmem.cpp
++++ b/core/linux/posix_vmem.cpp
+@@ -21,11 +21,85 @@
+ #endif
+ 
+ #ifdef __ORBIS__
++#include <orbis/libkernel.h>
++
+ /* Defined in RetroArch/ps4/orbis_exec_mem.c, which the port's build harness links into every
+  * module. Declared rather than included because that file belongs to the frontend's tree and
+  * this one is upstream's - the patch stays a patch. */
+ extern "C" int orbis_exec_mem_promote(void *addr, size_t len);
+-#endif
++
++/* ⚠ NONE OF THE nvmem WORK BELOW GOES THROUGH mmap, AND THE REASON IS NOT THE FLAGS WORD.
++ *
++ * An earlier reading of this file blamed MAP_ANON: the SDK's <sys/mman.h> carries musl's Linux
++ * values, which would make MAP_PRIVATE|MAP_ANON 0x0022. It does not. That header ends with
++ * `#include <bits/mman.h>`, which #undefs them and substitutes FreeBSD's, so MAP_ANON is 0x1000
++ * and the shipped binary really does call mmap with 0x1002 - the correct number. The kernel
++ * refuses it anyway: anonymous memory is FLEXIBLE memory, a per-process budget measured at about
++ * 417 MiB at the first instruction of boot, and mem_region_reserve asks for 648.125 MiB of it.
++ *
++ * ⚠ AND EVEN IF IT FITTED, STEP TWO HAS NO POSIX FORM HERE. create_mappings maps ONE backing at
++ * SEVERAL fixed addresses - that is what the SH4's RAM mirrors are - and this SDK has no shm_open
++ * and no memfd_create, so there is no object to map twice. beetle-psx-libretro's Lightrec backing
++ * hit exactly this and left the sentence worth repeating: mmap has no way to say "the same
++ * physical pages again, over there". Sony's allocator does, and repeated
++ * sceKernelMapDirectMemory with one phys offset has been measured on this console giving eight
++ * simultaneous coherent views. So this file talks to it directly.
++ *
++ * ⚠ THE COMMITTED MEMORY IS SMALL AND ONLY THE ADDRESS SPACE IS LARGE, which is the whole shape
++ * of the fix. The backing is RAM+VRAM+ARAM+ERAM at their maxima - 88 MiB - and the Sh4RCB is
++ * 128 MiB of jump table. The other 512 MiB is holes, and they must FAULT, because a hole is how a
++ * fastmem access to a hardware register turns into a call to a handler. */
++namespace {
++
++/* Direct memory is handed out in 16 KiB units whatever sysconf(_SC_PAGESIZE) says - and it says
++ * 4096 on this console, which is why core/stdclass.h's PAGE_SIZE is left alone and every size and
++ * address here is rounded locally instead. */
++constexpr size_t  ORBIS_GRANULE   = 0x4000;
++/* FreeBSD's MAP_FIXED, which is what Sony's mapper takes: place this mapping AT the address
++ * given. Spelled out because the SDK headers do not name it; production use of the same constant
++ * is mesa-ps4's ac_orbis_drm.c, every time a buffer changes bus. */
++constexpr int32_t ORBIS_MAP_FIXED = 0x0010;
++
++constexpr int32_t ORBIS_PROT_NONE = ORBIS_KERNEL_PROT_CPU_NONE;
++constexpr int32_t ORBIS_PROT_R    = ORBIS_KERNEL_PROT_CPU_READ;
++constexpr int32_t ORBIS_PROT_RW   = ORBIS_KERNEL_PROT_CPU_RW;
++
++inline size_t    orbisUp(size_t n)      { return (n + ORBIS_GRANULE - 1) & ~(ORBIS_GRANULE - 1); }
++inline uintptr_t orbisDown(uintptr_t p) { return p & ~(uintptr_t)(ORBIS_GRANULE - 1); }
++
++/* Sony returns 0x8002xxxx where the low half is an errno, and two of them mean opposite things:
++ * EACCES says the kernel understood the request and declined it on policy, EINVAL says the
++ * request was malformed and no policy was ever consulted. Telling them apart is the difference
++ * between "this console will not do that" and "we asked wrong". */
++const char *orbisErr(int32_t rc)
++{
++	switch ((uint32_t)rc)
++	{
++	case 0x80020001u: return "EPERM - not permitted";
++	case 0x80020009u: return "EBADF - the flags word was not anonymous";
++	case 0x8002000Cu: return "ENOMEM - out of memory or address space";
++	case 0x8002000Du: return "EACCES - understood and refused on policy";
++	case 0x8002000Eu: return "EFAULT - bad address argument";
++	case 0x80020016u: return "EINVAL - malformed request, policy never reached";
++	default:          return "not in this file's table";
++	}
++}
++
++/* The 88 MiB the mirrors are views OF. One physical range; every mirror is that same range mapped
++ * again at another address. */
++off_t  orbisBackingPhys = -1;
++size_t orbisBackingSize;
++/* The Sh4RCB: 128 MiB of FPCB jump table plus 64 KiB of SH4 context. Only on the reservation
++ * path - on the arena path these pages are part of the arena and have no handle of their own. */
++off_t  orbisRcbPhys     = -1;
++size_t orbisRcbSize;
++/* The fallback: 648 MiB of real physical memory standing in for a reservation. -1 unless the
++ * reservation path was refused. */
++off_t  orbisArenaPhys   = -1;
++size_t orbisArenaSize;
++
++} // namespace
++#endif // __ORBIS__
+ 
+ #ifdef __ANDROID__
+ #include <linux/ashmem.h>
+@@ -61,21 +135,62 @@
+ namespace virtmem
+ {
+ 
++#ifdef __ORBIS__
++/* ⚠ THE GRANULE IS 16 KiB AND THE ROUNDING GOES OUTWARDS AT BOTH ENDS.
++ *
++ * Upstream rounds the START down by PAGE_MASK and leaves the end alone, which is right when
++ * PAGE_SIZE is the kernel's unit. It is not here: sysconf(_SC_PAGESIZE) answers 4096 - which is
++ * why core/stdclass.h's PAGE_SIZE is deliberately left at 4096, since common_linux_setup()
++ * verify()s that the two agree and would abort the core if they did not - while mprotect on this
++ * kernel works in 16 KiB units and rounds outwards on its own. The range mprotect actually
++ * changes is therefore already wider than the one asked for; doing the rounding here makes the
++ * caller's arithmetic match what happens rather than widening anything further.
++ *
++ * ⚠ AND IT IS STILL mprotect() RATHER THAN sceKernelMprotect. These two functions are also called
++ * with nvmem OFF, on ordinary malloc'd arrays, in a core that works today - so the call already
++ * known to work on those pages is the one that stays. sceKernelMprotect is used where this port
++ * has measured it to be necessary (promoting pages to executable), and this is not that. */
++static bool orbis_protect(void *start, size_t len, int prot, const char *what)
++{
++	const uintptr_t lo = orbisDown((uintptr_t)start);
++	const uintptr_t hi = (uintptr_t)orbisUp((size_t)((uintptr_t)start + len));
++	if (mprotect((void *)lo, (size_t)(hi - lo), prot))
++	{
++		ERROR_LOG(VMEM, "region_%s(%p, %zu) -> mprotect(%p, %zu) failed, errno %d",
++				what, start, len, (void *)lo, (size_t)(hi - lo), errno);
++		return false;
++	}
++	return true;
++}
++#endif
++
+ bool region_lock(void *start, size_t len)
+ {
++#ifdef __ORBIS__
++	if (!orbis_protect(start, len, PROT_READ, "lock"))
++		die("mprotect failed...");
++	return true;
++#else
+ 	size_t inpage = (uintptr_t)start & PAGE_MASK;
+ 	if (mprotect((u8*)start - inpage, len + inpage, PROT_READ))
+ 		die("mprotect failed...");
+ 	return true;
++#endif
+ }
+ 
+ bool region_unlock(void *start, size_t len)
+ {
++#ifdef __ORBIS__
++	if (!orbis_protect(start, len, PROT_READ | PROT_WRITE, "unlock"))
++		die("mprotect  failed...");
++	return true;
++#else
+ 	size_t inpage = (uintptr_t)start & PAGE_MASK;
+ 	if (mprotect((u8*)start - inpage, len + inpage, PROT_READ | PROT_WRITE))
+ 		// Add some way to see why it failed? gdb> info proc mappings
+ 		die("mprotect  failed...");
+ 	return true;
++#endif
+ }
+ 
+ bool region_set_exec(void *start, size_t len)
+@@ -93,8 +208,111 @@
+ 	return true;
+ }
+ 
++#ifdef __ORBIS__
++/* ⚠ THE ALIGNMENT CONTRACT OF sceKernelReserveVirtualRange IS NOT IN THIS PORT'S ORACLES, SO IT
++ * IS ESTABLISHED HERE RATHER THAN ASSUMED.
++ *
++ * What IS established: the prototype, from the SDK's own <orbis/libkernel.h>:379,
++ *
++ *     int32_t sceKernelReserveVirtualRange(void **addr, size_t len, int32_t flags, size_t align);
++ *
++ * and that the symbol is real - llvm-nm finds it defined in the SDK's libkernel.so stub at
++ * 0xeb44, beside sceKernelMapDirectMemory and sceKernelMprotect, both of which this port already
++ * calls in production. What is NOT established anywhere is what the kernel will accept in
++ * `align`: three separate SDK copies on this workstation declare the four parameters with no
++ * names at all, the syscall-metadata dump that ships with unemups4 records it as four unnamed
++ * arguments, and the workshop's FreeBSD 9 oracles, mesa-ps4 and orbis-compat have between them
++ * never called it once.
++ *
++ * So it is measured instead of guessed: the ladder below asks for the same range at each
++ * plausible alignment and the log says which one answered. One run on hardware turns an unknown
++ * into a written-down number, and a wrong guess costs a line in the log rather than a session.
++ * Smallest first, because a coarser alignment than the kernel needs is never wrong - it only
++ * wastes address space, of which there is 128 TiB.
++ *
++ * ⚠ AND ZERO IS IN THE LADDER ON PURPOSE, LAST. If the kernel reads 0 as "no constraint" it will
++ * answer; if it reads 0 as malformed it returns EINVAL and costs nothing. Putting it first would
++ * hide which real alignment works, and that is the number worth learning. */
++static void *orbis_reserve_range(size_t len)
++{
++	static const size_t ladder[] = { ORBIS_GRANULE, 0x10000, 0x200000, 0 };
++
++	for (size_t align : ladder)
++	{
++		void *at = nullptr;
++		const int32_t rc = sceKernelReserveVirtualRange(&at, len, 0, align);
++		if (rc == 0 && at != nullptr)
++		{
++			NOTICE_LOG(VMEM, "nvmem: sceKernelReserveVirtualRange(%zu MiB, align 0x%zx) -> %p. "
++					"THAT ALIGNMENT IS THE ANSWER - write it down, it was in no oracle.",
++					len / (1024 * 1024), align, at);
++			return at;
++		}
++		WARN_LOG(VMEM, "nvmem: sceKernelReserveVirtualRange(%zu MiB, align 0x%zx) -> 0x%08x (%s)",
++				len / (1024 * 1024), align, (unsigned)rc, orbisErr(rc));
++	}
++
++	/* ⚠ THE FALLBACK COSTS 648 MiB OF REAL PHYSICAL MEMORY AND IS HERE ANYWAY, because every call
++	 * in it has already run on this console. mesa-ps4 does exactly this for the graphics arena -
++	 * one direct-memory range mapped once, then over-mapped piecewise with MAP_FIXED - and its
++	 * own comment calls the result "an address-space reservation whose pages can be replaced".
++	 * Direct memory measured 4 601 856 KiB idle at boot, so 648 MiB is affordable; it is simply
++	 * wasteful, which is why it is second and says so.
++	 *
++	 * ⚠ AND IT GOES PROT_NONE IMMEDIATELY, WHICH IS NOT TIDINESS. The holes in the 512 MiB window
++	 * are how a fastmem access to a hardware register becomes a fault and then a call to a
++	 * handler. An arena left readable would answer those accesses with RAM, and the emulator
++	 * would be silently wrong rather than loudly slow. */
++	orbisArenaSize = orbisUp(len);
++	int32_t rc = sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), orbisArenaSize,
++			ORBIS_GRANULE, ORBIS_KERNEL_WB_ONION, &orbisArenaPhys);
++	if (rc != 0)
++	{
++		orbisArenaPhys = -1;
++		WARN_LOG(VMEM, "nvmem: no reservation and no %zu MiB arena either -> 0x%08x (%s)",
++				orbisArenaSize / (1024 * 1024), (unsigned)rc, orbisErr(rc));
++		return nullptr;
++	}
++
++	void *at = nullptr;
++	rc = sceKernelMapDirectMemory(&at, orbisArenaSize, ORBIS_PROT_RW, 0, orbisArenaPhys,
++			ORBIS_GRANULE);
++	if (rc != 0 || at == nullptr)
++	{
++		WARN_LOG(VMEM, "nvmem: could not map the %zu MiB arena -> 0x%08x (%s)",
++				orbisArenaSize / (1024 * 1024), (unsigned)rc, orbisErr(rc));
++		sceKernelReleaseDirectMemory(orbisArenaPhys, orbisArenaSize);
++		orbisArenaPhys = -1;
++		return nullptr;
++	}
++
++	rc = sceKernelMprotect(at, orbisArenaSize, ORBIS_PROT_NONE);
++	if (rc != 0)
++	{
++		ERROR_LOG(VMEM, "nvmem: the arena at %p would not go PROT_NONE -> 0x%08x (%s). Refusing "
++				"it: holes that answer instead of faulting would make every hardware register "
++				"read return RAM.", at, (unsigned)rc, orbisErr(rc));
++		sceKernelMunmap(at, orbisArenaSize);
++		sceKernelReleaseDirectMemory(orbisArenaPhys, orbisArenaSize);
++		orbisArenaPhys = -1;
++		return nullptr;
++	}
++
++	NOTICE_LOG(VMEM, "nvmem: no virtual-range reservation on this kernel - standing in a %zu MiB "
++			"direct-memory arena at %p instead. This WORKS and it is expensive; if the ladder "
++			"above ever answers, this branch stops being taken.",
++			orbisArenaSize / (1024 * 1024), at);
++	return at;
++}
++#endif
++
+ static void *mem_region_reserve(void *start, size_t len)
+ {
++#ifdef __ORBIS__
++	/* flycast only ever asks for a kernel-chosen address here. */
++	verify(start == nullptr);
++	return orbis_reserve_range(len);
++#else
+ 	void *p = mmap(start, len, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+ 	if (p == MAP_FAILED)
+ 	{
+@@ -103,15 +321,68 @@
+ 	}
+ 	else
+ 		return p;
++#endif
+ }
+ 
+ static bool mem_region_release(void *start, size_t len)
+ {
++#ifdef __ORBIS__
++	/* ⚠ THE MAPPING AND THE PHYSICAL PAGES ARE TWO DIFFERENT HANDLES AND BOTH HAVE TO GO BACK.
++	 * This port has already written down that direct memory is NOT reclaimed when a mapping goes
++	 * away, and this runs on every content unload - so anything leaked here leaks per load, on a
++	 * console with no swap. sceKernelMunmap takes the address, sceKernelReleaseDirectMemory takes
++	 * the offset the allocator returned, and a caller holding only the first cannot give the
++	 * memory back. */
++	const bool ok = sceKernelMunmap(start, len) == 0;
++	if (orbisRcbPhys >= 0)
++	{
++		sceKernelReleaseDirectMemory(orbisRcbPhys, orbisRcbSize);
++		orbisRcbPhys = -1;
++	}
++	if (orbisArenaPhys >= 0)
++	{
++		sceKernelReleaseDirectMemory(orbisArenaPhys, orbisArenaSize);
++		orbisArenaPhys = -1;
++	}
++	return ok;
++#else
+ 	return munmap(start, len) == 0;
++#endif
+ }
+ 
+ static void *mem_region_map_file(void *file_handle, void *dest, size_t len, size_t offset, bool readwrite)
+ {
++#ifdef __ORBIS__
++	/* ⚠ THE "FILE" IS A PHYSICAL OFFSET, WHICH IS THE ENTIRE POINT OF THIS BACKEND. There is no
++	 * fd because there is no shm_open on this SDK; what create_mappings wants is one object at
++	 * several addresses, and sceKernelMapDirectMemory called repeatedly with the same phys is the
++	 * form of that request the kernel does answer. */
++	(void)file_handle;
++	if (dest == nullptr || orbisBackingPhys < 0)
++		return nullptr;
++	/* Every one of these comes out of addrspace.cpp's mem_mappings table, whose starts and sizes
++	 * are multiples of 8 MiB - but a table is a thing that gets edited, and a MAP_FIXED landing
++	 * where the kernel rounded it rather than where the emulator meant it would be a wrong mirror
++	 * rather than an error. */
++	if ((((uintptr_t)dest | len | offset) & (ORBIS_GRANULE - 1)) != 0
++			|| offset + len > orbisBackingSize)
++	{
++		ERROR_LOG(VMEM, "nvmem: mirror at %p, %zu bytes from backing offset %zu is not a 16 KiB "
++				"multiple or runs past the %zu-byte backing", dest, len, offset, orbisBackingSize);
++		return nullptr;
++	}
++
++	void *at = dest;
++	const int32_t rc = sceKernelMapDirectMemory(&at, len, readwrite ? ORBIS_PROT_RW : ORBIS_PROT_R,
++			ORBIS_MAP_FIXED, orbisBackingPhys + (off_t)offset, ORBIS_GRANULE);
++	if (rc != 0 || at != dest)
++	{
++		ERROR_LOG(VMEM, "nvmem: mirror of backing+%zu (%zu KiB) at %p -> 0x%08x (%s), landed at %p",
++				offset, len / 1024, dest, (unsigned)rc, orbisErr(rc), at);
++		return nullptr;
++	}
++	return at;
++#else
+ 	int flags = MAP_SHARED | MAP_NOSYNC | (dest != NULL ? MAP_FIXED : 0);
+ 	void *p = mmap(dest, len, PROT_READ | (readwrite ? PROT_WRITE : 0), flags, (int)(uintptr_t)file_handle, offset);
+ 	if (p == MAP_FAILED)
+@@ -121,6 +392,7 @@
+ 	}
+ 	else
+ 		return p;
++#endif
+ }
+ 
+ // Allocates memory via a fd on shmem/ahmem or even a file on disk
+@@ -170,6 +442,153 @@
+ // memory using a fallback (that is, regular mallocs and falling back to slow memory JIT).
+ bool init(void **vmem_base_addr, void **sh4rcb_addr, size_t ramSize)
+ {
++#ifdef __ORBIS__
++	// ⚠ EVERY FAILURE BELOW RETURNS false AND LEAVES *vmem_base_addr UNTOUCHED, WHICH IS THE
++	// WHOLE SAFETY ARGUMENT FOR THIS BACKEND. addrspace::reserve() ignores the return value and
++	// reads ram_base, so a false here means ram_base stays null, addrspace::initMappings() takes
++	// its "nvmem is DISABLED" branch, and the core behaves exactly as it did before this patch
++	// existed - which is a core that runs. Nothing here is allowed to half-succeed.
++	orbisBackingSize = orbisUp(ramSize);
++	int32_t rc = sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), orbisBackingSize,
++			ORBIS_GRANULE, ORBIS_KERNEL_WB_ONION, &orbisBackingPhys);
++	if (rc != 0)
++	{
++		orbisBackingPhys = -1;
++		WARN_LOG(VMEM, "nvmem: no %zu MiB of direct memory for the emulated machine's RAM -> "
++				"0x%08x (%s) - falling back to handler tables",
++				orbisBackingSize / (1024 * 1024), (unsigned)rc, orbisErr(rc));
++		return false;
++	}
++
++	reserved_size = 512_MB + sizeof(Sh4RCB) + ARAM_SIZE_MAX + 0x10000;
++	reserved_base = mem_region_reserve(NULL, reserved_size);
++	if (reserved_base == nullptr)
++	{
++		sceKernelReleaseDirectMemory(orbisBackingPhys, orbisBackingSize);
++		orbisBackingPhys = -1;
++		return false;
++	}
++
++	uintptr_t ptrint = ((uintptr_t)reserved_base + 0x10000 - 1) & (~(uintptr_t)0xffff);
++
++	// ⚠ THE FPCB IS COMMITTED WHOLE HERE, AND UPSTREAM DELIBERATELY DOES NOT DO THAT.
++	//
++	// Every other platform leaves the 128 MiB jump table PROT_NONE and pages it in on fault - the
++	// region_unlock further down covers only `sizeof(Sh4RCB) - fpcb_size`, the 64 KiB of SH4
++	// context. Demand paging needs pages that exist and are merely forbidden. Direct memory has
++	// no such state: sceKernelMapDirectMemory COMMITS EAGERLY, so "reserved but not yet backed"
++	// is not something this allocator can express, and a fault on an unbacked address inside the
++	// reservation could only be answered by allocating and mapping a granule from inside the
++	// signal handler - 8192 separate physical carve-outs in the worst case, on a console where
++	// direct memory is not reclaimed when a mapping goes away.
++	//
++	// So it is paid for up front instead. That is 128 MiB of direct memory, out of the 4 601 856
++	// KiB measured idle at boot - and it is not even new spending: with nvmem off, the same table
++	// is a 128 MiB malloc, which comes out of FLEXIBLE memory, of which this process has about
++	// 417 MiB in total. Committing it here HANDS 128 MiB BACK to the frontend's heap.
++	//
++	// The consequence is one behaviour change, and hw/mem/addrspace.cpp's bm_reset is patched to
++	// match: reset_mem can no longer make these pages fault again, so the refill a fault would
++	// have done is done directly. That is what the nvmem-off path already does today.
++	orbisRcbSize = orbisUp(sizeof(Sh4RCB));
++	if (orbisArenaPhys >= 0)
++	{
++		// The arena path already has physical pages here; they are only PROT_NONE.
++		rc = sceKernelMprotect((void *)ptrint, orbisRcbSize, ORBIS_PROT_RW);
++		if (rc != 0)
++		{
++			ERROR_LOG(VMEM, "nvmem: the Sh4RCB at %p would not go read-write inside the arena -> "
++					"0x%08x (%s)", (void *)ptrint, (unsigned)rc, orbisErr(rc));
++			mem_region_release(reserved_base, reserved_size);
++			reserved_base = nullptr;
++			sceKernelReleaseDirectMemory(orbisBackingPhys, orbisBackingSize);
++			orbisBackingPhys = -1;
++			return false;
++		}
++	}
++	else
++	{
++		rc = sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), orbisRcbSize,
++				ORBIS_GRANULE, ORBIS_KERNEL_WB_ONION, &orbisRcbPhys);
++		if (rc != 0)
++		{
++			orbisRcbPhys = -1;
++			WARN_LOG(VMEM, "nvmem: no %zu MiB of direct memory for the FPCB -> 0x%08x (%s)",
++					orbisRcbSize / (1024 * 1024), (unsigned)rc, orbisErr(rc));
++			mem_region_release(reserved_base, reserved_size);
++			reserved_base = nullptr;
++			sceKernelReleaseDirectMemory(orbisBackingPhys, orbisBackingSize);
++			orbisBackingPhys = -1;
++			return false;
++		}
++		void *at = (void *)ptrint;
++		rc = sceKernelMapDirectMemory(&at, orbisRcbSize, ORBIS_PROT_RW, ORBIS_MAP_FIXED,
++				orbisRcbPhys, ORBIS_GRANULE);
++		if (rc != 0 || at != (void *)ptrint)
++		{
++			ERROR_LOG(VMEM, "nvmem: the Sh4RCB would not land at %p -> 0x%08x (%s), landed at %p. "
++					"MAP_FIXED into a reserved range is refused on this kernel.",
++					(void *)ptrint, (unsigned)rc, orbisErr(rc), at);
++			mem_region_release(reserved_base, reserved_size);
++			reserved_base = nullptr;
++			sceKernelReleaseDirectMemory(orbisBackingPhys, orbisBackingSize);
++			orbisBackingPhys = -1;
++			return false;
++		}
++	}
++
++	// ⚠ THE MIRRORS ARE PROVEN HERE, BECAUSE THE PLACE THEY ARE REALLY MADE CANNOT FAIL SAFELY.
++	//
++	// create_mappings() below verify()s every mirror, and it runs at content load, long after
++	// this function has said yes and ram_base has been published. A refusal there is not a
++	// fallback to handler tables, it is die() in a core that was working ten seconds earlier -
++	// the one outcome this whole patch is not allowed to produce.
++	//
++	// So the thing itself is done first, at two of the four addresses Area 3 will use anyway: one
++	// granule of the backing mapped twice, written through one view and read through the other,
++	// both ways. That is the exact capability mmap does not have on this SDK and the reason this
++	// backend exists at all. The probe mappings are left in place - create_mappings MAP_FIXEDs
++	// over them with the real sizes, and a MAP_FIXED that replaces an existing mapping is the
++	// same operation the arena path performs for every mirror.
++	{
++		const uintptr_t base = ptrint + sizeof(Sh4RCB);
++		void *const a = (void *)(base + 0x0C000000);
++		void *const b = (void *)(base + 0x0D000000);
++		bool ok = mem_region_map_file(nullptr, a, ORBIS_GRANULE, 0, true) != nullptr
++		       && mem_region_map_file(nullptr, b, ORBIS_GRANULE, 0, true) != nullptr;
++		if (ok)
++		{
++			*(volatile u32 *)a = 0x00c0ffee;
++			ok = *(volatile u32 *)b == 0x00c0ffee;
++			if (ok)
++			{
++				*(volatile u32 *)b = 0;
++				ok = *(volatile u32 *)a == 0;
++			}
++			if (!ok)
++				ERROR_LOG(VMEM, "nvmem: %p and %p are the same physical page and do not read as "
++						"one. The SH4's RAM mirrors cannot be built on this kernel.", a, b);
++		}
++		if (!ok)
++		{
++			mem_region_release(reserved_base, reserved_size);
++			reserved_base = nullptr;
++			sceKernelReleaseDirectMemory(orbisBackingPhys, orbisBackingSize);
++			orbisBackingPhys = -1;
++			return false;
++		}
++	}
++
++	*sh4rcb_addr    = (void *)ptrint;
++	*vmem_base_addr = (void *)(ptrint + sizeof(Sh4RCB));
++
++	NOTICE_LOG(VMEM, "nvmem: %zu MiB reserved at %p, sh4rcb %p (%zu MiB committed), ram_base %p, "
++			"backing %zu MiB at phys 0x%llx - the mirrors are proven and fastmem is ON",
++			reserved_size / (1024 * 1024), reserved_base, *sh4rcb_addr,
++			orbisRcbSize / (1024 * 1024), *vmem_base_addr,
++			orbisBackingSize / (1024 * 1024), (unsigned long long)orbisBackingPhys);
++	return true;
++#else
+ 	// Firt let's try to allocate the shm-backed memory
+ 	vmem_fd = allocate_shared_filemem(ramSize);
+ 	if (vmem_fd < 0)
+@@ -195,6 +614,7 @@
+ 	region_unlock(sh4rcb_base_ptr, sizeof(Sh4RCB) - fpcb_size);
+ 
+ 	return true;
++#endif
+ }
+ 
+ // Just tries to wipe as much as possible in the relevant area.
+@@ -205,6 +625,15 @@
+ 		mem_region_release(reserved_base, reserved_size);
+ 		reserved_base = nullptr;
+ 	}
++#ifdef __ORBIS__
++	// mem_region_release above gave the Sh4RCB's and the arena's physical pages back. The backing
++	// is the one handle it does not know about, because it is not inside the reservation.
++	if (orbisBackingPhys >= 0)
++	{
++		sceKernelReleaseDirectMemory(orbisBackingPhys, orbisBackingSize);
++		orbisBackingPhys = -1;
++	}
++#endif
+ 	if (vmem_fd >= 0)
+ 	{
+ 		close(vmem_fd);
+@@ -214,6 +643,21 @@
+ 
+ // Resets a chunk of memory by deleting its data and setting its protection back.
+ void reset_mem(void *ptr, unsigned size_bytes) {
++#ifdef __ORBIS__
++	// ⚠ NOTHING TO DO, AND THAT IS A DECISION RATHER THAN AN OMISSION.
++	//
++	// The only caller is addrspace::bm_reset, and what it wants is for the FPCB to fault again so
++	// that bm_vmem_pagefill can refill each page as it is touched. There is no such state here:
++	// the FPCB is direct memory, committed whole in init() because this allocator cannot express
++	// "reserved but not yet backed" - see the block there. Making it PROT_NONE would produce
++	// faults nothing can answer, since virtmem::ondemand_page has no way to conjure backing for
++	// an already-mapped range, and madvise has no meaning for direct memory at all.
++	//
++	// hw/mem/addrspace.cpp's bm_reset is patched to call bm_vmem_pagefill directly on this
++	// platform instead, which is exactly what it already does when nvmem is off.
++	(void)ptr;
++	(void)size_bytes;
++#else
+ 	// Mark them as non accessible.
+ 	mprotect(ptr, size_bytes, PROT_NONE);
+ 	// Tell the kernel to flush'em all (FIXME: perhaps unmap+mmap 'd be better?)
+@@ -223,6 +667,7 @@
+ 	#elif defined(MADV_FREE)
+ 	madvise(ptr, size_bytes, MADV_FREE);
+ 	#endif
++#endif
+ }
+ 
+ // Allocates a bunch of memory (page aligned and page-sized)
+diff --git a/core/hw/mem/addrspace.cpp b/core/hw/mem/addrspace.cpp
+--- a/core/hw/mem/addrspace.cpp
++++ b/core/hw/mem/addrspace.cpp
+@@ -346,12 +346,27 @@
+ // or by flushing it and making it fault on access again.
+ void bm_reset()
+ {
++#ifdef __ORBIS__
++	// ⚠ ONE BRANCH HERE, BECAUSE THIS PLATFORM'S FPCB IS COMMITTED EITHER WAY.
++	//
++	// The nvmem arm below asks virtmem::reset_mem to make the jump table fault again, so that each
++	// page is refilled by bm_lockedWrite as it is next touched. core/linux/posix_vmem.cpp's
++	// __ORBIS__ backing cannot offer that: it is direct memory, which sceKernelMapDirectMemory
++	// commits eagerly, so the table is real pages from init() onwards and there is no "not backed
++	// yet" for a fault to mean. reset_mem is a documented no-op there and says so.
++	//
++	// The refill happens here instead - which is the same call the non-nvmem arm below already
++	// makes, over the same 128 MiB, on exactly the same schedule. Turning nvmem on does not make
++	// this any more expensive than it is today.
++	bm_vmem_pagefill((void**)p_sh4rcb->fpcb, sizeof(p_sh4rcb->fpcb));
++#else
+ 	// If we allocated it via vmem:
+ 	if (ram_base)
+ 		virtmem::reset_mem(p_sh4rcb->fpcb, sizeof(p_sh4rcb->fpcb));
+ 	else
+ 		// We allocated it via a regular malloc/new/whatever on the heap
+ 		bm_vmem_pagefill((void**)p_sh4rcb->fpcb, sizeof(p_sh4rcb->fpcb));
++#endif
+ }
+ 
+ // This gets called whenever there is a pagefault, it is possible that it lands

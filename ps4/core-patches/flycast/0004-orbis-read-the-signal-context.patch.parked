@@ -1,0 +1,289 @@
+From: PS4 port
+Subject: [PATCH] orbis: the signal context is FreeBSD's, and it can be read
+
+⚠ THIS REVERSES patch 0001, WHICH WAS RIGHT WHEN IT WAS WRITTEN AND IS NOT ANY MORE. 0001 turned
+context_from_segfault/context_to_segfault into no-ops and deleted the fastmem rewrite from
+core/linux/common.cpp, on the grounds that "the offset of rip in what actually arrives has been
+dumped on hardware without being identified". Two things have happened since.
+
+⚠ FIRST, SA_SIGINFO NOW WORKS, AND IT NEVER WAS A KERNEL LIMITATION. The port's conclusion, from a
+Play! crash, was "this kernel does not deliver SA_SIGINFO": a SIGSEGV arrived with rdi = 11,
+rsi = 2 and a stack address in rdx - FreeBSD's original (int sig, int code, struct sigcontext *scp)
+rather than SA_SIGINFO's three. The cause was the flag VALUE. The SDK's bits/signal.h says
+SA_SIGINFO is 4; this kernel is FreeBSD's and reads 4 as SA_RESETHAND, so every handler in this
+port was installed one-shot and without siginfo. orbis-compat/include/signal.h now defines the
+FreeBSD numbers - SA_SIGINFO 0x0040, SA_ONSTACK 0x0001 - and cores built by this harness get that
+header first on the include path. The proof is on hardware, 2026-08-29:
+
+    fatal: signal 11 - SIGSEGV (bad address), si_code 2, fault address 0x803f61000
+
+- a real si_code and a real si_addr, from a handler that had printed neither in the whole life of
+this project. So `act.sa_flags = SA_SIGINFO` in os_InstallFaultHandler now asks for what it says,
+and fault_handler's `si->si_addr` is an address rather than a small integer read as a pointer.
+
+⚠ SECOND, THE mcontext LAYOUT WAS MEASURED. orbis-compat/src/orbis_boot.cpp needed the same thing
+for its crash reporter and found it, on hardware, 2026-08-30: the words behind the third argument
+are FreeBSD's amd64 mcontext, starting 64 bytes in rather than the 16 a bare FreeBSD ucontext_t
+would account for. mc_trapno, mc_addr, mc_rip, mc_rflags and mc_rsp were all read at FreeBSD's
+offsets from that base and all five agreed with the fault they described.
+
+⚠ AND THE OFFSET IS STILL NOT COMPILED IN, FOR THE REASON 0001 GAVE. A number measured once is not
+a contract. So this uses orbis_boot.cpp's own answer: a user thread on amd64 has fixed segment
+selectors - mc_cs 0x43, mc_ss 0x3b, three words apart in FreeBSD's mcontext - and finding that pair
+anchors every other field, on whatever prefix this kernel happens to put in front of it.
+
+WHY IT MATTERS, WHICH IS THE WHOLE POINT: nvmem is not optional-fastmem plus a fallback. The x64
+recompiler emits `call MemHandlers[Fast]` for EVERY dynamic memory access - which is most of them,
+since @Rn, @(R0,Rn) and @-Rn are how SH4 code touches memory - and the Fast handler dereferences
+ram_base+addr with no check at all. Accesses that land on a hardware register instead of RAM are
+SUPPOSED to fault, once per call site, so that rewriteMemAccess can patch that site to the Slow
+handler. Without the rewrite the first such access is fatal. A memory backend without this patch
+would not be slow, it would be a core that dies on the first MMIO write through a pointer.
+
+⚠ THE GUARDS ARE NOT DECORATION. rewriteMemAccess reads the return address off context.rsp and
+ASSEMBLES A CALL over it. A context that is merely plausible would write x86 into whatever that
+pointed at, which is worse than having no fastmem. So common.cpp asks twice - the selector anchor
+must have been found (pc != 0) AND mc_addr must equal si_addr - and does nothing at all otherwise.
+
+Left deliberately unproven, because nothing on this console has tested it: whether this kernel
+honours a MODIFIED context on return from a handler. If it does not, the same rip and the same
+si_addr arrive a second time, and common.cpp says so once before the death that follows.
+
+diff --git a/core/linux/context.cpp b/core/linux/context.cpp
+--- a/core/linux/context.cpp
++++ b/core/linux/context.cpp
+@@ -36,6 +36,85 @@
+ 		ctx = (Tctx)seg;
+ }
+ 
++#ifdef __ORBIS__
++// ⚠ THE LAYOUT IS FOUND AT RUN TIME, NOT LOOKED UP, AND THE REASON IS THAT BOTH HEADERS LIE.
++// This SDK ships musl's <bits/signal.h> - an mcontext_t of gregs[23] whose REG_RIP is behind
++// #ifdef _GNU_SOURCE - while the kernel on the other side of the syscall is FreeBSD's and writes
++// FreeBSD's amd64 mcontext. The __unix__ arm below therefore fails to COMPILE (`use of undeclared
++// identifier 'REG_RIP'`) and the __FreeBSD__ arm above would not compile either, because the
++// declared struct has no mc_rip to name. Naming a field here is not on offer at all.
++//
++// ⚠ AND THE OFFSET IS NOT A CONSTANT TO PASTE IN EITHER. What arrives is not a bare FreeBSD
++// ucontext_t: the mcontext sits 64 bytes in rather than the 16 that FreeBSD's own uc_sigmask
++// would account for, so a compiled-in offset would be one measurement standing in for a contract
++// nobody has. orbis-compat/src/orbis_boot.cpp solved this for the crash reporter and this is the
++// same solution: a user thread on amd64 has FIXED SEGMENT SELECTORS - mc_cs is 0x43 and mc_ss is
++// 0x3b - and in FreeBSD's mcontext they sit exactly three words apart. Finding that pair anchors
++// every other field. Measured on hardware 2026-08-30: mc_ss landed at ctx[32], which puts the
++// mcontext at ctx[8] and mc_rip at ctx[28].
++//
++// ⚠ AND THE FLAG THAT MAKES ANY OF THIS REACHABLE IS A DIFFERENT BUG, ALREADY FIXED ELSEWHERE.
++// The SDK's SA_SIGINFO is Linux's 4, which this kernel reads as SA_RESETHAND - so os_
++// InstallFaultHandler used to install a ONE-SHOT handler WITHOUT siginfo, and the handler was
++// called with FreeBSD's original (int sig, int code, struct sigcontext *scp). That is where
++// "this kernel does not deliver SA_SIGINFO" came from, and it was wrong: orbis-compat/include/
++// signal.h now defines SA_SIGINFO as FreeBSD's 0x0040 and the crash reporter has since printed a
++// real si_code and si_addr on hardware. Cores built by this port get that header first on the
++// include path, so `act.sa_flags = SA_SIGINFO` below in common.cpp asks for what it says.
++//
++// ⚠ mc_r9 AND mc_rdi WERE NOT SEPARATELY MEASURED, AND THAT IS FINE FOR A REASON WORTH STATING.
++// They are not independent guesses: the anchor fixes the base of ONE struct, and mc_trapno,
++// mc_addr, mc_rip, mc_rflags and mc_rsp were then all read at FreeBSD's offsets from that base
++// and all five agreed with what the fault actually was. A layout that matches at five separated
++// points and is wrong at two interior ones is not a thing structs do. The caller checks a sixth
++// anchor anyway before acting - see orbis_segfault_context_agrees below.
++namespace {
++
++// Field order of FreeBSD's amd64 mcontext_t, in 8-byte words from the start of the struct.
++enum : int {
++	MC_RDI  = 1,
++	MC_R9   = 6,
++	MC_ADDR = 17,
++	MC_RIP  = 20,
++	MC_CS   = 21,
++	MC_RSP  = 23,
++	MC_SS   = 24
++};
++
++// Word index at which the mcontext starts inside the pointer the kernel handed the handler, or
++// -1 if the selector pair is not there - which means this is not FreeBSD's amd64 mcontext and
++// nothing below may be read under a field name.
++int orbisMcontextBase(const void *segfault_ctx)
++{
++	if (segfault_ctx == nullptr)
++		return -1;
++	const u64 *w = (const u64 *)segfault_ctx;
++	// Far past mc_ss for any plausible prefix. Reading this much of the pointer is what
++	// orbis_boot.cpp's dump already does on hardware without faulting.
++	const int words = 96;
++	for (int i = MC_CS; i + (MC_SS - MC_CS) < words; i++)
++		if (w[i] == 0x43u && w[i + (MC_SS - MC_CS)] == 0x3bu)
++			return i - MC_CS;
++	return -1;
++}
++
++}
++
++// ⚠ THE SECOND, INDEPENDENT ANCHOR, AND THE CALLER MUST ASK BEFORE IT TRUSTS A REWRITE.
++// siginfo already carries the faulting address, so mc_addr has to equal si_addr. A context that
++// passes the selector test and fails this one is a coincidence in someone else's stack frame, and
++// acting on it would mean assembling x86 over whatever `rsp` happened to point at. Same
++// discipline as orbis_boot.cpp: two anchors, or the honest answer that we do not know.
++extern "C" bool orbis_segfault_context_agrees(void *segfault_ctx, void *fault_addr)
++{
++	const int mc = orbisMcontextBase(segfault_ctx);
++	if (mc < 0)
++		return false;
++	const u64 *w = (const u64 *)segfault_ctx;
++	return w[mc + MC_ADDR] == (u64)(uintptr_t)fault_addr;
++}
++#endif // __ORBIS__
++
+ template<bool ToSegfault>
+ static void context_segfault(host_context_t* hostctx, void* segfault_ctx)
+ {
+@@ -98,27 +177,35 @@
+ 	#endif
+ #elif HOST_CPU == CPU_X64
+ 	#if defined(__ORBIS__)
+-		// ⚠ THIS CONSOLE'S SIGNAL CONTEXT LAYOUT IS NOT KNOWN, SO NO REGISTER IS READ HERE.
+-		// The SDK ships musl's <bits/signal.h>: a mcontext_t of gregs[23] with REG_RIP and
+-		// friends behind #ifdef _GNU_SOURCE, which is not defined on this build - hence the
+-		// `use of undeclared identifier 'REG_RIP'` that the __unix__ arm below fails with. The
+-		// FreeBSD arm above cannot run either, and not only because the SDK's libc++ __config
+-		// does `#undef __FreeBSD__` before this file gets here: that same mcontext_t has no
+-		// mc_rip to name.
+-		//
+-		// So the declared layout is Linux's and the kernel is FreeBSD's, and the port has
+-		// already measured that the two do not agree - orbis-compat's crash handler dumps
+-		// thirty-two words of this very pointer and reports that NONE of them was a text
+-		// address, which is why it falls back to backtrace() for the faulting instruction.
+-		// Until that offset is measured and written down, any field named here would be a
+-		// guess dressed up as a register.
+-		//
+-		// The caller in core/linux/common.cpp is patched to match: the fastmem rewrite is the
+-		// only thing that reads this context, and it does not run on this platform. A zeroed
+-		// host_context_t handed to sh4Dynarec->rewrite() would be worse than no fastmem - it
+-		// would patch code at pc 0.
+-		(void)hostctx;
+-		(void)segfault_ctx;
++		// The words are FreeBSD's amd64 mcontext, anchored at run time - see orbisMcontextBase
++		// above for why the offset can come neither from a header nor from a constant.
++		{
++			const int mc = orbisMcontextBase(segfault_ctx);
++			if (mc < 0)
++			{
++				// ⚠ pc = 0 IS THE SIGNAL TO THE CALLER, AND IT HAS TO BE ONE IT CANNOT MISS.
++				// core/linux/common.cpp refuses to rewrite on a zero pc. A host_context_t left
++				// uninitialised, or zeroed only in part, would be handed to sh4Dynarec->rewrite()
++				// and would patch code at whatever `rsp` happened to hold - which is worse than
++				// having no fastmem at all, and is the failure this arm used to avoid by reading
++				// nothing whatsoever.
++				if (!ToSegfault)
++				{
++					hostctx->pc  = 0;
++					hostctx->rsp = 0;
++					hostctx->r9  = 0;
++					hostctx->rdi = 0;
++				}
++			}
++			else
++			{
++				u64 *w = (u64 *)segfault_ctx;
++				bicopy<ToSegfault>(hostctx->pc,  w[mc + MC_RIP]);
++				bicopy<ToSegfault>(hostctx->rsp, w[mc + MC_RSP]);
++				bicopy<ToSegfault>(hostctx->r9,  w[mc + MC_R9]);
++				bicopy<ToSegfault>(hostctx->rdi, w[mc + MC_RDI]);
++			}
++		}
+ 	#elif defined(__FreeBSD__) || defined(__DragonFly__)
+ 		bicopy<ToSegfault>(hostctx->pc, MCTX(.mc_rip));
+ 		bicopy<ToSegfault>(hostctx->rsp, MCTX(.mc_rsp));
+diff --git a/core/linux/common.cpp b/core/linux/common.cpp
+--- a/core/linux/common.cpp
++++ b/core/linux/common.cpp
+@@ -33,6 +33,12 @@
+ void context_from_segfault(host_context_t* hctx, void* segfault_ctx);
+ void context_to_segfault(host_context_t* hctx, void* segfault_ctx);
+ 
++#ifdef __ORBIS__
++// Defined in core/linux/context.cpp. True only when the words behind segfault_ctx really are
++// FreeBSD's amd64 mcontext AND its mc_addr agrees with the address siginfo reported.
++extern "C" bool orbis_segfault_context_agrees(void *segfault_ctx, void *fault_addr);
++#endif
++
+ #ifndef __SWITCH__
+ static struct sigaction next_segv_handler;
+ #endif
+@@ -56,26 +62,65 @@
+ 	if (addrspace::bm_lockedWrite((u8*)si->si_addr))
+ 		return;
+ 
+-#ifndef __ORBIS__
+ 	// fast mem access rewriting
+ 	host_context_t ctx;
+ 	context_from_segfault(&ctx, segfault_ctx);
++#ifdef __ORBIS__
++	// ⚠ TWO GUARDS BEFORE A REWRITE, AND NEITHER IS OPTIONAL ON THIS CONSOLE.
++	//
++	// context.cpp's __ORBIS__ arm finds FreeBSD's mcontext inside the kernel's context by hunting
++	// for the fixed selector pair (mc_cs 0x43, mc_ss 0x3b) rather than by naming a field, because
++	// this SDK declares musl's mcontext and the kernel writes FreeBSD's. A pc of 0 is that search
++	// having failed. The second guard is the independent one: mc_addr must equal the address
++	// siginfo reported, or the anchor landed on a coincidence somewhere else in the stack.
++	//
++	// Getting this wrong is not "no fastmem". rewriteMemAccess reads the return address off
++	// context.rsp and ASSEMBLES A CALL over it, so a context we merely believe would write x86
++	// into whatever that pointed at.
++	//
++	// ⚠ AND THE THIRD FAILURE IS THE ONE WITH NO ERROR CODE: whether this kernel honours a
++	// MODIFIED context on return. FreeBSD's trampoline sigreturn()s the same ucontext the handler
++	// was given, which is how every other platform here resumes - but nothing in this port has
++	// observed it working on Orbis yet. If it silently does not, the faulting instruction
++	// re-executes, the call site is already patched to Slow, rewriteMemAccess finds no Fast
++	// handler to match and dies inside `die("Failed to match the code")` - a message that names
++	// the wrong thing. So the pair is remembered and a second identical arrival says what
++	// actually happened, once, before the same death.
++	static uintptr_t last_pc;
++	static void     *last_addr;
++	const bool trustworthy = ctx.pc != 0
++	                      && orbis_segfault_context_agrees(segfault_ctx, si->si_addr);
++	if (trustworthy && ctx.pc == last_pc && si->si_addr == last_addr)
++	{
++		ERROR_LOG(COMMON, "SIGSEGV at rip %p on %p for the SECOND time. The rewrite was applied "
++				"and the resumed context did not take it, which means this kernel does not honour "
++				"a modified ucontext on return from a signal handler. nvmem cannot work here; the "
++				"next line is the consequence, not the cause.",
++				(void *)ctx.pc, si->si_addr);
++	}
++	else if (trustworthy)
++	{
++		last_pc   = ctx.pc;
++		last_addr = si->si_addr;
++		if (sh4Dynarec->rewrite(ctx, si->si_addr))
++		{
++			context_to_segfault(&ctx, segfault_ctx);
++			return;
++		}
++	}
++	else
++		ERROR_LOG(COMMON, "SIGSEGV on %p and the signal context could not be anchored "
++				"(mc_cs/mc_ss pair %s) - not rewriting anything from it",
++				si->si_addr, ctx.pc != 0 ? "found, but mc_addr disagrees with si_addr" : "NOT found");
++#else
+ 	if (sh4Dynarec->rewrite(ctx, si->si_addr))
+ 	{
+ 		context_to_segfault(&ctx, segfault_ctx);
+ 		return;
+ 	}
++#endif
+ 
+ 	ERROR_LOG(COMMON, "SIGSEGV @ %p invalid access to %p", (void *)ctx.pc, si->si_addr);
+-#else
+-	// ⚠ NO REWRITE HERE, BECAUSE THERE IS NO CONTEXT TO REWRITE FROM. core/linux/context.cpp's
+-	// __ORBIS__ arm says it in full: this SDK declares musl's mcontext_t while the kernel
+-	// passes FreeBSD's, and the offset of rip in what actually arrives has been dumped on
+-	// hardware without being identified. Everything above this point still works - the
+-	// rollback watcher, the RAM and VRAM write protection and the FPCB lock all key on
+-	// si->si_addr alone - so what is lost is the fastmem fixup, not fault handling.
+-	ERROR_LOG(COMMON, "SIGSEGV invalid access to %p", si->si_addr);
+-#endif
+ #endif
+ 
+ #ifdef __SWITCH__
