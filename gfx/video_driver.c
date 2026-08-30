@@ -160,7 +160,9 @@ static const gfx_ctx_driver_t *gfx_ctx_gl_drivers[] = {
 #if defined(HAVE_LIBNX) && defined(HAVE_OPENGL)
    &switch_ctx,
 #endif
-#if defined(ORBIS) && defined(HAVE_EGL) && defined(HAVE_OPENGLES)
+/* ORBIS: one context driver, either GL flavour. HAVE_OPENGLES picks ES, HAVE_OPENGL_CORE
+ * picks desktop GL; gfx/drivers_context/orbis_gl_ctx.c says why they cannot share a binary. */
+#if defined(ORBIS) && defined(HAVE_EGL) && (defined(HAVE_OPENGLES) || defined(HAVE_OPENGL_CORE))
    &gfx_ctx_orbis_gl,
 #endif
 #if defined(HAVE_VIDEOCORE)

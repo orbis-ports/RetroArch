@@ -12,7 +12,15 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/* OpenGL ES on the PlayStation 4, through Mesa's EGL and zink.
+/* OpenGL on the PlayStation 4, through Mesa's EGL and zink - ES or desktop, decided at BUILD
+ * time by HAVE_OPENGLES.
+ *
+ * ⚠ TWO EBOOTS, NOT ONE BINARY THAT CHOOSES. HAVE_OPENGLES is a global -D rather than a
+ * per-file one, and it decides more than this file: without it runloop.c REJECTS
+ * RETRO_HW_CONTEXT_OPENGLES2/3 outright, and glsym_gl.c and glsym_es2.c both define
+ * rglgen_symbol_map behind the same include guard. One binary can therefore carry one GL
+ * flavour. The GLES package (RTRV00001) and the desktop-GL one (RTRG00001) are built from this
+ * same tree by flags alone and installed side by side. See Makefile.orbis.
  *
  * ⚠ WHAT THIS UNBLOCKS, BECAUSE IT IS NOT "OPENGL CORES NOW WORK". The reason this file was
  * written is Nintendo 64. mupen64plus-next's fast renderer is GLideN64 driven by the HLE RSP,
@@ -55,6 +63,13 @@
 
 #include <ps4_app.h>
 
+#ifndef HAVE_OPENGLES
+/* The desktop build reports what it actually got, which is the only honest answer: a driver may
+ * hand back a context newer than the one asked for, and this one already has. glGetString is GL
+ * 1.0 and resolves from the same shared-glapi dispatch the ES entry points use. */
+#include <GL/gl.h>
+#endif
+
 /* The console's main video-out mode. There is no mode set here: the display is whatever the
  * system gave the process, and mesa's orbis platform reports the same figure back through
  * orbis_get_scanout_size() when it builds the surface. */
@@ -95,7 +110,16 @@ static void *gfx_ctx_orbis_gl_init(void *video_driver)
       EGL_GREEN_SIZE,      8,
       EGL_BLUE_SIZE,       8,
       EGL_ALPHA_SIZE,      8,
+#ifdef HAVE_OPENGLES
       EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+#else
+      /* ⚠ THE CONFIG MUST ADVERTISE DESKTOP GL OR eglCreateContext NEVER GETS THE CHANCE TO
+       * REFUSE. egl_dri2.c gives every EGLConfig RenderableType = disp->ClientAPIs, and the
+       * screen's api_mask carries EGL_OPENGL_BIT because this Mesa is built with
+       * -DHAVE_OPENGL=1. Leaving EGL_OPENGL_ES2_BIT here would match a config that cannot
+       * carry the context we are about to ask for. */
+      EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+#endif
       EGL_SURFACE_TYPE,    EGL_WINDOW_BIT,
       EGL_NONE
    };
@@ -133,11 +157,100 @@ static void gfx_ctx_orbis_gl_get_video_size(void *data,
    *height = ctx ? ctx->height : ORBIS_GL_HEIGHT;
 }
 
+#ifndef HAVE_OPENGLES
+/* What bind_api was asked for. bind_api runs BEFORE init and set_video_mode - see
+ * video_context_driver_init() - so by the time a context is created these are set. Statics
+ * because the context-driver interface hands bind_api the VIDEO driver, not our own data. */
+static unsigned orbis_gl_req_major = 3;
+static unsigned orbis_gl_req_minor = 2;
+static bool     orbis_gl_core_ctx  = true;
+
+/* ⚠ THE CEILING IS 3.3, MEASURED, AND A LAPTOP SAID 4.6. mesa-ps4's glcaps probe was run on
+ * hardware on 2026-08-30 and is the only evidence that counts here:
+ *
+ *     OpenGL 4.6 / 4.5   eglCreateContext refused (0x3009 = EGL_BAD_MATCH)
+ *     OpenGL 3.3         OK -> "3.3 (Core Profile) Mesa 26.3.0-devel", GLSL 3.30, 226 exts
+ *     OpenGL 3.2         OK -> the same 3.3 core context
+ *     OpenGL 2.1         OK -> "3.3 (Compatibility Profile)", 304 exts
+ *
+ * An earlier probe against a drm-shim on the build host reported 4.6 and was wrong about this
+ * console. So the ladder below tops out at 3.3 rather than asking for what a core requested and
+ * failing the whole video driver when it is 4.x.
+ *
+ * ⚠ AND THE PROFILE IS DECIDED BY THE VERSION WHEN NO MASK IS GIVEN. EGL's default for
+ * EGL_CONTEXT_OPENGL_PROFILE_MASK is the core bit, which is why 3.3 with no mask came back as a
+ * core profile and 2.1 - too old for the mask to mean anything - came back as compatibility.
+ * The mask is still passed explicitly on the rungs that want core, and each of those has a
+ * bare-attribute twin immediately after it: the mask is an EGL 1.5 token and the console reports
+ * EGL 1.5, but a rung that costs nothing is cheaper than a black screen. */
+static bool orbis_gl_create_desktop(orbis_gl_ctx_data_t *ctx)
+{
+   unsigned i;
+   /* major, minor, ask-for-core */
+   static const struct { unsigned major, minor; int core; } rungs[] = {
+      { 0, 0, 1 },   /* whatever bind_api was asked for, clamped below */
+      { 3, 3, 1 },
+      { 3, 3, 0 },
+      { 3, 2, 1 },
+      { 3, 2, 0 },
+      { 2, 1, 0 }
+   };
+
+   for (i = 0; i < sizeof(rungs) / sizeof(rungs[0]); i++)
+   {
+      EGLint attribs[8];
+      unsigned n     = 0;
+      unsigned major = rungs[i].major;
+      unsigned minor = rungs[i].minor;
+      int      core  = rungs[i].core;
+
+      if (i == 0)
+      {
+         major = orbis_gl_req_major;
+         minor = orbis_gl_req_minor;
+         core  = orbis_gl_core_ctx;
+         /* Clamped to the measured ceiling rather than passed through: a core asking for 4.1
+          * would otherwise spend a rung on a request this driver is known to refuse. */
+         if (major > 3 || (major == 3 && minor > 3))
+         {
+            major = 3;
+            minor = 3;
+         }
+         if (major < 3 || (major == 3 && minor < 2))
+            core = 0;
+      }
+
+      attribs[n++] = EGL_CONTEXT_MAJOR_VERSION;
+      attribs[n++] = (EGLint)major;
+      attribs[n++] = EGL_CONTEXT_MINOR_VERSION;
+      attribs[n++] = (EGLint)minor;
+      if (core)
+      {
+         attribs[n++] = EGL_CONTEXT_OPENGL_PROFILE_MASK;
+         attribs[n++] = EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT;
+      }
+      attribs[n++] = EGL_NONE;
+
+      if (egl_create_context(&ctx->egl, attribs))
+      {
+         RARCH_LOG("[PS4] desktop GL %u.%u %s context created.\n",
+               major, minor, core ? "core" : "(no profile mask)");
+         return true;
+      }
+      RARCH_WARN("[PS4] GL %u.%u %s refused; trying the next rung.\n",
+            major, minor, core ? "core" : "bare");
+   }
+
+   return false;
+}
+#endif
+
 static bool gfx_ctx_orbis_gl_set_video_mode(void *data,
       unsigned width, unsigned height, bool fullscreen)
 {
    orbis_gl_ctx_data_t *ctx = (orbis_gl_ctx_data_t*)data;
 
+#ifdef HAVE_OPENGLES
    /* ⚠ THREE, THEN TWO, AND THE FALLBACK IS NOT DECORATION. GLideN64 wants GLES 3.1 for its full
     * path and has a reduced GLES 2 one; zink's ceiling here depends on what RADV reports for this
     * GPU, which is a question about the driver rather than about the console. Asking for 3 and
@@ -145,10 +258,12 @@ static bool gfx_ctx_orbis_gl_set_video_mode(void *data,
     * instead of the whole video driver failing to initialise. */
    static const EGLint attribs_es3[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
    static const EGLint attribs_es2[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+#endif
 
    if (!ctx)
       return false;
 
+#ifdef HAVE_OPENGLES
    if (egl_create_context(&ctx->egl, attribs_es3))
       RARCH_LOG("[PS4] GLES 3 context created.\n");
    else if (egl_create_context(&ctx->egl, attribs_es2))
@@ -160,6 +275,15 @@ static bool gfx_ctx_orbis_gl_set_video_mode(void *data,
       RARCH_ERR("[PS4] no GLES context could be created.\n");
       goto error;
    }
+#else
+   if (!orbis_gl_create_desktop(ctx))
+   {
+      egl_report_error();
+      RARCH_ERR("[PS4] no desktop GL context could be created - every rung from %u.%u down to "
+                "2.1 was refused.\n", orbis_gl_req_major, orbis_gl_req_minor);
+      goto error;
+   }
+#endif
 
    /* ⚠ ANY NON-ZERO TOKEN, AND IT MUST NOT BE NULL. A "window" here is the scan-out itself and
     * there is no handle to obtain - sceVideoOutOpen happens below us, inside the swapchain. But
@@ -173,6 +297,20 @@ static bool gfx_ctx_orbis_gl_set_video_mode(void *data,
       RARCH_ERR("[PS4] EGL would not give us a window surface.\n");
       goto error;
    }
+
+#ifndef HAVE_OPENGLES
+   /* ⚠ ONLY MEANINGFUL AFTER THE SURFACE, because egl_create_surface is what calls
+    * eglMakeCurrent - there is no current context before this point and glGetString would
+    * return NULL. This is the line that says whether the desktop variant is doing what it
+    * claims: "3.3 (Core Profile) Mesa ..." is the success case. */
+   {
+      const GLubyte *ver  = glGetString(GL_VERSION);
+      const GLubyte *slv  = glGetString(GL_SHADING_LANGUAGE_VERSION);
+      RARCH_LOG("[PS4] GL context is: %s | GLSL %s\n",
+            ver ? (const char*)ver : "(null)",
+            slv ? (const char*)slv : "(null)");
+   }
+#endif
 
    return true;
 
@@ -230,19 +368,46 @@ static void gfx_ctx_orbis_gl_input_driver(void *data,
 
 static enum gfx_ctx_api gfx_ctx_orbis_gl_get_api(void *data)
 {
+#ifdef HAVE_OPENGLES
    return GFX_CTX_OPENGL_ES_API;
+#else
+   return GFX_CTX_OPENGL_API;
+#endif
 }
 
 static bool gfx_ctx_orbis_gl_bind_api(void *data,
       enum gfx_ctx_api api, unsigned major, unsigned minor)
 {
-   /* ⚠ ES ONLY, AND THAT IS A FACT ABOUT THE BUILD RATHER THAN A CHOICE. mesa-ps4 is configured
-    * with glvnd disabled and no GLX, so the build produces libGLESv2.a and libGLESv1_CM.a over
-    * shared-glapi and no libGL at all. Desktop GL has no entry points to call here whatever zink
-    * is capable of underneath. */
+   /* ⚠ THE ES-ONLY CLAIM THAT STOOD HERE WAS WRONG, and the correction is worth stating rather
+    * than deleting. It read: mesa-ps4 is built with glvnd disabled and no GLX, therefore it
+    * produces libGLESv2.a and no libGL, therefore "desktop GL has no entry points to call here".
+    * The first two clauses are true and the conclusion does not follow.
+    *
+    * There is no libGL.a, but there is no need for one. Every GL entry point in this Mesa - ES
+    * and desktop alike - is a stub that jumps through the mapi dispatch table, and that table is
+    * API-AGNOSTIC: disassembling glClear out of the orbis libGLESv2.a gives `jmp *0x658(%rax)`,
+    * slot 203, which is _gloffset_Clear, the same slot desktop GL uses. The desktop stubs are
+    * present too - the orbis build's generated shared_glapi_mapi_tmp.h carries 2312 of them,
+    * covering the full desktop API, inside libgallium-26.3.0-devel.a, which this eboot already
+    * links. They are simply not EXPORTED as link-time symbols, so they are reached through
+    * eglGetProcAddress, which is exactly how RetroArch's glsym layer reaches everything anyway.
+    *
+    * And the context itself is creatable: `_eglIsApiValid(EGL_OPENGL_API)` is true here,
+    * egl_dri2.c sets EGL_OPENGL_BIT from the screen's api_mask, and glcaps got a real
+    * 3.3 core-profile context on hardware. What decides which of the two this binary speaks is
+    * HAVE_OPENGLES, for the reasons in the note at the top of this file. */
+#ifdef HAVE_OPENGLES
    if (api != GFX_CTX_OPENGL_ES_API)
       return false;
    return egl_bind_api(EGL_OPENGL_ES_API);
+#else
+   if (api != GFX_CTX_OPENGL_API)
+      return false;
+   /* Remembered for set_video_mode, which is where the context is actually asked for. */
+   orbis_gl_req_major = major;
+   orbis_gl_req_minor = minor;
+   return egl_bind_api(EGL_OPENGL_API);
+#endif
 }
 
 static bool gfx_ctx_orbis_gl_has_focus(void *data) { return true; }
@@ -252,7 +417,24 @@ static bool gfx_ctx_orbis_gl_suppress_screensaver(void *data, bool enable)
    return false;
 }
 
-static void gfx_ctx_orbis_gl_set_flags(void *data, uint32_t flags) { }
+static void gfx_ctx_orbis_gl_set_flags(void *data, uint32_t flags)
+{
+#ifndef HAVE_OPENGLES
+   /* ⚠ THIS WAS AN EMPTY STUB AND THE FRONTEND WAS ALREADY TALKING INTO IT. gl3.c and
+    * runloop.c both push GFX_CTX_FLAGS_GL_CORE_CONTEXT here when a core asks for
+    * RETRO_HW_CONTEXT_OPENGL_CORE (runloop.c, RETRO_ENVIRONMENT_SET_HW_RENDER), and every one
+    * of those pushes was being discarded silently.
+    *
+    * ⚠ IT IS STILL NOT THE PRIMARY SIGNAL, AND MUST NOT BE TREATED AS ONE.
+    * video_context_driver_set_flags() only reaches a context driver that is already installed;
+    * both of the callers above run BEFORE this driver is chosen, so the flag is stashed in
+    * video_st->deferred_flag_data and arrives here late, if at all. The version handed to
+    * bind_api is what actually selects the profile. This exists so that a late arrival is
+    * honoured on the next context creation instead of being thrown away. */
+   if (BIT32_GET(flags, GFX_CTX_FLAGS_GL_CORE_CONTEXT))
+      orbis_gl_core_ctx = true;
+#endif
+}
 
 static uint32_t gfx_ctx_orbis_gl_get_flags(void *data)
 {
@@ -270,6 +452,17 @@ static uint32_t gfx_ctx_orbis_gl_get_flags(void *data)
     * black screen with no menu, because a frame was being presented with no program to draw it
     * with. The one flag below is the whole difference. */
    BIT32_SET(flags, GFX_CTX_FLAGS_SHADERS_GLSL);
+
+#if !defined(HAVE_OPENGLES) && defined(HAVE_SLANG)
+   /* ⚠ AND glcore ASKS A DIFFERENT QUESTION THAN gl2 DOES. gl3.c's filter chain is the slang
+    * one - gl3_filter_chain_* in gfx/drivers_shader/shader_gl3.cpp, with spirv_opengl.c under
+    * it - and gl3_get_fallback_shader_type() prefers RARCH_SHADER_SLANG, falling back to GLSL
+    * only when the context driver does not advertise it. Both are linked in this build (slang
+    * arrives with the Vulkan arm, which desktop GL requires anyway for zink), so both are
+    * declared and gl3 gets its native one. */
+   BIT32_SET(flags, GFX_CTX_FLAGS_SHADERS_SLANG);
+#endif
+
    return flags;
 }
 

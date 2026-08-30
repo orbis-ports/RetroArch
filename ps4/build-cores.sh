@@ -14,6 +14,7 @@
 #   --drop-clones     delete each core's clone once it is done with (default under CI)
 #   --keep-clones     keep every clone (default interactively)
 #   --jobs N          parallelism for each core's make
+#   --gl es|desktop   which frontend variant the cores are for   (default es)
 #   --core-timeout S  wall-clock cap per core in seconds; 0 disables   (default 1500)
 #
 # ⚠ ONE CORE IS THE NORMAL CASE, NOT THE SPECIAL ONE. `--all` exists for a sweep, but the thing
@@ -25,6 +26,21 @@
 #   ps4/build-cores.sh --recipe <r> gambatte              rebuild one, patches reapplied
 #   ps4/build-cores.sh --recipe <r> --update gambatte      take upstream's newest first
 #   ps4/build-cores.sh --recipe <r> --keep gambatte        incremental, patches left alone
+#
+# ⚠ --gl PICKS WHICH FRONTEND THE CORES ARE BEING BUILT FOR, AND MOST CORES DO NOT CARE.
+# There are two eboots - the GLES one (RTRV00001) and the desktop-GL one (RTRG00001), see
+# Makefile.orbis - because HAVE_OPENGLES is a global -D and runloop.c refuses the other family's
+# RETRO_HW_CONTEXT_* outright. A SOFTWARE core is one .prx that works under either, so the
+# desktop set is the GLES set with the handful of GL cores rebuilt, not a second full sweep.
+#
+#   ps4/build-cores.sh --recipe <r> --gl desktop melondsds mupen64plus_next scummvm
+#
+# The output directory defaults apart (out/ and out-glcore/) so the two sets cannot overwrite
+# each other, and only the cores whose flags actually differ need to exist in the second one.
+#
+# ⚠ play IS NOT IN THE DESKTOP SET AND THAT IS NOT AN OVERSIGHT. Its bundled glew wants GLX -
+# <GL/glx.h>, an X display, glXGetProcAddress - and there is no X on this console and no GLX in
+# this Mesa (-Dglx=disabled). It stays a GLES core, which means it stays with the GLES eboot.
 #
 # ⚠ AND IT DOES NOT PATCH MAKEFILES BEHIND YOUR BACK. The toolchain flags go INSIDE $(CC) and
 # $(CXX) rather than into CFLAGS, because a libretro Makefile routinely does `CFLAGS := ...` and
@@ -71,6 +87,7 @@ TOOLCHAIN="$OO_PS4_TOOLCHAIN"
 WORK="${HOME}/.cache/ps4-cores"; OUT=""; RECIPE=""
 PATCHES="$HERE/core-patches"
 JOBS="$(nproc)"; ALL=0; LIST=0; UPDATE=0; KEEP=0
+GL_FLAVOUR="${PS4_GL_FLAVOUR:-es}"
 # 1500s = 25 min. Chosen from measured data, not from taste - see the block above capped().
 CORE_TIMEOUT="${PS4_CORE_TIMEOUT:-1500}"
 CORE_TIMEOUT_KILL=30      # grace between the TERM and the KILL that follows it
@@ -83,6 +100,7 @@ while [[ $# -gt 0 ]]; do
     --out)     OUT="$2";     shift 2 ;;
     --patches) PATCHES="$2"; shift 2 ;;
     --jobs|-j) JOBS="$2";    shift 2 ;;
+    --gl)      GL_FLAVOUR="$2"; shift 2 ;;
     --core-timeout) CORE_TIMEOUT="$2"; shift 2 ;;
     --all)     ALL=1;        shift ;;
     --list)    LIST=1;       shift ;;
@@ -102,7 +120,14 @@ if [[ "$CORE_TIMEOUT" -ne 0 ]] && ! command -v timeout >/dev/null; then
   echo "build-cores: coreutils timeout is missing; the per-core cap is OFF" >&2
   CORE_TIMEOUT=0
 fi
-OUT="${OUT:-$WORK/out}"
+case "$GL_FLAVOUR" in
+  es|desktop) ;;
+  *) echo "build-cores: --gl wants 'es' or 'desktop', got '$GL_FLAVOUR'" >&2; exit 2 ;;
+esac
+# ⚠ SEPARATE BY DEFAULT, because the two sets share file names. mupen64plus_next_libretro.prx
+# built for desktop GL and the same name built for GLES are different binaries that are both
+# correct, and dropping one on the other is a core that loads and then refuses its own context.
+if [[ "$GL_FLAVOUR" == desktop ]]; then OUT="${OUT:-$WORK/out-glcore}"; else OUT="${OUT:-$WORK/out}"; fi
 
 if [[ $DROP_CLONES -eq -1 ]]; then
   case "${CI:-}" in true|TRUE|1) DROP_CLONES=1 ;; *) DROP_CLONES=0 ;; esac
@@ -383,13 +408,13 @@ fi
 # while crtlib.o carries __init_array_start/__init_array_end as BSS VARIABLES eight bytes apart.
 # A module linked with the stock script therefore reports an empty constructor list.
 WEAK_STUBS="$WORK/orbis_weak_stubs.o"
-if [[ ! -f "$WEAK_STUBS" ]]; then
+if [[ ! -f "$WEAK_STUBS" || "$HERE/orbis_weak_stubs.c" -nt "$WEAK_STUBS" ]]; then
   $CC_ORBIS -O2 -c -o "$WEAK_STUBS" "$HERE/orbis_weak_stubs.c" \
     || { echo "build-cores: could not build the weak stubs" >&2; exit 1; }
 fi
 
 # ⚠ AN ARCHIVE, AND FOR THE OPPOSITE REASON TO THE ONE ABOVE. The weak stubs must be present
-# unconditionally; these must NOT be. orbis_gl_forward.c defines a hundred and thirty-three GLES and EGL
+# unconditionally; these must NOT be. orbis_gl_forward.c defines a hundred and forty-two GL and EGL
 # entry points and orbis_exec_mem.c defines three, and a core that references neither has no
 # business carrying them. Archive members are pulled only for symbols still undefined, so each core
 # takes exactly what it asked for and nothing else.
@@ -404,7 +429,19 @@ fi
 # only while this archive is searched before -lc and -lc++, which is how the ld.lld line below is
 # ordered. Move it after them and the override silently stops happening.
 CORE_SUPPORT_LIB="$WORK/liborbis-core-support.a"
-if [[ ! -f "$CORE_SUPPORT_LIB" ]]; then
+# ⚠ CACHED IN $WORK, WHICH SURVIVES EVERYTHING - SO IT HAS TO BE CHECKED AGAINST ITS SOURCES.
+# `[[ ! -f ]]` alone was enough while these files never changed. The day orbis_gl_forward.c grew
+# three entry points, every core in the cache would have gone on linking against the archive
+# built before them, and the symptom would have been `undefined symbol: glClearDepth` in a core
+# whose thunk was sitting in the tree. Any source newer than the archive rebuilds it.
+_support_stale=0
+[[ -f "$CORE_SUPPORT_LIB" ]] || _support_stale=1
+for _s in orbis_gl_forward.c orbis_exec_mem.c orbis_abort_report.c orbis_profile.c \
+          orbis_thread_atexit.c orbis_cxa_guard.c orbis_cv_fix.cpp; do
+  [[ -f "$CORE_SUPPORT_LIB" && "$HERE/$_s" -nt "$CORE_SUPPORT_LIB" ]] && _support_stale=1
+done
+if [[ $_support_stale -eq 1 ]]; then
+  rm -f "$CORE_SUPPORT_LIB"
   _sup=()
   # ⚠ orbis_thread_atexit FILLS A HOLE BETWEEN TWO SDK LIBRARIES AND NOT ONE IN ANY CORE:
   # libc++.a's __cxa_thread_atexit forwards to __cxa_thread_atexit_impl, which every other libc
@@ -461,7 +498,13 @@ fi
 # that core, minus the ones platform=unix already sets.
 core_make_flags() {
   case "$1" in
-    mupen64plus_next) echo "HAVE_THR_AL=1 WITH_DYNAREC=x86_64 FORCE_GLES3=1" ;;
+    # ⚠ FORCE_GLES3 IS THE ONE FLAG HERE THAT FOLLOWS THE FRONTEND. Without it the core's
+    # `unix` arm leaves both GLES and GLES3 unset and takes its desktop-GL path (Makefile:96-103,
+    # GL_LIB := -lGL - the library name is inert here, the harness links the objects itself).
+    # GLideN64 then compiles its desktop shaders instead of its ES ones. Which of the two is
+    # correct is not a property of this core: it is which eboot the .prx will be loaded by, and
+    # a mismatch is refused by runloop.c before the renderer is ever reached.
+    mupen64plus_next) echo "HAVE_THR_AL=1 WITH_DYNAREC=x86_64$([[ $GL_FLAVOUR == es ]] && echo ' FORCE_GLES3=1')" ;;
     parallel_n64)     echo "HAVE_PARALLEL=1 HAVE_PARALLEL_RSP=1 HAVE_THR_AL=1 WITH_DYNAREC=x86_64" ;;
     # ⚠ TWO VARIABLES THIS CORE SPELLS DIFFERENTLY FROM THE REST, AND BOTH ARE PLATFORM FACTS.
     #
@@ -533,7 +576,12 @@ core_make_flags() {
     # finds a system -lfreetype and links the whole library; here nothing outside the sysroot is
     # linkable, every one of those probes answers "no", and the build gets exactly the object list
     # that file names. No engine asks for component_imgui, so nothing is lost.
-    scummvm)          echo "BUILD_64BIT=1 LITE=1 FORCE_OPENGLNONE=1 USE_IMGUI=" ;;
+    # ⚠ AND FORCE_OPENGLNONE FOLLOWS THE FRONTEND TOO, for the reason its paragraph gives: the
+    # unix arm sets HAVE_OPENGL := 1, which is DESKTOP GL resolved at runtime by GLAD. On the
+    # GLES eboot there is no desktop GL to resolve against and the surface renderer is the only
+    # answer. On the desktop-GL eboot the unix arm's own default is the right one, and GLAD
+    # resolves through the frontend's proc-address exactly as it was written to.
+    scummvm)          echo "BUILD_64BIT=1 LITE=1$([[ $GL_FLAVOUR == es ]] && echo ' FORCE_OPENGLNONE=1') USE_IMGUI=" ;;
     *)                echo "" ;;
   esac
 }
@@ -671,7 +719,43 @@ core_cmake_flags() { # core -> extra -D arguments, appended after the recipe's
     # melonDS::AdapterData and PCAP_IF_* whether that mode is configured or not. dylib.c is
     # dropped from the source list by this core's patch instead; ps4/core-patches/melondsds
     # carries the reason.
-    melondsds) echo "-DENABLE_OPENGL=OFF -DHAVE_GETADDRINFO=1" ;;
+    # ⚠ ENABLE_OPENGL IS WHY THE DESKTOP-GL EBOOT EXISTS. melonDS DS's renderer asks for
+    # RETRO_HW_CONTEXT_OPENGL_CORE 3.2 (src/libretro/render/opengl.cpp) - not GLES - so on the
+    # GLES eboot the request is refused by runloop.c and the OFF above is the honest setting.
+    # On the desktop-GL eboot that context is exactly what the frontend now provides, measured
+    # at 3.3 core on hardware, so the renderer is built. The paragraph below about the renderer's
+    # sources being in the `core` target before HAVE_OPENGL is FORCEd off still applies in the
+    # OFF case and is why the -D has to be on the command line rather than left to configure.
+    # ⚠ AND ON THE DESKTOP SIDE, DROPPING ENABLE_OPENGL=OFF IS NOT ENOUGH - MEASURED, IT FAILS
+    # THE SAME WAY THE OFF CASE WOULD HAVE. With the flag simply removed, ENABLE_OPENGL takes its
+    # ON default, melonDS's `core` target compiles GPU3D_TexcacheOpenGL.cpp and OpenGLSupport.cpp,
+    # and every one of them dies on
+    #     _deps/melonds-src/src/PlatformOGL.h:14:10: fatal error: 'PlatformOGLPrivate.h' not found
+    # because cmake/ConfigureDependencies.cmake adds src/libretro to `core`'s include path only
+    # inside `if (HAVE_OPENGL OR HAVE_OPENGLES)`, and HAVE_OPENGL comes from
+    # `if (OpenGL_OpenGL_FOUND)` in ConfigureFeatures.cmake - a find_package(OpenGL) that cannot
+    # succeed here because there IS no libGL to find. The build then reached the link and failed
+    # on `undefined symbol: retro_vlog`, which is not a GL symbol at all: it is what is left when
+    # the entire src/libretro object set is missing from a link that still has libslirp's stub.
+    #
+    # ⚠ SO HAVE_OPENGL IS ANSWERED BY HAND, and the measurement that justifies it is melonDS DS's
+    # own comment at src/libretro/CMakeLists.txt:222:
+    #     "OpenGL is deliberately not linked; every OpenGL function (even the ancient 1.0/1.1
+    #      ones) is loaded at runtime through the frontend's get_proc_address."
+    # The only thing find_package(OpenGL) would have contributed is OPENGL_INCLUDE_DIR, and that
+    # is supplied below from the Mesa tree this port builds against. The check is asking "is there
+    # a libGL to link against", and for this platform the correct answer is "no, and none is
+    # needed" - which is a different answer from the one the check can give.
+    #
+    # ⚠ OPENGL_INCLUDE_DIR MUST BE NON-EMPTY. target_include_directories() with an empty string is
+    # a hard CMake error, so if ORBIS_MESA_SRC is unset this stays on the ES arrangement rather
+    # than configuring into a failure.
+    melondsds)
+      if [[ $GL_FLAVOUR == desktop && ${#MESA_INCLUDES[@]} -gt 0 ]]; then
+        echo "-DHAVE_OPENGL=ON -DOPENGL_INCLUDE_DIR=$ORBIS_MESA_SRC/include -DHAVE_GETADDRINFO=1"
+      else
+        echo "-DENABLE_OPENGL=OFF -DHAVE_GETADDRINFO=1"
+      fi ;;
     # ⚠ ORBIS IS NOT A VARIABLE CMake KNOWS - IT IS THE ONE THE PATCH BELOW READS. Panda3DS's
     # glad builds src/glad_glx.c for every non-Windows, non-Android, non-Apple system, and GLX
     # means <X11/X.h>, which this SDK does not have. CMAKE_SYSTEM_NAME is FreeBSD here and real
@@ -944,6 +1028,15 @@ for core in "${CORES[@]}"; do
   CORE_DEADLINE=$(( SECONDS + CORE_TIMEOUT ))
   if core_dropped "$core"; then
     report "$core" DROP - - "withheld on purpose - PS4_CORE_DROP"
+    continue
+  fi
+  # ⚠ REFUSED RATHER THAN BUILT AND SHIPPED WRONG. Play!'s bundled glew is GLX-only: it includes
+  # <GL/glx.h> and resolves through glXGetProcAddress, and this Mesa is built -Dglx=disabled on a
+  # console with no X server. The core is on GLES here through USE_GLES=ON, which is a GLES-eboot
+  # arrangement; there is nothing to switch it to for the desktop one. Building it into the
+  # desktop set would produce a .prx that looks like the others and cannot get a context.
+  if [[ "$GL_FLAVOUR" == desktop && "$core" == play ]]; then
+    report "$core" SKIP - - "GLES only - bundled glew needs GLX (see --gl in the header)"
     continue
   fi
   line="$(recipe_line "$core")"

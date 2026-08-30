@@ -313,3 +313,4 @@ cores/*.a
 .ps4-build-config
 /pkg-stage/
 RTRA*.pkg
+RTRG*.pkg

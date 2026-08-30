@@ -183,10 +183,42 @@ static const char *const orbis_gl_names[] = {
    "glTexImage2D",
    "glTexParameteri",
    "glRenderbufferStorageMultisample",
+   /* ⚠ THE DESKTOP-GL FRONTEND VARIANT ASKS FOR A CLASS OF FUNCTION THE ES ONE NEVER DID, and
+    * the reason is structural rather than per-core. libretro's glsym layer covers GL 2.0 and
+    * later plus the extensions; the GL 1.0/1.1 entry points are not in glsym_gl.h at all, so on
+    * the desktop path they resolve against <GL/gl.h> as PLAIN LINK-TIME SYMBOLS. On the ES path
+    * the same calls went through glsym_es3.h's macros and never reached the linker. So a core
+    * that built cleanly for GLES can arrive here with a handful of GL 1.x undefined symbols and
+    * nothing about the core has changed.
+    *
+    * ⚠ THESE SIX ARE THE ONES A LINK ACTUALLY ASKED FOR, collected by relinking until ld.lld
+    * stopped complaining. Every one of them comes from mupen64plus_next built with FORCE_GLES3
+    * dropped. melonDS DS with its OpenGL renderer on asked for NONE: it resolves its whole GL
+    * surface through rglgen_resolve_symbols and carries 1025 function pointers rather than a
+    * single undefined symbol.
+    *
+    * The feasibility note that preceded the desktop variant named three - glClearDepth,
+    * glDepthRange and glDrawBuffer - and attributed them to melonDS. Two of the three were real
+    * and belong to the wrong core; glDrawBuffer was not referenced by anything and is not here.
+    * The four GL 1.x names beside them were not predicted at all. A grep over sources and a link
+    * do not answer the same question, and only one of them is evidence.
+    *
+    * Anything else that turns up goes on the end, by the rule above.
+    *
+    * They resolve on the GLES frontend too, which is worth knowing and not worth relying on:
+    * eglGetProcAddress reaches _mesa_glapi_get_proc_address, which indexes the shared-glapi stub
+    * table by name without consulting the bound API. What decides whether CALLING one works is
+    * the context, not the lookup. */
+   "glFinish",
+   "glGetFloatv",
+   "glGetString",
+   "glPolygonMode",
+   "glClearDepth",
+   "glDepthRange",
    NULL
 };
 
-void *orbis_gl_slot[137];
+void *orbis_gl_slot[146];
 
 /* Called before the first GL call of a context - see the core patch that calls it from
  * context_reset. Resolving eagerly rather than lazily keeps the thunks to four instructions and
@@ -1337,6 +1369,54 @@ __asm__(
    "glWaitSync:\n"
    "  movq orbis_gl_slot@GOTPCREL(%rip), %rax\n"
    "  movq 1056(%rax), %rax\n"
+   "  testq %rax, %rax\n"
+   "  je orbis_gl_thunk_bad\n"
+   "  jmpq *%rax\n"
+   ".globl glFinish\n"
+   ".type glFinish,@function\n"
+   "glFinish:\n"
+   "  movq orbis_gl_slot@GOTPCREL(%rip), %rax\n"
+   "  movq 1088(%rax), %rax\n"
+   "  testq %rax, %rax\n"
+   "  je orbis_gl_thunk_bad\n"
+   "  jmpq *%rax\n"
+   ".globl glGetFloatv\n"
+   ".type glGetFloatv,@function\n"
+   "glGetFloatv:\n"
+   "  movq orbis_gl_slot@GOTPCREL(%rip), %rax\n"
+   "  movq 1096(%rax), %rax\n"
+   "  testq %rax, %rax\n"
+   "  je orbis_gl_thunk_bad\n"
+   "  jmpq *%rax\n"
+   ".globl glGetString\n"
+   ".type glGetString,@function\n"
+   "glGetString:\n"
+   "  movq orbis_gl_slot@GOTPCREL(%rip), %rax\n"
+   "  movq 1104(%rax), %rax\n"
+   "  testq %rax, %rax\n"
+   "  je orbis_gl_thunk_bad\n"
+   "  jmpq *%rax\n"
+   ".globl glPolygonMode\n"
+   ".type glPolygonMode,@function\n"
+   "glPolygonMode:\n"
+   "  movq orbis_gl_slot@GOTPCREL(%rip), %rax\n"
+   "  movq 1112(%rax), %rax\n"
+   "  testq %rax, %rax\n"
+   "  je orbis_gl_thunk_bad\n"
+   "  jmpq *%rax\n"
+   ".globl glClearDepth\n"
+   ".type glClearDepth,@function\n"
+   "glClearDepth:\n"
+   "  movq orbis_gl_slot@GOTPCREL(%rip), %rax\n"
+   "  movq 1120(%rax), %rax\n"
+   "  testq %rax, %rax\n"
+   "  je orbis_gl_thunk_bad\n"
+   "  jmpq *%rax\n"
+   ".globl glDepthRange\n"
+   ".type glDepthRange,@function\n"
+   "glDepthRange:\n"
+   "  movq orbis_gl_slot@GOTPCREL(%rip), %rax\n"
+   "  movq 1128(%rax), %rax\n"
    "  testq %rax, %rax\n"
    "  je orbis_gl_thunk_bad\n"
    "  jmpq *%rax\n"

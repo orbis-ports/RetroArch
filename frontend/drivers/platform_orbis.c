@@ -422,7 +422,15 @@ static void frontend_orbis_init(void *data)
 {
    /* First thing the port does: bring up the log channel and read the run config.
     * ps4_log() and the termination policy both answer out of this call. */
+   /* ⚠ THE NAME SAYS WHICH OF THE TWO PACKAGES BOOTED, and it is the first line in the netlog.
+    * The GLES and desktop-GL eboots are the same frontend built twice and are otherwise
+    * indistinguishable in a log - same version, same stamp when built from the same commit - so
+    * a run reported against the wrong one is a whole session spent explaining the wrong binary. */
+#if defined(HAVE_OPENGLES)
+   ps4_app_init("retroarch-gles", PS4_APP_STAMP);
+#else
    ps4_app_init("retroarch", PS4_APP_STAMP);
+#endif
 
    /* Before anything can abort - which on this port means before the first core is loaded. */
    frontend_orbis_capture_stderr();

@@ -71,6 +71,37 @@ WHOLE_ARCHIVE_LINK ?= 0
 # is why this arm exists.
 HAVE_OPENGLES      ?= 0
 
+# ⚠ PHASE 8b: THE SAME STACK, PRESENTED TO CORES AS DESKTOP OpenGL. HAVE_OPENGL_CORE=1 builds a
+# SECOND, SEPARATE product: gfx/drivers/gl3.c (video driver ident "glcore") on a real desktop GL
+# context, for the cores that ask for RETRO_HW_CONTEXT_OPENGL / OPENGL_CORE and are refused by
+# the ES build. melonDS DS is the case that drove it (render/opengl.cpp asks for
+# RETRO_HW_CONTEXT_OPENGL_CORE 3.2).
+#
+#   make -f Makefile.orbis HAVE_VULKAN=1 HAVE_OPENGL_CORE=1 HAVE_STATIC_DUMMY=0 HAVE_DYNAMIC=1 pkg
+#
+# ⚠ IT IS MUTUALLY EXCLUSIVE WITH HAVE_OPENGLES AND THAT IS NOT A POLICY CHOICE. HAVE_OPENGLES is
+# a global -D:
+#   - runloop.c rejects RETRO_HW_CONTEXT_OPENGLES2/3 outright when it is absent, and rejects
+#     RETRO_HW_CONTEXT_OPENGL/OPENGL_CORE when it is present;
+#   - libretro-common/glsym/glsym_gl.c and glsym_es2.c both define rglgen_symbol_map, and their
+#     headers share the include guard RGLGEN_DECL_H__.
+# One binary carries one GL flavour. Hence two eboots and two packages.
+#
+# ⚠ THE CEILING IS OpenGL 3.3, MEASURED ON HARDWARE 2026-08-30 with mesa-ps4's glcaps probe.
+# 4.6 and 4.5 are refused with EGL_BAD_MATCH; 3.3 comes back as a real core profile with 226
+# extensions. An earlier probe run on the build host against a drm-shim said 4.6 and was wrong
+# about this console. Anything designed against 4.x here is designed against nothing.
+#
+# ⚠ AND THERE IS NO libGL.a TO LINK. Mesa is configured -Dglx=disabled -Dglvnd=disabled, so the
+# desktop entry points exist only as mapi stubs inside libgallium and are reached through
+# eglGetProcAddress - which is how RetroArch's glsym layer reaches them anyway. The handful of
+# functions the frontend calls by NAME rather than through glsym are, measured, NONE: the only
+# desktop-only call anywhere in the frontend is gl2.c's glGetTexImage, and it sits inside
+# `#if defined(READ_RAW_GL_FRAME_TEST)`, which nothing defines. The feasibility note that
+# preceded this work listed it as a link gap on the strength of a grep; the link disagrees.
+# Cores are the other half and do need thunks - see ps4/orbis_gl_forward.c.
+HAVE_OPENGL_CORE   ?= 1
+
 # TITLE_ID is AAAA00000 - four letters, five digits - because param.sfo and the content id
 # both embed it and make-pkg.sh rejects anything else. CONTENT_LABEL is <=16 chars.
 #
@@ -83,6 +114,7 @@ HAVE_OPENGLES      ?= 0
 PS4_TITLE_ID       := RTRV00001
 PS4_TITLE_NAME     := RetroArchV
 PS4_CONTENT_LABEL  := RETROARCHV000000
+
 # ⚠ MOVES WITH THE RELEASE TAG. param.sfo carries it, and the installer compares it against
 # what is already on the console under this title id - a package at the same version is not an
 # update, so leaving it at 01.00 forever makes every new build look like a reinstall of the
@@ -207,6 +239,12 @@ else
   HAVE_FILTERS_BUILTIN      := 1
   HAVE_STATIC_VIDEO_FILTERS := 1
   HAVE_STATIC_AUDIO_FILTERS := 1
+  ifeq ($(HAVE_OPENGLES)$(HAVE_OPENGL_CORE),11)
+    $(error HAVE_OPENGLES and HAVE_OPENGL_CORE are mutually exclusive - one binary, one GL \
+flavour. glsym_gl.c and glsym_es2.c both define rglgen_symbol_map, and runloop.c accepts \
+RETRO_HW_CONTEXT_OPENGLES* only with HAVE_OPENGLES and RETRO_HW_CONTEXT_OPENGL* only without it. \
+Build the two packages separately.)
+  endif
   ifeq ($(HAVE_OPENGLES),1)
     ifneq ($(HAVE_VULKAN),1)
       $(error HAVE_OPENGLES=1 needs HAVE_VULKAN=1 - zink is a Vulkan client and the ICD must be linked.)
@@ -216,6 +254,21 @@ else
     HAVE_EGL                := 1
     # ⚠ GLSL IS NOT OPTIONAL ONCE GL IS ON, for the same reason slang is not optional with
     # Vulkan: gl2.c calls the shader backend unconditionally and gl_glsl.c is what answers.
+    HAVE_GLSL               := 1
+    HAVE_SHADERS_COMMON     := 1
+  endif
+  ifeq ($(HAVE_OPENGL_CORE),1)
+    ifneq ($(HAVE_VULKAN),1)
+      $(error HAVE_OPENGL_CORE=1 needs HAVE_VULKAN=1 - zink is a Vulkan client and the ICD must be linked.)
+    endif
+    # ⚠ HAVE_OPENGL AS WELL AS HAVE_OPENGL_CORE, AND THE SECOND DOES NOT IMPLY THE FIRST.
+    # Makefile.common derives HAVE_GL_CONTEXT from HAVE_OPENGL / HAVE_OPENGL1 / HAVE_OPENGLES
+    # and NOT from HAVE_OPENGL_CORE, and HAVE_GL_CONTEXT is what pulls in gl_common.o,
+    # rglgen.o, glsym_gl.o and the context-driver block. HAVE_OPENGL_CORE alone would compile
+    # gl3.c against a build that never resolves a single GL symbol. It also gives us gl2.c, so
+    # this eboot carries both the "gl" and "glcore" video drivers over the same desktop context.
+    HAVE_OPENGL             := 1
+    HAVE_EGL                := 1
     HAVE_GLSL               := 1
     HAVE_SHADERS_COMMON     := 1
   endif
@@ -423,7 +476,10 @@ ifeq ($(HAVE_VULKAN),1)
   RADV_LINK := -Wl,--whole-archive $(RADV_ARCHIVE) -Wl,--no-whole-archive
 endif
 
-ifeq ($(HAVE_OPENGLES),1)
+# ⚠ ONE GL STACK, TWO FLAVOURS. Everything below - the archives, the link script, the context
+# driver object - is about Mesa being in the link at all, which is true for either flavour. Only
+# the -D that decides ES-versus-desktop differs, and Makefile.common emits that.
+ifneq ($(filter 1,$(HAVE_OPENGLES) $(HAVE_OPENGL_CORE)),)
   GALLIUM_ARCHIVE := $(wildcard $(ORBIS_MESA_BUILD)/src/gallium/targets/dri/libgallium-*.a)
   ifeq ($(GALLIUM_ARCHIVE),)
     $(error No gallium archive under $(ORBIS_MESA_BUILD)/src/gallium/targets/dri - build mesa-ps4 with the OpenGL arm.)
@@ -465,7 +521,7 @@ endif
 
 # Makefile.common has no arm for this console, so the context driver is named here - the same
 # way gfx/drivers_context/orbis_vk_ctx.o is picked up by the ORBIS branch it does have.
-ifeq ($(HAVE_OPENGLES),1)
+ifneq ($(filter 1,$(HAVE_OPENGLES) $(HAVE_OPENGL_CORE)),)
   OBJ += gfx/drivers_context/orbis_gl_ctx.o
 endif
 OBJ += $(ORBIS_COMPAT_OBJ)
@@ -598,7 +654,7 @@ endif
 # The loader then says "segment #1 is not page aligned" and the user sees "Cannot start the
 # application". orbis-compat's script is the same one with that hole closed - see the note in
 # mesa-ps4's build-support/orbis/tools/gllinkprobe.sh, which paid for this discovery.
-ifeq ($(HAVE_OPENGLES),1)
+ifneq ($(filter 1,$(HAVE_OPENGLES) $(HAVE_OPENGL_CORE)),)
   ORBIS_LINK_SCRIPT := $(ORBIS_COMPAT_DIR)/cmake/orbis-tls.ld
 else
   ORBIS_LINK_SCRIPT := $(TOOLCHAIN)/link.x
@@ -729,6 +785,8 @@ define ORBIS_BUILD_SUMMARY
    cores:    $(if $(filter 1,$(HAVE_DYNAMIC)),.prx modules via sceKernelLoadStartModule,STATIC DUMMY ONLY - the core list will be empty)
    dummy:    HAVE_STATIC_DUMMY=$(HAVE_STATIC_DUMMY)
    vulkan:   $(if $(filter 1,$(HAVE_VULKAN)),RADV linked from $(RADV_ARCHIVE),OFF - software rendering only)
+   gl:       $(if $(filter 1,$(HAVE_OPENGLES)),OpenGL ES over zink - video driver gl,$(if $(filter 1,$(HAVE_OPENGL_CORE)),DESKTOP OpenGL over zink - video drivers gl and glcore - ceiling 3.3 core,OFF))
+   package:  $(PS4_TITLE_ID) / $(PS4_TITLE_NAME)
 endef
 export ORBIS_BUILD_SUMMARY
 
@@ -790,7 +848,10 @@ pkg: eboot.bin
 PS4        ?= 192.168.100.2
 PS4_FTP_PORT ?= 2121
 PKG_REMOTE ?= /data/pkg
-PKG_NAME   ?= retroarch.pkg
+# ⚠ FLAVOUR-SPECIFIC, or `send` from one variant overwrites the other's upload and the console's
+# Package Installer shows one file where two were meant. The .pkg on this side already differ by
+# content label; this is the remote name catching up.
+PKG_NAME   ?= $(if $(filter 1,$(HAVE_OPENGLES)),retroarch-gles.pkg,retroarch.pkg)
 PKG_FILE   := IV0000-$(PS4_TITLE_ID)_00-$(PS4_CONTENT_LABEL).pkg
 
 send: pkg
