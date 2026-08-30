@@ -73,6 +73,14 @@
 #include "../configuration.h"
 #include "video_shader_parse.h"
 
+/* ⚠ INSTRUMENTATION, AND IT IS SILENT UNLESS THE FRONTEND STOPS. See
+ * ps4/orbis_watchdog.c: the marks below are how a hung run loop says where it was. */
+#ifdef ORBIS
+#include "../ps4/orbis_watchdog.h"
+#else
+#define ORBIS_WD(phase, detail) ((void)0)
+#endif
+
 #define TIME_TO_FPS(last_time, new_time, frames) ((1000000.0f * (frames)) / ((new_time) - (last_time)))
 
 #define FRAME_DELAY_AUTO_DEBUG 0
@@ -5572,6 +5580,7 @@ void video_driver_frame(const void *data, unsigned width,
 
    if (render_frame && vid && vid->frame)
    {
+      ORBIS_WD("video:driver_frame", 0);
       video_info.current_subframe = 0;
       if (vid->frame(
                video_st->data, data, width, height,
@@ -5596,6 +5605,7 @@ void video_driver_frame(const void *data, unsigned width,
        * was never handed to the driver would release an atlas the
        * GPU could still be reading. */
       font_driver_free_pending(false);
+      ORBIS_WD("video:driver_frame_returned", 0);
    }
 
    video_st->frame_count++;

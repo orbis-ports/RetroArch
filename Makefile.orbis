@@ -494,6 +494,12 @@ OBJ     += ps4/orbis_mouse_probe.o
 OBJ     += ps4/orbis_crash_handlers.o
 OBJ     += ps4/orbis_alloc_probe.o
 
+# ⚠ THE ONE INSTRUMENT THAT IS ON WITHOUT BEING ASKED FOR, and ps4/orbis_watchdog.c says why:
+# it writes nothing at all until the run loop has been still for five seconds, which is a
+# state no healthy frame reaches. A hang costs a run to reproduce; a hang nobody was
+# instrumenting for costs the run and the reproduction.
+OBJ     += ps4/orbis_watchdog.o
+
 # ⚠ THE FRONTEND HAS THE SAME libc++abi DEFECT THE CORES DO, so it gets the same correction.
 # retroarch_orbis.elf carries the identical GuardObject<...PlatformThreadID...> instantiation and
 # the identical `movl $0x14, %edi` - syscall 20, getpid - because this SDK's bits/syscall.h aliases

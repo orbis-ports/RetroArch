@@ -86,6 +86,15 @@
 #include "../midi_driver.h"
 #include "../verbosity.h"
 
+/* ⚠ INSTRUMENTATION, AND IT IS SILENT UNLESS THE FRONTEND STOPS. See
+ * ps4/orbis_watchdog.c. This driver's write() is the one call in the frame that can block on
+ * a condition variable, so a hang here and a hang in the core are worth telling apart. */
+#ifdef ORBIS
+#include "../ps4/orbis_watchdog.h"
+#else
+#define ORBIS_WD(phase, detail) ((void)0)
+#endif
+
 #define AUDIO_CHUNK_SIZE_BLOCKING      512
 
 /* So we don't get complete line-noise when fast-forwarding audio. */
@@ -1148,9 +1157,11 @@ static void audio_driver_flush(audio_driver_state_t *audio_st,
                      out_frames, mixer_gain, override);
             }
 #endif
+            ORBIS_WD("audio:write", (int)out_frames);
             audio->write(audio_st->context_audio_data,
                   audio_st->output_samples_buf,
                   out_frames * 2 * sizeof(float));
+            ORBIS_WD("audio:write_returned", (int)out_frames);
          }
          else
          {
@@ -1221,9 +1232,11 @@ static void audio_driver_flush(audio_driver_state_t *audio_st,
                         mixer_gain, override);
             }
 #endif
+            ORBIS_WD("audio:write", (int)out_frames);
             audio->write(audio_st->context_audio_data,
                   audio_st->output_samples_int16,
                   out_frames * 2 * sizeof(int16_t));
+            ORBIS_WD("audio:write_returned", (int)out_frames);
          }
          return;
       }
@@ -1635,8 +1648,10 @@ static void audio_driver_flush(audio_driver_state_t *audio_st,
          output_frames       *= sizeof(int16_t);  /* Unit: bytes */
       }
 
+      ORBIS_WD("audio:write", (int)output_frames);
       audio->write(audio_st->context_audio_data,
             output_data, output_frames * 2);
+      ORBIS_WD("audio:write_returned", (int)output_frames);
    }
 }
 

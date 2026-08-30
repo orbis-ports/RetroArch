@@ -235,6 +235,62 @@ bool android_get_vfs_authorized_locations(
 
 #include "accessibility.h"
 
+/* ⚠ INSTRUMENTATION, AND IT IS SILENT UNLESS THE FRONTEND STOPS. See
+ * ps4/orbis_watchdog.c: the marks below are how a hung run loop says where it was. */
+#ifdef ORBIS
+#include "ps4/orbis_watchdog.h"
+#include <pthread.h>
+
+/* ⚠ A DRIVER REINIT MUST HAPPEN ON THE THREAD THAT OWNS THE DRIVERS, AND A THREADED CORE DOES
+ * NOT ASK PERMISSION BEFORE CALLING THE ENVIRONMENT CALLBACK FROM ONE OF ITS OWN.
+ *
+ * Measured 2026-08-30, 19:42, flycast: RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO (32) arrived on
+ * thread 0x880f4f240 - "NOT the one that started the run loop" - because flycast reaches it from
+ * a PVR register write executed by emulated SH4 code, and with rend.ThreadedRendering (default
+ * ON) that code runs on its "Flycast-emu" thread while the main thread is parked inside
+ * retro_run waiting for that same thread to hand it a rendered frame. The callback tore down and
+ * rebuilt the audio driver there, returned normally, and the run loop never advanced again -
+ * seq frozen at 8931, audio FIFO empty from that moment on.
+ *
+ * ⚠ AND THE WAIT THAT CANNOT TIME OUT IS ON THE CORE'S SIDE, WHICH IS WHY NO FRONTEND TIMEOUT
+ * WOULD HAVE SAVED IT. flycast's pvr queue blocks its producer with `dequeueEvent.Wait()` and no
+ * timeout (core/hw/pvr/Renderer_if.cpp) whenever the queue will not take another message; the
+ * consumer side that the main thread uses is bounded at 20-23 ms, so only the emulator thread can
+ * stall forever. Any work the frontend does on that thread is work done while it is the one thing
+ * the main thread is waiting for.
+ *
+ * ⚠ THE AV INFO ITSELF IS NEVER DROPPED - see the SET_SYSTEM_AV_INFO case. The new geometry and
+ * timings are stored immediately and synchronously, exactly as before; only the drivers_init that
+ * acts on them is moved to the next run loop iteration, where it has always run. Skipping the
+ * reinit instead would leave audio configured for the old sample rate, which is a quieter bug
+ * than the hang and a worse one to inherit.
+ *
+ * Scoped to ORBIS deliberately. The hazard is general - libretro does not forbid a core from
+ * calling this from its own thread - but this port is the only place it has been measured, and a
+ * frontend-wide change to driver reinit ordering is not something to make on one console's
+ * evidence. */
+static volatile uintptr_t orbis_runloop_main_thread;
+static volatile int       orbis_runloop_reinit_pending;
+static volatile int       orbis_runloop_reinit_flags;
+
+/* ⚠ "MAIN" IS LATCHED BY runloop_iterate AND BY NOTHING ELSE. An earlier draft latched it from
+ * the first caller of this function, which is wrong in exactly the case that matters: if the very
+ * first SET_SYSTEM_AV_INFO of a session arrives on the core's thread, that thread would define
+ * itself as main and the deferral would never fire. runloop_iterate runs on the run loop's thread
+ * by construction, so it is the one site that cannot be mistaken.
+ *
+ * Zero means the run loop has not iterated yet - retro_init and retro_load_game are on the main
+ * thread before any core thread exists, so "unknown" is answered as "main" and nothing is
+ * deferred that early. */
+static bool orbis_runloop_on_main_thread(void)
+{
+   uintptr_t main_thread = orbis_runloop_main_thread;
+   return main_thread == 0 || (uintptr_t)pthread_self() == main_thread;
+}
+#else
+#define ORBIS_WD(phase, detail) ((void)0)
+#endif
+
 #if defined(HAVE_SDL) || defined(HAVE_SDL2) || defined(HAVE_SDL_DINGUX)
 #include "SDL.h"
 #endif
@@ -1448,7 +1504,21 @@ static void core_performance_counter_stop(struct retro_perf_counter *perf)
 }
 
 
+static bool runloop_environment_cb_body(unsigned cmd, void *data);
+
+/* ⚠ A WRAPPER PURELY SO THE WATCHDOG HAS A BOUNDARY TO NAME. The body has dozens of returns;
+ * bracketing it here costs two stores per environment call and means a frontend that never
+ * comes back out of one can say which command it went into. */
 bool runloop_environment_cb(unsigned cmd, void *data)
+{
+   bool ret;
+   ORBIS_WD("environ", (int)cmd);
+   ret = runloop_environment_cb_body(cmd, data);
+   ORBIS_WD("environ:returned", (int)cmd);
+   return ret;
+}
+
+static bool runloop_environment_cb_body(unsigned cmd, void *data)
 {
    unsigned p;
    runloop_state_t *runloop_st            = &runloop_state;
@@ -2845,6 +2915,21 @@ bool runloop_environment_cb(unsigned cmd, void *data)
 
             memcpy(av_info, *info, sizeof(*av_info));
 
+#ifdef ORBIS
+            /* ⚠ THE DRIVERS ARE REBUILT ON THE RUN LOOP'S THREAD OR NOT AT ALL - see the note at
+             * the top of this file. The av_info above is already stored, so nothing about the new
+             * timings is lost by doing the work one iteration later; what is avoided is
+             * drivers_init running on a core thread the main thread is blocked waiting for. */
+            if (!orbis_runloop_on_main_thread())
+            {
+               orbis_runloop_reinit_flags   = reinit_flags;
+               orbis_runloop_reinit_pending = 1;
+               RARCH_LOG("[Environ] SET_SYSTEM_AV_INFO arrived off the run loop thread - "
+                     "deferring the driver reinit (flags 0x%x) to the next iteration.\n",
+                     (unsigned)reinit_flags);
+            }
+            else
+#endif
             command_event(CMD_EVENT_REINIT, &reinit_flags);
 
             if (no_video_reinit)
@@ -7938,6 +8023,28 @@ int runloop_iterate(void)
 #endif
    bool audio_sync                        = settings->bools.audio_sync;
    bool savestate_automatic_enable        = settings->uints.savestate_automatic_interval > 0;
+
+   ORBIS_WD("runloop_iterate", 0);
+
+#ifdef ORBIS
+   /* This is the run loop's thread by construction; recording it here is what lets an environment
+    * call made from anywhere else recognise itself as foreign. */
+   orbis_runloop_main_thread = (uintptr_t)pthread_self();
+
+   /* Deferred from an environment call made on a core's own thread. Done here, on the thread that
+    * owns the drivers, before anything else this iteration touches them. */
+   if (orbis_runloop_reinit_pending)
+   {
+      int reinit_flags             = orbis_runloop_reinit_flags;
+      orbis_runloop_reinit_pending = 0;
+      ORBIS_WD("deferred_reinit", reinit_flags);
+      RARCH_LOG("[Environ] performing the deferred driver reinit (flags 0x%x).\n",
+            (unsigned)reinit_flags);
+      command_event(CMD_EVENT_REINIT, &reinit_flags);
+      ORBIS_WD("deferred_reinit:returned", reinit_flags);
+   }
+#endif
+
 #ifdef HAVE_DISCORD
    discord_state_t *discord_st            = discord_state_get_ptr();
 
@@ -8892,8 +8999,10 @@ void core_run(void)
    /* Content can be marked CORE_RUNNING after a failed/partial load
     * (e.g. archive member opened with no core).  Never call through
     * a NULL retro_run — that is an immediate SIGSEGV. */
+   ORBIS_WD("retro_run", 0);
    if (current_core->retro_run)
       current_core->retro_run();
+   ORBIS_WD("retro_run:returned", 0);
 
 #ifdef HAVE_GAME_AI
    {
