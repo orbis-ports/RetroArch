@@ -95,10 +95,10 @@ index 5100e60..d8f7dc8 100644
 -#ifdef _WIN32
 +#if defined(__ORBIS__)
 +	// ⚠ AND THIS IS WHERE THE CORE USED TO DIE. mmap with MAP_ANONYMOUS returns failure on this
-+	// kernel - MAP_ANON is 0x1002 here and the SDK's musl header says 0x0020 - so block.code came
-+	// back as MAP_FAILED, allocate_code handed a null to init_jit_thunks, and the constructor of
-+	// a global RSP::JIT::CPU called abort() while the MENU was reading the core's name. It read
-+	// as "the core crashes on load" with no message at all.
++	// kernel - anonymous pages come from the ~417 MiB flexible pool and are never executable here
++	// - so block.code came back as MAP_FAILED, allocate_code handed a null to init_jit_thunks,
++	// and the constructor of a global RSP::JIT::CPU called abort() while the MENU was reading
++	// the core's name. It read as "the core crashes on load" with no message at all.
 +	block.code = static_cast<uint8_t *>(orbis_exec_mem_alloc(size));
 +	block.size = block.code ? size : 0;
 +	return block;

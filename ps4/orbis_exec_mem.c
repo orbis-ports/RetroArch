@@ -199,11 +199,28 @@ int orbis_exec_mem_state(void)
  *
  *     mmap(nullptr, size, PROT_NONE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0)
  *
- * which cannot work here for two independent reasons. MAP_ANON is 0x1002 on this kernel and the
- * SDK's musl header says 0x0020, so the flags word is wrong before the size is even considered;
- * and anonymous memory is not where executable pages come from on this console. Direct memory is.
+ * which cannot work here, and the reason is the pool, not the flags word. Anonymous memory is
+ * FLEXIBLE memory - a separate, much smaller per-process budget that measured 427008 KiB, about
+ * 417 MiB, at the first instruction of boot, and that musl's malloc is already growing into. A
+ * JIT arena is not a tenant it can afford, and executable pages are not what it hands out in any
+ * case. Direct memory is where they come from on this console.
  * That is the same conclusion beetle-psx-libretro/ps4/orbis_lightrec_mem.c reached for Lightrec,
  * and this is the smaller version of it: no fixed address, no mirrors, one range.
+ *
+ * ⚠ AND IT IS NOT THE CONSTANTS, WHICH THIS COMMENT USED TO CLAIM AND WHICH COST A TASK. The
+ * SDK's <sys/mman.h> is musl's and does carry Linux's values, but it ends with
+ * `#include <bits/mman.h>`, and that header #undefs MAP_SHARED, MAP_PRIVATE, MAP_FIXED, MAP_ANON
+ * and the PROT_* set and redefines them to FreeBSD's - MAP_ANON becomes 0x1000, so
+ * MAP_PRIVATE|MAP_ANON is 0x1002, which is what this kernel wants. The SDK is already right, the
+ * overlay ships no mman header at all, and nothing here needs a shim for one.
+ * Asked of the compiler under this port's own include order, which is the only way to ask:
+ *
+ *     clang --target=x86_64-pc-freebsd12-elf -nostdinc \
+ *           -isystem $ORBIS_COMPAT/include -isystem $TOOLCHAIN/include ... -dM -E
+ *       -> #define MAP_ANON 0x1000
+ *
+ * orbis-compat/src/orbis_mmap.cpp:54 has carried a static_assert on 0x1002 all along, and could
+ * not have compiled if the value were 0x20.
  *
  * ⚠ AND IT IS REALLY ALLOCATED, NOT RESERVED. The caller's design reserves a gigabyte of address
  * space and commits pages as it fills - a distinction direct memory does not offer, because

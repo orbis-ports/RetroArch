@@ -173,8 +173,9 @@ ORBIS_ARCH=(--target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables
 
 # ⚠ THE INCLUDE ORDER IS NOT A PREFERENCE, AND C++ NEEDS A DIFFERENT ONE FROM C.
 #
-# C: the overlay ahead of the SDK, so its corrected constants win - MAP_ANON is 0x1002 on this
-# kernel and the SDK's musl header says 0x0020.
+# C: the overlay ahead of the SDK, so its corrections win - it defines musl's own __DEFINED_<name>
+# guards before bits/alltypes.h is reached, and behind the SDK it would compile and do nothing.
+# (Not the mmap constants: the SDK's own bits/mman.h already redefines those to FreeBSD's values.)
 #
 # C++: libc++ FIRST, then the overlay, then the SDK. Getting this wrong is not a link error, it
 # is `cmath:341: no member named 'abs' in the global namespace` - libc++'s <cmath> hoists the C
