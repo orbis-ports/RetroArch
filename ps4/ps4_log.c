@@ -28,21 +28,75 @@
  * first log line happens long before anything could call one. */
 static slock_t *ps4_log_lock;
 
+/* ⚠ AND CREATING IT HAD THE RACE THE LOCK EXISTS TO CLOSE.
+ *
+ *     if (!ps4_log_lock)
+ *        ps4_log_lock = slock_new();
+ *
+ * Two threads reaching that at the same time both see NULL, both call slock_new(), and both
+ * proceed - each holding a DIFFERENT mutex, so neither excludes the other. One of the two
+ * pointers is then leaked and, worse, whichever store lands second is the one every later
+ * caller uses, so a thread already inside the critical section is holding an object nobody
+ * will ever lock again. That is the spliced-line symptom above, reproduced by the fix for it,
+ * and it is worse than no lock because it looks correct.
+ *
+ * ⚠ WHY A COMPARE-EXCHANGE AND NOT AN INIT HOOK, pthread_once, OR A STATIC INITIALISER.
+ *
+ *   * An init hook exists now - frontend_orbis_init() calls orbis_install_crash_handlers() -
+ *     but it runs well after the first log line: the boot banner, the run-config note and
+ *     orbis-compat's own interposers all log before the frontend driver is reached, and the
+ *     thread census shows threads already created by then. A hook would leave the lazy path
+ *     in place AND add an ordering assumption that nothing enforces, so it would not remove
+ *     this race, only make it rarer and harder to see.
+ *   * pthread_once and PTHREAD_MUTEX_INITIALIZER are unverifiable on this platform without
+ *     hardware. The SDK's <pthread.h> is musl's, but libc.a leaves pthread_mutex_lock and
+ *     pthread_once UNDEFINED - they bind to the system's FreeBSD libthr at link time, against
+ *     a musl-shaped pthread_mutex_t. rthreads gets away with that because it always calls
+ *     pthread_mutex_init first; a static initialiser would be relying on the two libraries
+ *     agreeing about the meaning of a zeroed object, which is exactly the kind of assumption
+ *     this port keeps finding to be false.
+ *   * __atomic_compare_exchange_n needs no header, no platform contract and no ordering: the
+ *     loser of the race frees its own mutex and adopts the winner's. It is also the idiom
+ *     already used elsewhere under ps4/ (orbis_abort_report.c, orbis_cxa_guard.c).
+ *
+ * Returns NULL only if slock_new() fails, in which case the caller logs unserialised - a
+ * spliced line is better than a lost one. */
+static slock_t *ps4_log_lock_get(void)
+{
+   slock_t *lock = __atomic_load_n(&ps4_log_lock, __ATOMIC_ACQUIRE);
+   slock_t *mine;
+   slock_t *winner = NULL;
+
+   if (lock)
+      return lock;
+
+   if (!(mine = slock_new()))
+      return NULL;
+
+   /* `winner` is in/out: on failure the compare-exchange overwrites it with the pointer that
+    * was actually stored, which is the one to use. */
+   if (__atomic_compare_exchange_n(&ps4_log_lock, &winner, mine,
+            false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+      return mine;
+
+   slock_free(mine);
+   return winner;
+}
+
 static void ps4_log_emit(const char *line, bool fatal_channel)
 {
-   if (!ps4_log_lock)
-      ps4_log_lock = slock_new();
+   slock_t *lock = ps4_log_lock_get();
 
-   if (ps4_log_lock)
-      slock_lock(ps4_log_lock);
+   if (lock)
+      slock_lock(lock);
 
    if (fatal_channel)
       ps4_log("%s", line);
    else
       ps4_log_frame("%s", line);
 
-   if (ps4_log_lock)
-      slock_unlock(ps4_log_lock);
+   if (lock)
+      slock_unlock(lock);
 }
 
 /* ⚠ THE va_list VARIANTS EXIST BECAUSE THE OLD ONES WERE BROKEN, not because the sink

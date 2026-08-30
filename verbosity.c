@@ -222,9 +222,44 @@ void retro_main_log_file_deinit(void)
 }
 
 #if !defined(HAVE_LOGGER)
+#ifdef ORBIS
+/* The one place a log line's destination is decided on this console; see the block
+ * comment in verbosity.h. `fp` is stderr until a log FILE is actually opened, and
+ * stderr on a GoldHEN console is sceKernelDebugOutText - 8-15 ms of blocked calling
+ * thread per line, which is the channel this port must not put RARCH_LOG on. So the
+ * file write happens only when there really is a file (initialized), and the line
+ * itself goes to the PS4 sink, which sends a UDP datagram and nothing else. */
+static void orbis_log_to_file(const char *tag_v, const char *fmt, va_list ap)
+{
+   FILE *fp = main_verbosity_st.fp;
+
+   if (main_verbosity_st.initialized && fp)
+   {
+      /* va_copy: the caller still needs `ap` for the PS4 sink afterwards. */
+      va_list ap_file;
+      va_copy(ap_file, ap);
+      fprintf(fp, "%s ", tag_v);
+      vfprintf(fp, fmt, ap_file);
+      va_end(ap_file);
+      fflush(fp);
+   }
+}
+
+void RARCH_ERR_V(const char *tag, const char *fmt, va_list ap)
+{
+   const char *tag_v = tag ? tag : FILE_PATH_LOG_ERROR;
+   orbis_log_to_file(tag_v, fmt, ap);
+   ps4_rarch_err_v(tag_v, NULL, fmt, ap);
+}
+#endif
+
 void RARCH_LOG_V(const char *tag, const char *fmt, va_list ap)
 {
-#if defined(_XBOX1) || defined(__WINRT__)
+#if defined(ORBIS)
+   const char *tag_v = tag ? tag : FILE_PATH_LOG_INFO;
+   orbis_log_to_file(tag_v, fmt, ap);
+   ps4_rarch_log_v(tag_v, NULL, fmt, ap);
+#elif defined(_XBOX1) || defined(__WINRT__)
    char buffer[256];
    int _len;
    const char *tag_v = tag ? tag : FILE_PATH_LOG_INFO;
