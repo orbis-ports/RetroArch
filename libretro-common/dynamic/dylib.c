@@ -113,26 +113,134 @@ static void set_dl_err(void)
  * exports crtlib.o's BSS pair: a one-entry array containing zero. Calling that would jump to
  * address zero and take the process down - worse than the bug being fixed. Skipping nulls makes
  * an old core a no-op instead. */
-/* ⚠ THE TABLE IS CLEARED ON UNLOAD, AND LEAVING THAT OUT COST A CORE. sceKernelStopUnloadModule
- * frees the id and the kernel HANDS THE SAME ONE TO THE NEXT MODULE. Measured 2026-08-24:
- * nestopia loaded and was unloaded, quicknes loaded into the same id, this table still held it,
- * its two constructors were skipped, and the core died on a null read at 0x20 - a SIGSEGV that
- * looks exactly like a broken core and was the loader forgetting to forget. */
-static int32_t dylib_orbis_ctors_done[16];
+/* ⚠ THE QUESTION IS NOT WHICH IMAGE THIS IS, IT IS WHETHER THAT IMAGE STILL HOLDS ITS DATA -
+ * AND FOUR VERSIONS OF THIS TABLE GUESSED AT IT BEFORE ONE MEASURED IT.
+ *
+ * Constructors must run exactly once per image INSTANCE. Run them twice over a live image and
+ * every global with a dynamic initializer is rebuilt underneath the code using it; skip them on a
+ * freshly mapped image and every such global stays zero. Both were reproduced on hardware, and
+ * both look like bugs in the core rather than in the loader:
+ *
+ *   0x54, a WRITE to a not-present page (err 6). flycast keeps `static std::vector<sched_list>
+ *   sch_list` - a global WITH a dynamic initializer - and hands out indices into it. `int
+ *   vblank_schid` is zero-initialised, has NO dynamic initializer, and so is not in .init_array.
+ *   Re-running the array empties the vector (begin = nullptr, its heap block orphaned) and leaves
+ *   vblank_schid holding 2, so sh4_sched_request(2, ...) writes sch_list[2].start:
+ *       nullptr + 2 * 32 + 0x14 = 0x54          (rip = sh4_sched_request+0x55, measured 19:00)
+ *
+ *   rip = 0, an INSTRUCTION FETCH at a not-present page (err 0x14). A call through a function
+ *   pointer that a skipped constructor never installed. (measured 18:35)
+ *
+ * Version one keyed on the module id and never cleared it: the kernel recycles ids, so nestopia's
+ * record matched quicknes and quicknes died on a null read at 0x20 (2026-08-24).
+ * Version two cleared on close: the id is FRESH on every load, so the lookup never matched at all
+ * and the constructors ran on every load - five times for flycast in one session.
+ * Version three keyed on identity (.init_array address plus path) and never cleared: 18:35, a
+ * load after "[Core] Unloading core..." skipped them and died at rip = 0.
+ * Version four added clear-on-close: 19:00, constructors ran on every load again - RetroArch's
+ * info probe loads and closes the core WITHOUT logging an unload, so the clear fired on those
+ * too - and one of those runs landed mid-game, on a running emulator, giving 0x54.
+ *
+ * ⚠ AND ONE OF THE ARGUMENTS FOR VERSION FOUR WAS SIMPLY WRONG, WHICH IS WHY IT IS WRITTEN
+ * DOWN HERE. It read `emu.state` coming back as Uninitialized on the 18:35 reload as proof that
+ * the module's .bss had been zeroed. It is not proof: the load before it was an info probe -
+ * there is no environment-callback block against it in the log - so retro_init had never run and
+ * Emulator::init() had never set that field. The state was Uninitialized because nothing had
+ * initialised it, not because anything had erased it. That reasoning is retracted; what caused
+ * the 18:35 rip = 0 is still open, and if it returns while the measurement below says the image
+ * was STILL MAPPED then the null belongs to the core's own init/deinit ordering and not here.
+ *
+ * So the table identifies an image - the address its .init_array landed at, and the file it came
+ * from, both read out of the module rather than lent by the kernel - and dylib_close ASKS THE
+ * KERNEL whether that image survived the unload. See dylib_orbis_image_resident(). */
+#define DYLIB_ORBIS_PATH_MAX 256
+static struct
+{
+   int32_t  mod;
+   void    *init_array;
+   char     path[DYLIB_ORBIS_PATH_MAX];
+} dylib_orbis_ctors_done[16];
 static unsigned dylib_orbis_n_done;
 
+/* ⚠ ASK THE KERNEL WHETHER THE IMAGE IS STILL THERE, RATHER THAN INFERRING IT FROM THE CLOSE.
+ *
+ * `at` is the address this module's .init_array occupied. sceKernelGetModuleList walks what is
+ * actually mapped in this process and sceKernelGetModuleInfo gives each module's segments, so an
+ * address that still falls inside a loaded segment belongs to an image that still exists - and an
+ * image that still exists still holds the data its constructors wrote. That is the whole question,
+ * asked of the thing that knows the answer.
+ *
+ * ⚠ A FAILURE TO ENUMERATE IS ANSWERED "STILL THERE", AND THE CHOICE IS NOT ARBITRARY. Guessing
+ * "gone" makes the next load re-run constructors, which is the fault that corrupted flycast's
+ * scheduler (0x54); guessing "still there" makes it skip them, which is only wrong if the image
+ * really was torn down. Every module load measured on this console so far has come back at the
+ * same address with its data intact, so "still there" is the likelier of the two - and the call
+ * below says so in the log rather than deciding in silence. */
+static bool dylib_orbis_image_resident(const void *at)
+{
+   OrbisKernelModule list[128];
+   size_t            avail = 0;
+   size_t            i;
+   unsigned          s;
+   const uint8_t    *addr  = (const uint8_t*)at;
+
+   if (!at)
+      return false;
+
+   if (sceKernelGetModuleList(list, sizeof(list) / sizeof(list[0]), &avail) != 0)
+   {
+      ps4_log("dylib: sceKernelGetModuleList failed - cannot tell whether %p is still mapped, "
+              "assuming it is and NOT re-running constructors", at);
+      return true;
+   }
+   if (avail > sizeof(list) / sizeof(list[0]))
+      avail = sizeof(list) / sizeof(list[0]);
+
+   for (i = 0; i < avail; i++)
+   {
+      OrbisKernelModuleInfo info;
+      memset(&info, 0, sizeof(info));
+      info.size = sizeof(info);
+      if (sceKernelGetModuleInfo(list[i], &info) != 0)
+         continue;
+      for (s = 0; s < info.segmentCount && s < 4; s++)
+      {
+         const uint8_t *base = (const uint8_t*)info.segmentInfo[s].address;
+         if (base && addr >= base && addr < base + info.segmentInfo[s].size)
+            return true;
+      }
+   }
+   return false;
+}
+
+/* Drop a module's record. Found by id because that is all dylib_close is given - the id is stable
+ * for the length of one open, which is exactly the span this needs. */
 static void dylib_orbis_forget(dylib_t lib)
+{
+   int32_t  mod = (int32_t)(intptr_t)lib;
+   unsigned i   = 0;
+
+   while (i < dylib_orbis_n_done)
+   {
+      if (dylib_orbis_ctors_done[i].mod != mod)
+      {
+         i++;
+         continue;
+      }
+      dylib_orbis_ctors_done[i] = dylib_orbis_ctors_done[--dylib_orbis_n_done];
+   }
+}
+
+/* The .init_array address recorded for an open module id, or NULL if we have no record. */
+static void *dylib_orbis_recorded_init_array(dylib_t lib)
 {
    int32_t  mod = (int32_t)(intptr_t)lib;
    unsigned i;
 
    for (i = 0; i < dylib_orbis_n_done; i++)
-   {
-      if (dylib_orbis_ctors_done[i] != mod)
-         continue;
-      dylib_orbis_ctors_done[i] = dylib_orbis_ctors_done[--dylib_orbis_n_done];
-      return;
-   }
+      if (dylib_orbis_ctors_done[i].mod == mod)
+         return dylib_orbis_ctors_done[i].init_array;
+   return NULL;
 }
 
 /* ps4_log: RARCH_LOG is not guaranteed to reach the console channel. */
@@ -141,11 +249,11 @@ static void dylib_orbis_forget(dylib_t lib)
 static void dylib_orbis_run_init_array(dylib_t lib, const char *path)
 {
    typedef void (*orbis_ctor_t)(void);
-   /* ⚠ ONCE PER MODULE, AND THE FIRST VERSION OF THIS GOT IT WRONG. sceKernelLoadStartModule on
-    * an already-loaded module hands back the SAME id without reloading it, and RetroArch loads a
-    * core several times over - to read its info, then to run it. Measured: the four constructors
-    * of mednafen_gba ran EIGHT times in one session, so every global was constructed over itself
-    * repeatedly. A leak at best; for anything holding a mutex or a buffer length, corruption.
+   /* ⚠ ONCE PER RESIDENT IMAGE. sceKernelLoadStartModule on an already-loaded module hands back
+    * the SAME id without reloading it, and RetroArch loads a core several times over - to read
+    * its info, then to run it. Measured: the four constructors of mednafen_gba ran EIGHT times
+    * in one session, and flycast's 61 ran five times, the last one over a fully initialised
+    * emulator. See the table above for what that did and how the key is chosen.
     *
     * Sixteen slots because a session with more distinct cores loaded than that is not a case this
     * needs to be clever about - past the end it simply stops running constructors, which is the
@@ -154,11 +262,11 @@ static void dylib_orbis_run_init_array(dylib_t lib, const char *path)
    orbis_ctor_t *first = NULL, *last = NULL;
    int32_t       mod   = (int32_t)(intptr_t)lib;
    unsigned      ran   = 0;
-   unsigned      i;
+   unsigned      slot  = (unsigned)-1;
+   orbis_ctor_t *start = NULL;
 
-   for (j = 0; j < dylib_orbis_n_done; j++)
-      if (dylib_orbis_ctors_done[j] == mod)
-         return;
+   if (!path)
+      return;
 
    if (sceKernelDlsym(mod, "__init_array_start", (void**)&first) != 0 || !first)
       return;
@@ -166,6 +274,35 @@ static void dylib_orbis_run_init_array(dylib_t lib, const char *path)
       return;
    if (last <= first || (size_t)(last - first) > 4096)
       return;
+   start = first;
+
+   /* ⚠ THE LOOKUP HAPPENS AFTER __init_array_start IS KNOWN, BECAUSE IT IS PART OF THE KEY. An
+    * entry matching on id alone is a recycled id or a re-mapped image, not this image. */
+   /* ⚠ AND THE ID IS NOT PART OF THE MATCH, BECAUSE IT IS NOT STABLE. Version three keyed on it
+    * first - `if (entry.mod != mod) continue;` - and every load still ran the constructors:
+    * measured 2026-08-30, melondsds' two constructors ran FIVE times in one session with this
+    * table in place, and flycast's sixty-one four times, all reporting the same retro_run address
+    * and therefore the same resident image. sceKernelLoadStartModule hands back a FRESH handle
+    * for a module it did not reload, so a lookup that starts at the id never finds the entry it
+    * wrote a moment ago, and simply appends another one until the table fills.
+    *
+    * What identifies an image is where its .init_array landed and which file it came from. Both
+    * are read out of the module itself rather than lent by the kernel. The id is still recorded
+    * and refreshed on every match, but only so dylib_close - which is handed nothing else - can
+    * find the entry to drop; no LOOKUP keys on it.
+    *
+    * This is also strictly safer than the id ever was for the 2026-08-24 case that started all
+    * this: nestopia unloaded and quicknes given the same id differ by PATH, so quicknes runs its
+    * constructors. */
+   for (j = 0; j < dylib_orbis_n_done; j++)
+   {
+      if (dylib_orbis_ctors_done[j].init_array != (void*)start)
+         continue;
+      if (strncmp(dylib_orbis_ctors_done[j].path, path, DYLIB_ORBIS_PATH_MAX - 1))
+         continue;
+      dylib_orbis_ctors_done[j].mod = mod;
+      return;
+   }
 
    for (; first < last; first++)
    {
@@ -176,8 +313,16 @@ static void dylib_orbis_run_init_array(dylib_t lib, const char *path)
       }
    }
 
-   if (dylib_orbis_n_done < sizeof(dylib_orbis_ctors_done) / sizeof(dylib_orbis_ctors_done[0]))
-      dylib_orbis_ctors_done[dylib_orbis_n_done++] = mod;
+   if (slot == (unsigned)-1
+         && dylib_orbis_n_done < sizeof(dylib_orbis_ctors_done) / sizeof(dylib_orbis_ctors_done[0]))
+      slot = dylib_orbis_n_done++;
+   if (slot != (unsigned)-1)
+   {
+      dylib_orbis_ctors_done[slot].mod        = mod;
+      dylib_orbis_ctors_done[slot].init_array = (void*)start;
+      strncpy(dylib_orbis_ctors_done[slot].path, path, DYLIB_ORBIS_PATH_MAX - 1);
+      dylib_orbis_ctors_done[slot].path[DYLIB_ORBIS_PATH_MAX - 1] = '\0';
+   }
 
    if (ran)
       RARCH_LOG("[PS4] ran %u global constructor(s) for %s\n", ran, path);
@@ -383,9 +528,31 @@ void dylib_close(dylib_t lib)
       set_dl_err();
    last_dyn_err[0] = 0;
 #elif defined(ORBIS)
-   int res;
-   dylib_orbis_forget(lib);
-   sceKernelStopUnloadModule((OrbisKernelModule)(intptr_t)lib, 0, NULL, 0, NULL, &res);
+   int    res         = 0;
+   int32_t rc;
+   /* ⚠ WHETHER THIS CLOSE ENDS THE IMAGE IS MEASURED AFTERWARDS, NOT ASSUMED EITHER WAY.
+    * Three versions of the table above guessed at it and each guess was falsified on hardware:
+    * assuming the image survives skipped constructors a fresh image needed (rip = 0), and
+    * assuming it dies re-ran them over a live one (the 0x54 write into a re-constructed
+    * std::vector). The record is kept or dropped according to what the kernel says is still
+    * mapped once the unload has been asked for. */
+   void  *init_array  = dylib_orbis_recorded_init_array(lib);
+   rc = sceKernelStopUnloadModule((OrbisKernelModule)(intptr_t)lib, 0, NULL, 0, NULL, &res);
+
+   if (init_array)
+   {
+      bool resident = dylib_orbis_image_resident(init_array);
+      /* ⚠ LOGGED EVERY TIME, BECAUSE THIS IS THE MEASUREMENT THE NEXT DIAGNOSIS RESTS ON. Which
+       * way this answers decides whether the next load constructs or not, and a wrong answer
+       * shows up as one of the two faults named above rather than as anything mentioning modules. */
+      ps4_log("dylib: unload of module %d -> rc 0x%08x res %d; .init_array %p is %s, so the next "
+              "load %s run its constructors",
+            (int)(intptr_t)lib, (unsigned)rc, res, init_array,
+            resident ? "STILL MAPPED" : "GONE",
+            resident ? "will NOT" : "will");
+      if (!resident)
+         dylib_orbis_forget(lib);
+   }
 #else
 #ifndef NO_DLCLOSE
    dlclose(lib);
