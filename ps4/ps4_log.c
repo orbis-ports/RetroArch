@@ -83,6 +83,35 @@ static slock_t *ps4_log_lock_get(void)
    return winner;
 }
 
+/* ⚠ THE FATAL BRANCH CALLS ps4_log_fatal, NOT ps4_log, AND THE DIFFERENCE IS THE WHOLE POINT
+ * OF THIS FILE.
+ *
+ * The two names read as "the careful one" and "the cheap one", and ps4_app.h still describes
+ * them that way - "Tagged \"[<app>] ...\" line on BOTH channels" over ps4_log. That stopped
+ * being true when orbis-compat introduced klogWanted(). In optional/ps4_app.cpp today:
+ *
+ *     static void ps4_vlog(...)      { netLine(buf); if (klogWanted()) sceKernelDebugOutText(...); }
+ *     void        ps4_log_frame(...) { netLine(buf); if (klogWanted()) sceKernelDebugOutText(...); }
+ *
+ * - the same two statements, and klogWanted() is `s_frameKlog || orbis_netlog_ready()==0`,
+ * which is FALSE on any console whose netlog came up. So both branches of this function were
+ * the SAME CHANNEL, and the table at the top of ps4_log.h described nothing - one layer below
+ * where it described nothing the first time, and for the same reason: a contract stated in a
+ * comment and enforced by nobody.
+ *
+ * ⚠ MEASURED, NOT REASONED. The 2026-08-30 capture pair carries a real SIGSEGV at 23:27:04:
+ *
+ *     ps4-udp-20260830-183440.log   4 lines - `fatal: signal 11`, `frame[00..00]`, `rip`, `trapno`
+ *     ps4-klog-20260830-183435.log  ZERO occurrences of "fatal:" in the whole 14252-line file
+ *
+ * The dump was legible that night only because ps4_idle_forever() held the process open long
+ * enough for the datagrams to leave. A process the kernel actually kills does not grant that,
+ * which is the exact scenario ps4_log.h's two-channel split exists for.
+ *
+ * ps4_log_fatal writes sceKernelDebugOutText FIRST and unconditionally, then the netlog. It
+ * costs 8-15 ms a line; the error path is bounded (9 [ERROR] lines in the 23:26 run of that
+ * same capture, 0 in the 23:44 run, plus 4-6 lines of dump) and a dying process can afford it.
+ * RARCH_DBG/LOG/WARN/LOG_OUTPUT stay on ps4_log_frame and stay off klog. */
 static void ps4_log_emit(const char *line, bool fatal_channel)
 {
    slock_t *lock = ps4_log_lock_get();
@@ -91,7 +120,7 @@ static void ps4_log_emit(const char *line, bool fatal_channel)
       slock_lock(lock);
 
    if (fatal_channel)
-      ps4_log("%s", line);
+      ps4_log_fatal("%s", line);
    else
       ps4_log_frame("%s", line);
 

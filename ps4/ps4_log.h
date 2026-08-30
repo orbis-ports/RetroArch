@@ -29,6 +29,29 @@
  * The table is true now because verbosity.c has an ORBIS arm in RARCH_LOG_V and a real
  * RARCH_ERR_V that call the four functions below. Nothing in verbosity.h routes PS4 log
  * lines any more; if you are looking for where a RARCH_LOG line goes, look there.
+ *
+ * ⚠ AND THE SECOND HALF OF THE TABLE WAS FALSE FOR A SECOND, INDEPENDENT REASON. Wiring
+ * RARCH_ERR to ps4_rarch_err() only moves the line to whichever orbis-compat entry point
+ * ps4_log_emit() picks, and it picked ps4_log() - which has been netlog-only on a console
+ * since orbis-compat introduced klogWanted(). The klog half of the error channel therefore
+ * existed on paper and nowhere else: zero "fatal:" lines in the 2026-08-30 klog capture
+ * against four in the netlog capture beside it, for a real SIGSEGV. ps4_log_emit() calls
+ * ps4_log_fatal() now; the note there carries the measurement.
+ *
+ * ⚠ AND A MISSING "[retroarch] " TAG IS NOT EVIDENCE OF A BYPASS. orbis-compat's tagLine()
+ * prefixes the tag ONCE, to the front of the buffer, and RetroArch hands it messages that
+ * already contain newlines - retroarch.c's build banner builds "Capabilities: ...\n[INFO]
+ * Version: ...\n[INFO] Git: ...\n[INFO] Built: ...\n" and passes the lot to one
+ * RARCH_LOG_OUTPUT. That is ONE datagram; the receiver splits it, so lines 2..n arrive
+ * untagged and with the first line's timestamp to the millisecond. Three such lines per run
+ * in the 2026-08-30 netlog capture, all at 23:44:52.183 with the Capabilities line. They went
+ * through the sink; only the tag did not repeat.
+ *
+ * ⚠ NOT EVERY PS4 LINE COMES THROUGH HERE, AND THAT IS DELIBERATE. ps4/orbis_report.h is a
+ * separate, klog-first channel for code linked into CORES, where log_cb is NULL until after
+ * global constructors and stderr goes nowhere - ps4/orbis_exec_mem.c is its main caller, six
+ * lines per core load. Those lines are klog-ONLY, so a reader watching the netlog alone will
+ * not see them. That is a property of the reader's setup, not a leak in this sink.
  */
 
 #ifndef PS4_LOG_H__
