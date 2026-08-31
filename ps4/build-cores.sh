@@ -1002,12 +1002,19 @@ report() { # core result size commit note
 # holds full speed. Two entries a letter apart, one of them slow for a reason no menu can show.
 # PS4_CORE_FORKS already stops it OVERWRITING mednafen_psx_hw; this stops it being offered.
 #
-# swanstation BUILDS AND DOES NOT RUN, which is the worst thing a core list can contain: a name
-# somebody picks, that fails on the first game. Four separate faults were fixed in it and a fifth
-# is open - see ps4-mesa-docs for the account. It is withheld rather than patched out of the tree,
-# because the work done on it is real and the patches should keep applying; what must not happen
-# is a user choosing it over mednafen_psx_hw, which works, holds 50 fps, and is already the
-# PlayStation core this port offers. Remove the name here the day it boots a game.
+# swanstation WAS withheld here from the first sweep until 2026-08-31, with the note "remove the
+# name here the day it boots a game". That day came: it runs, and the maintainer played through a
+# level at 2x upscale with 2xMLAA at 30-90 fps, then at 32x SSAA. The last fault was not the core's
+# at all - src/common/page_fault_handler.cpp has arms for __linux__/__ANDROID__/__APPLE__/__FreeBSD__
+# and none of them is true here (libc++'s __config #undefs __FreeBSD__), so fastmem's handler could
+# never install, its LUT was never allocated, and the recompiler baked a null base into every block.
+# Patch 0007 turns fastmem off where its handler cannot exist. See ps4-mesa-docs for the account.
+#
+# ⚠ ONE FAILURE FROM THAT DAY IS STILL UNEXPLAINED: after several minutes and three graphics-context
+# resets, the GPU VA arena refused a 2 MiB request. It has not reproduced across six resets since,
+# and orbis-drm now reports the arena's shape every 5 s and at any failure, so the next occurrence
+# names itself. It is offered anyway - it is now a better PlayStation core than several already in
+# the list, and mednafen_psx_hw stays beside it.
 #
 # play is the PlayStation 2 core, and it is withheld for a different reason: it WORKS and it is
 # too slow to be worth anyone's time. Measured on hardware, Grand Theft Auto III: 4-12 fps, with
@@ -1020,7 +1027,7 @@ report() { # core result size commit note
 # objects the new index does not name, so the removal happens on the next full run - and only a
 # full run, because a subset run publishes nothing.
 core_dropped() { # core -> 0 if this core is deliberately withheld
-  case " ${PS4_CORE_DROP-mednafen_psx swanstation play} " in *" $1 "*) return 0 ;; esac
+  case " ${PS4_CORE_DROP-mednafen_psx play} " in *" $1 "*) return 0 ;; esac
   return 1
 }
 
