@@ -1,0 +1,149 @@
+From: PS4 port
+Subject: [PATCH] orbis: turn fastmem off in the setting the emitter actually reads
+
+⚠ THIS FINISHES PATCH 0006, WHICH FIXED THE WRONG VARIABLE. That patch cleared Bus's copy of the
+fastmem mode and re-derived g_state.fastmem_base from it - which set the base to null, the state
+it was already in - and left g_settings.cpu_fastmem_mode at LUT. The recompiler asks g_settings,
+not Bus, so it went on emitting fastmem code. The crash came back unchanged:
+
+    fatal: signal 11 - SIGSEGV, si_code 1, fault address 0
+    fatal: rip 0000000275ecf801  rsp 00000007eeffa9c8  addr 0000000000000000
+    fatal: rip 0x275ecf801 is in 0x275ecc000-0x278ecc000 prot 0x7 (rwx) flexible, committed
+    fatal: code 0x275ecf7f1: bf 3c 09 00 00 89 fe c1 ef 0c 81 e6 ff 0f 00 00
+    fatal: code 0x275ecf801 (rip in this row): 48 8b 3c fb 44 8b 24 37 41 bd 3c 09 00 00 41 83
+
+Those bytes are cpu_recompiler_code_generator_x64.cpp:1725-1743, the LUT arm of
+EmitLoadGuestRAMFastmem, instruction for instruction:
+
+    mov  edi, 0x93C          EmitCopyValue(RARG1, address)   - a CONSTANT guest address
+    mov  esi, edi
+    shr  edi, 12             LUT page index
+    and  esi, 0xFFF          HOST_PAGE_OFFSET_MASK
+    mov  rdi, [rbx + rdi*8]  <- faulted.  RMEMBASEPTR is RBX (x64.cpp:13)
+    mov  r12d, [rdi + rsi]
+
+RBX is loaded once per block by EmitBeginBlock:
+
+    m_emit->mov(GetFastmemBasePtrReg(), qword[GetCPUPtrReg() + offsetof(CPU::State, fastmem_base)]);
+
+so a null RBX means g_state.fastmem_base was null when the block RAN, and the block was emitted
+anyway because g_settings said fastmem was on when it was COMPILED. Both halves have one cause.
+
+THE CHAIN, IN ORDER:
+
+ 1. common/page_fault_handler.cpp defines USE_SIGSEGV only for __linux__ / __ANDROID__ /
+    __APPLE__ / __FreeBSD__. This SDK's libc++ undefines __FreeBSD__ in every C++ TU and nothing
+    names __ORBIS__, so InstallHandler() reaches `#else return false;` - unconditionally, on this
+    platform, with no way for it to succeed. The log has said so since patch 0003:
+
+        [InitializeFastmem] Failed to install page fault handler
+
+ 2. CPU::CodeCache::Initialize() runs `if (g_settings.IsUsingFastmem() && !InitializeFastmem()) {}`
+    BEFORE CompileDispatcher and before any block is compiled. InitializeFastmem returns early on
+    that failure, so Bus::UpdateFastmemViews(mode) never runs and m_fastmem_lut - a 16 MiB calloc
+    at bus.cpp:400 - is NEVER ALLOCATED. It did not fail; it was never asked for.
+
+ 3. Bus::GetFastmemBase() returns nullptr while Bus's mode is Disabled, so
+    CPU::UpdateFastmemBase() leaves g_state.fastmem_base null. That is the value RBX gets.
+
+ 4. g_settings.cpu_fastmem_mode is still LUT (the libretro option's default), so
+    IsUsingFastmem() is still true and generic.cpp:40 keeps emitting EmitLoadGuestRAMFastmem for
+    every constant RAM address. ⚠ That call site is gated ONLY by IsUsingFastmem() - not by
+    cpu_fastmem_rewrite, which libretro_host_interface.cpp:1079 already forces false in LUT mode.
+    It is the one fastmem emitter still live here, which is why every reported fault has been a
+    constant address.
+
+⚠ AND FASTMEM CANNOT BE MADE TO WORK BY ALLOCATING THE LUT EITHER. In LUT mode the handler is not
+an optimisation, it is the mechanism: a null LUT entry for a non-RAM address is how a fastmem
+access is turned into a slowmem one (LUTPageFaultHandler backpatches it), and
+CPU::UpdateFastmemBase() deliberately nulls the base whenever cop0 SR.Isc is set, trusting the
+same handler to catch the result. Without a handler both of those are crashes.
+
+So the fix is to say so in the setting the emitter reads, at the point upstream reserves for
+exactly this - HostInterface::FixIncompatibleSettings, two lines below the identical downgrade
+`#ifndef WITH_MMAP_FASTMEM` already performs. It runs on the initial LoadSettings and on every
+core-option change (libretro_host_interface.cpp:366 and :1350), both before the code cache is
+(re)initialised, so no block is ever compiled with it on.
+
+⚠ THE `shr 12` / `and 0xFFF` IN THAT DISASSEMBLY ARE NOT A 4096 ASSUMPTION ABOUT THE HOST.
+HOST_PAGE_SIZE (core/types.h:187) is swanstation's own LUT granularity over the 4 GiB guest
+window - FASTMEM_LUT_NUM_PAGES is 0x100000000 >> 12 - and in LUT mode it never reaches mprotect.
+The console's 16 KiB granule, which patches 0004 and 0005 exist for, is not involved. The one
+place HOST_PAGE_SIZE does reach SetPageProtection is bus.cpp:357/493, inside the MMap arm, which
+patch 0001 already made unreachable here.
+
+Left for later: an __ORBIS__ arm in page_fault_handler.cpp. orbis-compat now delivers SA_SIGINFO
+with FreeBSD's value, and this handler only rewrites code and returns - it never edits the
+ucontext, which this kernel ignores anyway - so it is plausible. It is also a performance
+project that needs hardware to iterate on, and it is not what makes the core run.
+
+--- a/src/core/cpu_code_cache.cpp
++++ b/src/core/cpu_code_cache.cpp
+@@ -1019,6 +1019,16 @@
+     //
+     // Disabling it here is the difference between "fastmem is unavailable" and "fastmem is
+     // unavailable and the generated code does not know".
++    //
++    // ⚠ AND THE SETTING IS THE VARIABLE THAT MATTERS - the two lines below it were not enough.
++    // The emitter never looks at Bus; it asks g_settings.IsUsingFastmem(), which is
++    // `cpu_fastmem_mode != Disabled`. Clearing Bus's copy only made GetFastmemBase() return
++    // nullptr, which is precisely the null RBX the generated code then indexed the LUT through.
++    // In practice this whole branch is now dead - FixIncompatibleSettings turns the mode off
++    // before System::Boot ever reaches here - but leaving it wrong would put the crash one
++    // settings reload away.
++    g_settings.cpu_fastmem_mode = CPUFastmemMode::Disabled;
++    g_settings.cpu_fastmem_rewrite = false;
+     Bus::UpdateFastmemViews(CPUFastmemMode::Disabled);
+     CPU::UpdateFastmemBase();
+ #endif
+diff --git a/src/core/host_interface.cpp b/src/core/host_interface.cpp
+index 1d6f503..c9c0225 100644
+--- a/src/core/host_interface.cpp
++++ b/src/core/host_interface.cpp
+@@ -211,6 +211,46 @@ void HostInterface::FixIncompatibleSettings(bool display_osd_messages)
+   }
+ #endif
+ 
++#ifdef __ORBIS__
++  // ⚠ EVERY FASTMEM MODE NEEDS A PAGE-FAULT HANDLER, AND THIS PLATFORM CANNOT INSTALL ONE.
++  // common/page_fault_handler.cpp only defines USE_SIGSEGV for __linux__/__ANDROID__/__APPLE__/
++  // __FreeBSD__, and this SDK's libc++ undefines __FreeBSD__ in every C++ TU, so InstallHandler
++  // falls through to `#else return false;` unconditionally. The log says so:
++  //
++  //     [InitializeFastmem] Failed to install page fault handler
++  //
++  // Turning the mode off HERE is what actually stops the recompiler, because the emitter asks
++  // g_settings - not Bus - whether to emit fastmem accesses:
++  //
++  //     generic.cpp:40   if (g_settings.IsUsingFastmem() && Bus::IsRAMAddress(...))
++  //                        EmitLoadGuestRAMFastmem(...)
++  //
++  // and IsUsingFastmem() is `cpu_fastmem_mode != Disabled`. With the mode left at LUT the
++  // generated block preloads RBX from g_state.fastmem_base (EmitBeginBlock), which
++  // Bus::GetFastmemBase() reports as nullptr once the mode inside Bus is Disabled, and then
++  // indexes the LUT through it. Measured on hardware, in the recompiler's own RWX buffer:
++  //
++  //     fatal: rip 0000000275ecf801  addr 0000000000000000  trapno 12 err 4
++  //     bf 3c 09 00 00  mov  edi, 0x93C     ; constant guest address
++  //     89 fe           mov  esi, edi
++  //     c1 ef 0c        shr  edi, 12        ; LUT page index
++  //     81 e6 ff 0f 00 00  and esi, 0xFFF   ; offset in page
++  //     48 8b 3c fb     mov  rdi, [rbx+rdi*8]   <- faulted, rbx == 0
++  //     44 8b 24 37     mov  r12d, [rdi+rsi]
++  //
++  // ⚠ THE 12 AND THE 0xFFF ARE NOT THE HOST PAGE SIZE. HOST_PAGE_SIZE in core/types.h is
++  // swanstation's own LUT granularity over the 4 GiB guest window (FASTMEM_LUT_NUM_PAGES =
++  // 0x100000000 >> 12) and never reaches mprotect in LUT mode, so the console's 16 KiB granule
++  // is not involved here.
++  if (g_settings.cpu_fastmem_mode != CPUFastmemMode::Disabled)
++  {
++    Log_WarningPrintf("orbis: fastmem needs a SIGSEGV handler this platform cannot install; "
++                      "disabling it so the recompiler stops emitting a null base.");
++    g_settings.cpu_fastmem_mode = CPUFastmemMode::Disabled;
++  }
++  g_settings.cpu_fastmem_rewrite = false;
++#endif
++
+ #if defined(__ANDROID__) && defined(__arm__) && !defined(__aarch64__) && !defined(_M_ARM64)
+   if (g_settings.runahead_frames > 0)
+   {
