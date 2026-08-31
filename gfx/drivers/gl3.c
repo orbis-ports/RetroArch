@@ -1977,10 +1977,43 @@ static bool gl3_init_hw_render(gl3_t *gl, unsigned width, unsigned height)
    GLint max_fbo_size;
    GLint max_rb_size;
    GLenum status;
+   GLenum alloc_err;
    struct retro_hw_render_callback *hwr = video_driver_get_hw_context();
+   video_driver_state_t *video_st       = video_state_get_ptr();
+   const struct retro_game_geometry *geom = &video_st->av_info.geometry;
 
    if (gl->flags & GL3_FLAG_USE_SHARED_CONTEXT)
       gl->ctx_driver->bind_hw_render(gl->ctx_data, true);
+
+   /* ⚠ THE CALLER HANDS THIS A SQUARE POWER OF TWO, AND ON THIS PORT THAT IS THE DIFFERENCE
+    * BETWEEN A WORKING FBO AND A GIGABYTE. gl3_init() passes
+    * RARCH_SCALE_BASE * video->input_scale for BOTH axes, and input_scale is
+    * next_pow2(MAX(geom->max_width, geom->max_height)) / RARCH_SCALE_BASE - so the request is
+    * always square and always rounded up to a power of two, whatever shape the core declared.
+    *
+    * Measured with melonDS DS, 2026-08-31: its hybrid layout at the maximum OpenGL scale
+    * declares max_width 8198 x max_height 4608 - the 8198 is 256*8*3 + 256*8 plus SIX pixels of
+    * hybrid padding. next_pow2(8198) is 16384, so six pixels past a power of two turn a
+    * 8198x4608 request into 16384x16384: 1.0 GiB of RGBA8 where 144 MiB was wanted, a sevenfold
+    * overshoot. glTexStorage2D then fails, the colour attachment is never allocated, and the
+    * only thing said about it is "Framebuffer is not complete" - which reads as an FBO rule
+    * being broken rather than as an allocation that did not fit.
+    *
+    * ⚠ AND THE POWER OF TWO IS NOT LOAD-BEARING HERE. It is inherited from the GL2 era, where a
+    * render target had to be POT. This driver requires a 3.2 core context (GL_ARB_texture_npot
+    * has been core since 2.0), and the allocated size is recorded in hw_render_max_width/height
+    * a few lines below and handed to the filter chain as texture.padded_width/padded_height, so
+    * an arbitrary rectangle is carried correctly by every consumer. The core cannot render
+    * outside what it declared: growing max_width/max_height goes through
+    * RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, which reinitialises the video driver and runs this
+    * function again.
+    *
+    * The square is kept as the fallback for a core that declares no geometry at all. */
+   if (geom->max_width && geom->max_height)
+   {
+      width  = geom->max_width;
+      height = geom->max_height;
+   }
 
    RARCH_LOG("[GLCore] Initializing HW render (%ux%u).\n", width, height);
    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_fbo_size);
@@ -2007,9 +2040,21 @@ static bool gl3_init_hw_render(gl3_t *gl, unsigned width, unsigned height)
     * 10,000 nits, so 8-bit PQ bands heavily in the darks. RGB10_A2 costs
     * exactly the same bandwidth as RGBA8 and is the format the pixel
     * format names, so there is no reason to make it optional. */
+   /* Drained first so the code below reports THIS call rather than something a driver left
+    * behind earlier in initialisation. */
+   while (glGetError() != GL_NO_ERROR);
    glTexStorage2D(GL_TEXTURE_2D, 1,
          gl->video_info.source_hdr10 ? GL_RGB10_A2 : GL_RGBA8,
          width, height);
+   /* ⚠ SAY THAT THE ALLOCATION FAILED, BECAUSE THE COMPLETENESS CHECK BELOW WILL NOT. A
+    * glTexStorage2D that answers GL_OUT_OF_MEMORY leaves the texture with no storage, and the
+    * only symptom downstream is "Framebuffer is not complete" - the same line an unsupported
+    * attachment format produces. Those are different faults with different fixes, and this port
+    * spent a hardware run telling them apart. */
+   if ((alloc_err = glGetError()) != GL_NO_ERROR)
+      RARCH_ERR("[GLCore] HW render texture %ux%u was refused (GL error 0x%04x)%s.\n",
+            width, height, (unsigned)alloc_err,
+            alloc_err == GL_OUT_OF_MEMORY ? " - out of memory, the size is the problem" : "");
    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl->hw_render_texture, 0);
 
    gl->hw_render_rb_ds = 0;
@@ -3167,8 +3212,18 @@ static void *gl3_init(const video_info_t *video,
 
    rglgen_resolve_symbols(ctx_driver->get_proc_address);
 
+   /* ⚠ THE FAILURE OF THIS CALL IS NOT FATAL AND THAT IS WHY IT HAS TO BE SAID OUT LOUD.
+    * Upstream discards the result, and the consequence is quiet rather than absent:
+    * GL3_FLAG_HW_RENDER_ENABLE stays clear, so gl3_get_current_framebuffer() hands the core
+    * FRAMEBUFFER 0 - the window's back buffer - and this driver then overwrites it with its own
+    * present pass every frame. The core runs, the run loop turns, the frame counter climbs, and
+    * nothing the core drew is ever seen. Observed on hardware 2026-08-31: melonDS DS reached
+    * seq 11510 in exactly that state. One line here is the difference between "the GL renderer
+    * is slow" and "the GL renderer was never connected". */
    if (hwr && hwr->context_type != RETRO_HW_CONTEXT_NONE)
-      gl3_init_hw_render(gl, RARCH_SCALE_BASE * video->input_scale, RARCH_SCALE_BASE * video->input_scale);
+      if (!gl3_init_hw_render(gl, RARCH_SCALE_BASE * video->input_scale, RARCH_SCALE_BASE * video->input_scale))
+         RARCH_ERR("[GLCore] HW render is NOT connected: the core will be handed framebuffer 0 "
+                   "and everything it draws will be overwritten by this driver.\n");
 
 #ifdef GL_DEBUG
    gl3_begin_debug(gl);
