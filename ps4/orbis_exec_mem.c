@@ -26,6 +26,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <orbis/libkernel.h>
@@ -76,9 +77,39 @@ static int orbis_exec_state = -1;
  * call for pages already promoted must NOT re-run the stub check, which writes six bytes over
  * whatever the recompiler has since generated there. Four slots is one more than this port's
  * hungriest core needs. */
-#define ORBIS_EXEC_MAX_PROMOTED 4
+/* ⚠ SIXTEEN, AND OVERLAPPING RANGES ARE MERGED, BECAUSE FOUR AND EXACT CONTAINMENT WERE NOT ENOUGH.
+ *
+ * Measured on hardware 2026-09-01: melonDS asks twice, with the SAME length and a base 224 KiB
+ * apart - 0x800e14000 and 0x800e4c000, 131072 KiB each. Neither range contains the other, so the
+ * containment test missed both ways and the two alternated forever: mprotect, stub, log, mprotect,
+ * stub, log, for the whole session. The stub is six bytes of x86 memcpy'd into the buffer, so this
+ * was scribbling on melonDS's generated code during gameplay - which is exactly what the comment
+ * above says must never happen.
+ *
+ * So: overlap, not containment; the union is stored; and the stub runs only for a range that
+ * touches nothing already proven. */
+#define ORBIS_EXEC_MAX_PROMOTED 16
 static struct { uintptr_t base, end; int ok; } orbis_exec_promoted[ORBIS_EXEC_MAX_PROMOTED];
 static unsigned orbis_exec_promoted_n;
+
+/* ⚠ QUIET ON THE PATH THAT REPEATS. orbis_report is a SYNCHRONOUS 8-15 ms write to /data, and the
+ * frontend loads and unloads a core repeatedly while the user walks the menu - two full
+ * load/construct/unload cycles in 82 ms were measured on 2026-09-01. Each load reran this probe and
+ * paid for two of those writes, which the maintainer sees as stutter in the menu before any content
+ * is running. A failure is still loud; success says it once per module and then stops.
+ * ORBIS_EXEC_MEM_VERBOSE=1 restores the old per-call chatter. */
+static int orbis_exec_verbose = -1;
+static int orbis_exec_first_stub = 1;
+
+static int orbis_exec_should_log(void)
+{
+   if (orbis_exec_verbose < 0)
+   {
+      const char *const e = getenv("ORBIS_EXEC_MEM_VERBOSE");
+      orbis_exec_verbose = (e && *e && *e != '0') ? 1 : 0;
+   }
+   return orbis_exec_verbose;
+}
 
 /* ⚠ EVERY REPORT GOES THROUGH orbis_report AND NOT THROUGH log_cb. This file is linked into cores
  * that have not been given a libretro logger yet at the point the probe runs - the first caller
@@ -109,7 +140,12 @@ static int orbis_exec_verify(void *at)
    memcpy(at, stub, sizeof(stub));
    memcpy(&fn, &at, sizeof(fn));
 
-   orbis_report("exec_mem", "calling a stub at %p to prove the promotion", at);
+   /* The announcement goes out BEFORE the call because a page that will not execute ends the
+      process rather than returning an error - so on the first stub of a module it is the only
+      evidence that would survive. After that the answer is already on the record. */
+   if (orbis_exec_first_stub || orbis_exec_should_log())
+      orbis_report("exec_mem", "calling a stub at %p to prove the promotion", at);
+   orbis_exec_first_stub = 0;
    got = fn();
 
    if (got != 0x00c0ffeeu)
@@ -132,6 +168,7 @@ int orbis_exec_mem_promote(void *addr, size_t len)
    uintptr_t end  = base + len;
    int32_t   rc;
    int       ok;
+   int       overlap;
    unsigned  i;
 
    /* ⚠ ROUNDED OUTWARDS, NOT INWARDS. sceKernelMprotect takes 16 KiB units and a caller's array
@@ -149,6 +186,16 @@ int orbis_exec_mem_promote(void *addr, size_t len)
       if (base >= orbis_exec_promoted[i].base && end <= orbis_exec_promoted[i].end)
          return orbis_exec_promoted[i].ok;
 
+   /* ⚠ OVERLAPPING, THOUGH NOT CONTAINED: the new pages still need mprotect, but the stub must NOT
+      run - some of this range is already carrying generated code. See the table above. */
+   overlap = -1;
+   for (i = 0; i < orbis_exec_promoted_n; i++)
+      if (base < orbis_exec_promoted[i].end && end > orbis_exec_promoted[i].base)
+      {
+         overlap = (int)i;
+         break;
+      }
+
    rc = sceKernelMprotect((void*)base, (size_t)(end - base), ORBIS_PROT_RWX);
    if (rc != 0)
    {
@@ -158,12 +205,26 @@ int orbis_exec_mem_promote(void *addr, size_t len)
               (void*)base, (unsigned long)((end - base) / 1024), (unsigned)rc);
       ok = 0;
    }
+   else if (overlap >= 0)
+   {
+      /* The pages next door were proven; these are the same mapping extended. Take that verdict
+         rather than writing a stub over code that is already there, and widen the entry to the
+         union so the pair stops alternating. */
+      ok = orbis_exec_promoted[overlap].ok;
+      if (base < orbis_exec_promoted[overlap].base)
+         orbis_exec_promoted[overlap].base = base;
+      if (end > orbis_exec_promoted[overlap].end)
+         orbis_exec_promoted[overlap].end = end;
+      return ok;
+   }
    else
    {
+      const int say = orbis_exec_first_stub || orbis_exec_should_log();
       ok = orbis_exec_verify(addr) ? 1 : 0;
-      orbis_report("exec_mem", "%lu KiB at %p is %s",
-              (unsigned long)(len / 1024), addr,
-              ok ? "writable and executable" : "NOT executable");
+      if (say || !ok)
+         orbis_report("exec_mem", "%lu KiB at %p is %s",
+                 (unsigned long)(len / 1024), addr,
+                 ok ? "writable and executable" : "NOT executable");
    }
 
    /* ⚠ THE MODULE-WIDE VERDICT ONLY EVER GETS WORSE. One buffer the console will not run is
