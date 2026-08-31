@@ -785,12 +785,21 @@ define ORBIS_BUILD_SUMMARY
    cores:    $(if $(filter 1,$(HAVE_DYNAMIC)),.prx modules via sceKernelLoadStartModule,STATIC DUMMY ONLY - the core list will be empty)
    dummy:    HAVE_STATIC_DUMMY=$(HAVE_STATIC_DUMMY)
    vulkan:   $(if $(filter 1,$(HAVE_VULKAN)),RADV linked from $(RADV_ARCHIVE),OFF - software rendering only)
-   gl:       $(if $(filter 1,$(HAVE_OPENGLES)),OpenGL ES over zink - video driver gl,$(if $(filter 1,$(HAVE_OPENGL_CORE)),DESKTOP OpenGL over zink - video drivers gl and glcore - ceiling 3.3 core,OFF))
+   gl:       $(if $(filter 1,$(HAVE_OPENGLES)),OpenGL ES over zink - video driver gl,$(if $(filter 1,$(HAVE_OPENGL_CORE)),DESKTOP OpenGL over zink - video drivers gl and glcore,OFF))
    package:  $(PS4_TITLE_ID) / $(PS4_TITLE_NAME)
 endef
 export ORBIS_BUILD_SUMMARY
 
-$(TARGET).elf: $(OBJ) $(ORBIS_COMPAT_LIB)
+# ⚠ THE RADV ARCHIVE IS A PREREQUISITE, AND LEAVING IT OUT COST AN AFTERNOON. The link line pulls
+# $(RADV_ARCHIVE) in through $(LIBS), but make cannot see that: a rebuilt driver left the .elf
+# untouched, `make pkg` reported success, and the package shipped the PREVIOUS driver. Measured
+# 2026-08-31 - four rounds of "the fix did not take" on hardware, each one a rebuilt Mesa that never
+# reached the console, while ccache served an object whose __TIME__ stamp still read the old build
+# and made the log agree with the wrong answer. Two independent things saying "unchanged" is what
+# made it survive that long.
+$(TARGET).elf: $(OBJ) $(ORBIS_COMPAT_LIB) \
+               $(if $(filter 1,$(HAVE_VULKAN)),$(RADV_ARCHIVE)) \
+               $(if $(filter 1,$(HAVE_OPENGLES) $(HAVE_OPENGL_CORE)),$(GALLIUM_ARCHIVE))
 	@$(if $(Q), $(shell echo echo LD $@),)
 	$(Q)$(LD) $(OBJ) $(LDFLAGS) $(LIBS) -o $@
 	@echo "== $@"
