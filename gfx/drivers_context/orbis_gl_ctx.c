@@ -59,6 +59,7 @@
 
 #include "../../frontend/frontend_driver.h"
 #include "../../verbosity.h"
+#include "../../ps4/orbis_watchdog.h"
 #include "../common/egl_common.h"
 
 #include <ps4_app.h>
@@ -165,17 +166,22 @@ static unsigned orbis_gl_req_major = 3;
 static unsigned orbis_gl_req_minor = 2;
 static bool     orbis_gl_core_ctx  = true;
 
-/* ⚠ THE CEILING IS 3.3, MEASURED, AND A LAPTOP SAID 4.6. mesa-ps4's glcaps probe was run on
- * hardware on 2026-08-30 and is the only evidence that counts here:
+/* ⚠ THE CEILING WAS 3.3 AND IT WAS ONE MISSING FEATURE, NOT A LIMIT OF THE HARDWARE. mesa-ps4's
+ * glcaps probe, run on hardware on 2026-08-30, measured this:
  *
  *     OpenGL 4.6 / 4.5   eglCreateContext refused (0x3009 = EGL_BAD_MATCH)
  *     OpenGL 3.3         OK -> "3.3 (Core Profile) Mesa 26.3.0-devel", GLSL 3.30, 226 exts
  *     OpenGL 3.2         OK -> the same 3.3 core context
  *     OpenGL 2.1         OK -> "3.3 (Compatibility Profile)", 304 exts
  *
- * An earlier probe against a drm-shim on the build host reported 4.6 and was wrong about this
- * console. So the ladder below tops out at 3.3 rather than asking for what a core requested and
- * failing the whole video driver when it is 4.x.
+ * The refusal was _mesa_compute_version stopping at the first rung of its extension ladder it could
+ * not satisfy, and that rung was ARB_tessellation_shader: RADV reported no tessellation because the
+ * tessellation factor ring had no memory behind it. Sony's ring is now mapped and the 44-case
+ * dEQP-VK.tessellation smoke passes 44/44, so the port reports GL 4.6 / ES 3.2 (mesa-ps4
+ * 0552ea5e2f6, 2026-08-31) and the clamp that used to sit in rung 0 is gone.
+ *
+ * ⚠ The rungs above 3.3 are kept as rungs rather than assumed: a refusal here costs one
+ * eglCreateContext, and this port has already been wrong about this ceiling in both directions.
  *
  * ⚠ AND THE PROFILE IS DECIDED BY THE VERSION WHEN NO MASK IS GIVEN. EGL's default for
  * EGL_CONTEXT_OPENGL_PROFILE_MASK is the core bit, which is why 3.3 with no mask came back as a
@@ -188,7 +194,9 @@ static bool orbis_gl_create_desktop(orbis_gl_ctx_data_t *ctx)
    unsigned i;
    /* major, minor, ask-for-core */
    static const struct { unsigned major, minor; int core; } rungs[] = {
-      { 0, 0, 1 },   /* whatever bind_api was asked for, clamped below */
+      { 0, 0, 1 },   /* whatever bind_api was asked for, passed through */
+      { 4, 6, 1 },
+      { 4, 5, 1 },
       { 3, 3, 1 },
       { 3, 3, 0 },
       { 3, 2, 1 },
@@ -209,13 +217,9 @@ static bool orbis_gl_create_desktop(orbis_gl_ctx_data_t *ctx)
          major = orbis_gl_req_major;
          minor = orbis_gl_req_minor;
          core  = orbis_gl_core_ctx;
-         /* Clamped to the measured ceiling rather than passed through: a core asking for 4.1
-          * would otherwise spend a rung on a request this driver is known to refuse. */
-         if (major > 3 || (major == 3 && minor > 3))
-         {
-            major = 3;
-            minor = 3;
-         }
+         /* Passed through, not clamped. Until 2026-08-31 a core asking for 4.1 was rewritten to 3.3
+            here, because 4.x was refused; tessellation landed and it is not refused any more, and a
+            core that asks for 4.1 and silently gets 3.3 fails later and further from the cause. */
          if (major < 3 || (major == 3 && minor < 2))
             core = 0;
       }
@@ -233,7 +237,7 @@ static bool orbis_gl_create_desktop(orbis_gl_ctx_data_t *ctx)
 
       if (egl_create_context(&ctx->egl, attribs))
       {
-         RARCH_LOG("[PS4] desktop GL %u.%u %s context created.\n",
+         orbis_watchdog_note("[PS4] desktop GL %u.%u %s context created.",
                major, minor, core ? "core" : "(no profile mask)");
          return true;
       }
@@ -306,7 +310,11 @@ static bool gfx_ctx_orbis_gl_set_video_mode(void *data,
    {
       const GLubyte *ver  = glGetString(GL_VERSION);
       const GLubyte *slv  = glGetString(GL_SHADING_LANGUAGE_VERSION);
-      RARCH_LOG("[PS4] GL context is: %s | GLSL %s\n",
+      /* ⚠ orbis_watchdog_note, NOT RARCH_LOG: this one goes on disk. RARCH_LOG reaches klog and the
+       * netlog, both of which need a listener, and the run of 2026-08-31 that was supposed to
+       * confirm GL 4.6 could not be read afterwards because nobody was listening. Which context the
+       * driver actually gave us decides how every other number in that run is read. */
+      orbis_watchdog_note("[PS4] GL context is: %s | GLSL %s",
             ver ? (const char*)ver : "(null)",
             slv ? (const char*)slv : "(null)");
    }
