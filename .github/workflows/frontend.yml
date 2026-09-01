@@ -102,8 +102,16 @@ jobs:
       # The three switches below are ALL load-bearing and Makefile.orbis says so at length:
       # HAVE_DYNAMIC=1 makes the frontend load .prx cores through sceKernelLoadStartModule,
       # HAVE_STATIC_DUMMY=0 stops cores/dynamic_dummy.c being linked in their place, and
-      # HAVE_VULKAN=1 is what HAVE_OPENGLES=1 requires (zink is a Vulkan client, so the ICD
+      # HAVE_VULKAN=1 is what the GL flavour requires (zink is a Vulkan client, so the ICD
       # has to be in the link whether or not Vulkan is the video driver that runs).
+      #
+      # ⚠ AND THE GL FLAVOUR IS NOT NAMED HERE ANY MORE. Makefile.orbis defaults to
+      # HAVE_OPENGL_CORE=1 - desktop GL, which is what the one shipping package is - and the two
+      # flags are mutually exclusive with an $(error). Passing HAVE_OPENGLES=1 here after that
+      # default flipped stopped the build dead with "HAVE_OPENGLES and HAVE_OPENGL_CORE are
+      # mutually exclusive", which is the guard doing its job: CI was still building the flavour
+      # that no longer ships. Leaving the flavour unnamed means this job builds whatever
+      # Makefile.orbis says the package IS, rather than a second opinion about it.
       # Building with HAVE_VULKAN=1 alone shipped once with an EMPTY core list and wrote an
       # empty core_info.cache to /data - measured 2026-08-23.
       #
@@ -155,7 +163,7 @@ jobs:
           echo "\`$baked\`" >> "$GITHUB_STEP_SUMMARY"
 
           make -f Makefile.orbis \
-            HAVE_VULKAN=1 HAVE_OPENGLES=1 \
+            HAVE_VULKAN=1 \
             HAVE_STATIC_DUMMY=0 HAVE_DYNAMIC=1 \
             ORBIS_BUILDBOT_URL="$url" \
             -j"$(getconf _NPROCESSORS_ONLN)" pkg
