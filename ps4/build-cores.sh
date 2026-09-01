@@ -5,7 +5,7 @@
 #
 #   --recipe <file>   a libretro-super recipe (recipes/linux/cores-linux-x64-generic)
 #   --work <dir>      clones, logs and intermediates      (default ~/.cache/ps4-cores)
-#   --out <dir>       .prx and .info go here              (default <work>/out)
+#   --out <dir>       .prx and .info go here              (default <work>/out, see --gl)
 #   --patches <dir>   per-core patch tree                 (default ps4/core-patches)
 #   --all             every GENERIC core in the recipe
 #   --list            print what the recipe offers, and exit
@@ -14,7 +14,7 @@
 #   --drop-clones     delete each core's clone once it is done with (default under CI)
 #   --keep-clones     keep every clone (default interactively)
 #   --jobs N          parallelism for each core's make
-#   --gl es|desktop   which frontend variant the cores are for   (default es)
+#   --gl es|desktop   which frontend variant the cores are for   (default desktop)
 #   --core-timeout S  wall-clock cap per core in seconds; 0 disables   (default 1500)
 #
 # ⚠ ONE CORE IS THE NORMAL CASE, NOT THE SPECIAL ONE. `--all` exists for a sweep, but the thing
@@ -28,19 +28,36 @@
 #   ps4/build-cores.sh --recipe <r> --keep gambatte        incremental, patches left alone
 #
 # ⚠ --gl PICKS WHICH FRONTEND THE CORES ARE BEING BUILT FOR, AND MOST CORES DO NOT CARE.
-# There are two eboots - the GLES one (RTRV00001) and the desktop-GL one (RTRG00001), see
-# Makefile.orbis - because HAVE_OPENGLES is a global -D and runloop.c refuses the other family's
-# RETRO_HW_CONTEXT_* outright. A SOFTWARE core is one .prx that works under either, so the
-# desktop set is the GLES set with the handful of GL cores rebuilt, not a second full sweep.
+# ONE package ships: RTRV00001, desktop GL (HAVE_OPENGL_CORE ?= 1 in Makefile.orbis), measured on
+# hardware as GL 4.6 core / GLSL 4.60 with cores seeing it. The second eboot that carried desktop
+# GL while it was being brought up, RTRG00001, is gone, and so is /data/retroarch-glcore/. So
+# `desktop` is the default here. `--gl es` still builds, because HAVE_OPENGLES=1 is still a
+# supported frontend build flag and comparing the two is sometimes worth an afternoon - it just
+# has no title of its own to be installed under any more.
 #
-#   ps4/build-cores.sh --recipe <r> --gl desktop melondsds mupen64plus_next scummvm
+# The flavour only reaches the handful of cores that ASK FOR A GL CONTEXT. HAVE_OPENGLES is a
+# global -D and runloop.c refuses the other family's RETRO_HW_CONTEXT_* outright, but a SOFTWARE
+# core is one .prx that works under either. So an es set is the desktop set with those few cores
+# rebuilt, not a second full sweep.
 #
-# The output directory defaults apart (out/ and out-glcore/) so the two sets cannot overwrite
-# each other, and only the cores whose flags actually differ need to exist in the second one.
+#   ps4/build-cores.sh --recipe <r> --gl es melondsds mupen64plus_next scummvm
 #
-# ⚠ play IS NOT IN THE DESKTOP SET AND THAT IS NOT AN OVERSIGHT. Its bundled glew wants GLX -
-# <GL/glx.h>, an X display, glXGetProcAddress - and there is no X on this console and no GLX in
-# this Mesa (-Dglx=disabled). It stays a GLES core, which means it stays with the GLES eboot.
+# The default output directory follows the flavour - out/ for desktop, out-es/ for es - because
+# the two sets share file names and dropping one on the other is a core that loads and then
+# refuses its own context. out/ is the SHIPPING set, which is what make-index.sh's --in and the
+# publish job in .github/workflows/cores.yml already point at without being told.
+#
+# ⚠ out/ USED TO MEAN THE GLES SET. Desktop went to out-glcore/, which nothing writes any more.
+# An out/ left over from before this change holds ES binaries under the same names the desktop
+# sweep writes, so a partial sweep leaves a mixture nothing in the file names can tell apart.
+# Empty it once, before the first full desktop sweep on a machine that has one.
+#
+# ⚠ play CANNOT BE BUILT FOR DESKTOP AT ALL, AND WITH ONE PACKAGE THAT LEAVES IT NOWHERE TO LIVE.
+# Its bundled glew wants GLX - <GL/glx.h>, an X display, glXGetProcAddress - and there is no X on
+# this console and no GLX in this Mesa (-Dglx=disabled). It is a GLES core and it can only be a
+# GLES core, and the GLES eboot it used to ship beside no longer exists. The loop below refuses
+# it under --gl desktop rather than emitting a .prx that looks like the others and cannot get a
+# context; it is withheld from the index for a separate reason as well - see core_dropped().
 #
 # ⚠ AND IT DOES NOT PATCH MAKEFILES BEHIND YOUR BACK. The toolchain flags go INSIDE $(CC) and
 # $(CXX) rather than into CFLAGS, because a libretro Makefile routinely does `CFLAGS := ...` and
@@ -87,7 +104,7 @@ TOOLCHAIN="$OO_PS4_TOOLCHAIN"
 WORK="${HOME}/.cache/ps4-cores"; OUT=""; RECIPE=""
 PATCHES="$HERE/core-patches"
 JOBS="$(nproc)"; ALL=0; LIST=0; UPDATE=0; KEEP=0
-GL_FLAVOUR="${PS4_GL_FLAVOUR:-es}"
+GL_FLAVOUR="${PS4_GL_FLAVOUR:-desktop}"
 # 1500s = 25 min. Chosen from measured data, not from taste - see the block above capped().
 CORE_TIMEOUT="${PS4_CORE_TIMEOUT:-1500}"
 CORE_TIMEOUT_KILL=30      # grace between the TERM and the KILL that follows it
@@ -127,7 +144,9 @@ esac
 # ⚠ SEPARATE BY DEFAULT, because the two sets share file names. mupen64plus_next_libretro.prx
 # built for desktop GL and the same name built for GLES are different binaries that are both
 # correct, and dropping one on the other is a core that loads and then refuses its own context.
-if [[ "$GL_FLAVOUR" == desktop ]]; then OUT="${OUT:-$WORK/out-glcore}"; else OUT="${OUT:-$WORK/out}"; fi
+# out/ is the desktop set because desktop is what ships, and because make-index.sh --in and the
+# publish job already default to that path; the es set is the side branch, so it takes the suffix.
+if [[ "$GL_FLAVOUR" == es ]]; then OUT="${OUT:-$WORK/out-es}"; else OUT="${OUT:-$WORK/out}"; fi
 
 if [[ $DROP_CLONES -eq -1 ]]; then
   case "${CI:-}" in true|TRUE|1) DROP_CLONES=1 ;; *) DROP_CLONES=0 ;; esac
@@ -170,6 +189,43 @@ fi
 if [[ $ALL -eq 1 ]]; then
   mapfile -t CORES < <(awk '!/^[[:space:]]*(#|$)/ && ($6=="GENERIC" || $6=="CMAKE") {print $1}' \
       "$RECIPE" ${RECIPE_EXTRA:+"$RECIPE_EXTRA"} | sort -u)
+
+  # ⚠ AND THE BUILD TYPES core_make_flags() OVERRULES, WHICH THIS LINE USED TO DROP ON THE FLOOR.
+  #
+  # ps4/shard-cores.sh says at its top that "the set is not simply GENERIC, because
+  # build-cores.sh's is not either" - and it was not true of THIS function. `--all` took GENERIC
+  # and CMAKE only, so every GENERIC_GL core fell out of every sweep run on this machine:
+  # 3dengine, ffmpeg, mupen64plus_next, parallel_n64, ppsspp. The sharder that CI uses adds them
+  # back by parsing this file, so the two disagreed about what "all the cores" means, and the
+  # sweep was the one that was wrong.
+  #
+  # ⚠ THAT IS HALF OF WHY mupen64plus_next HAS NEVER BEEN IN A RELEASE - the other half is the
+  # GLES headers below. It builds fine when named, so it looked like a core nobody had got round
+  # to rather than one the sweep could not see. N64 is a headline feature of this port.
+  #
+  # Parsed out of the function rather than listed here, for the reason shard-cores.sh gives: two
+  # lists that have to agree are two lists that will not, and the failure is silent.
+  mapfile -t _overrides < <(
+    awk '/^core_make_flags\(\)/ {inf=1; next}
+         inf && /^}/          {exit}
+         inf && /^[[:space:]]*[A-Za-z0-9_|]+\)/ {
+             line=$0
+             sub(/^[[:space:]]*/, "", line)
+             sub(/\).*$/, "", line)
+             n = split(line, alt, "|")
+             for (i = 1; i <= n; i++) if (alt[i] != "*") print alt[i]
+         }' "$0"
+  )
+  [[ ${#_overrides[@]} -gt 0 ]] || {
+    echo "build-cores: could not read core_make_flags() out of $0 - refusing to sweep a set" >&2
+    echo "             that may be missing cores. See the note above this line." >&2
+    exit 1
+  }
+  for _o in "${_overrides[@]}"; do
+    awk -v c="$_o" '!/^[[:space:]]*(#|$)/ && $1==c {found=1} END{exit !found}' \
+        "$RECIPE" ${RECIPE_EXTRA:+"$RECIPE_EXTRA"} && CORES+=("$_o")
+  done
+  mapfile -t CORES < <(printf '%s\n' "${CORES[@]}" | sort -u)
 fi
 [[ ${#CORES[@]} -gt 0 ]] || { echo "build-cores: name a core, or pass --all" >&2; exit 2; }
 
@@ -502,8 +558,8 @@ core_make_flags() {
     # `unix` arm leaves both GLES and GLES3 unset and takes its desktop-GL path (Makefile:96-103,
     # GL_LIB := -lGL - the library name is inert here, the harness links the objects itself).
     # GLideN64 then compiles its desktop shaders instead of its ES ones. Which of the two is
-    # correct is not a property of this core: it is which eboot the .prx will be loaded by, and
-    # a mismatch is refused by runloop.c before the renderer is ever reached.
+    # correct is not a property of this core: it is which frontend the .prx will be loaded by,
+    # and a mismatch is refused by runloop.c before the renderer is ever reached.
     mupen64plus_next) echo "HAVE_THR_AL=1 WITH_DYNAREC=x86_64$([[ $GL_FLAVOUR == es ]] && echo ' FORCE_GLES3=1')" ;;
     parallel_n64)     echo "HAVE_PARALLEL=1 HAVE_PARALLEL_RSP=1 HAVE_THR_AL=1 WITH_DYNAREC=x86_64" ;;
     # ⚠ TWO VARIABLES THIS CORE SPELLS DIFFERENTLY FROM THE REST, AND BOTH ARE PLATFORM FACTS.
@@ -577,10 +633,10 @@ core_make_flags() {
     # linkable, every one of those probes answers "no", and the build gets exactly the object list
     # that file names. No engine asks for component_imgui, so nothing is lost.
     # ⚠ AND FORCE_OPENGLNONE FOLLOWS THE FRONTEND TOO, for the reason its paragraph gives: the
-    # unix arm sets HAVE_OPENGL := 1, which is DESKTOP GL resolved at runtime by GLAD. On the
-    # GLES eboot there is no desktop GL to resolve against and the surface renderer is the only
-    # answer. On the desktop-GL eboot the unix arm's own default is the right one, and GLAD
-    # resolves through the frontend's proc-address exactly as it was written to.
+    # unix arm sets HAVE_OPENGL := 1, which is DESKTOP GL resolved at runtime by GLAD. Under a
+    # GLES frontend there is no desktop GL to resolve against and the surface renderer is the only
+    # answer. Under the desktop-GL one that ships, the unix arm's own default is the right one and
+    # GLAD resolves through the frontend's proc-address exactly as it was written to.
     scummvm)          echo "BUILD_64BIT=1 LITE=1$([[ $GL_FLAVOUR == es ]] && echo ' FORCE_OPENGLNONE=1') USE_IMGUI=" ;;
     *)                echo "" ;;
   esac
@@ -719,11 +775,11 @@ core_cmake_flags() { # core -> extra -D arguments, appended after the recipe's
     # melonDS::AdapterData and PCAP_IF_* whether that mode is configured or not. dylib.c is
     # dropped from the source list by this core's patch instead; ps4/core-patches/melondsds
     # carries the reason.
-    # ⚠ ENABLE_OPENGL IS WHY THE DESKTOP-GL EBOOT EXISTS. melonDS DS's renderer asks for
-    # RETRO_HW_CONTEXT_OPENGL_CORE 3.2 (src/libretro/render/opengl.cpp) - not GLES - so on the
-    # GLES eboot the request is refused by runloop.c and the OFF above is the honest setting.
-    # On the desktop-GL eboot that context is exactly what the frontend now provides, measured
-    # at 3.3 core on hardware, so the renderer is built. The paragraph below about the renderer's
+    # ⚠ ENABLE_OPENGL IS WHY THE SHIPPING FRONTEND IS DESKTOP GL. melonDS DS's renderer asks for
+    # RETRO_HW_CONTEXT_OPENGL_CORE 3.2 (src/libretro/render/opengl.cpp) - not GLES - so under a
+    # GLES frontend the request is refused by runloop.c and the OFF above is the honest setting.
+    # Under the desktop-GL one that context is exactly what the frontend provides, measured at
+    # 3.3 core on hardware, so the renderer is built. The paragraph below about the renderer's
     # sources being in the `core` target before HAVE_OPENGL is FORCEd off still applies in the
     # OFF case and is why the -D has to be on the command line rather than left to configure.
     # ⚠ AND ON THE DESKTOP SIDE, DROPPING ENABLE_OPENGL=OFF IS NOT ENOUGH - MEASURED, IT FAILS
@@ -1039,9 +1095,10 @@ for core in "${CORES[@]}"; do
   fi
   # ⚠ REFUSED RATHER THAN BUILT AND SHIPPED WRONG. Play!'s bundled glew is GLX-only: it includes
   # <GL/glx.h> and resolves through glXGetProcAddress, and this Mesa is built -Dglx=disabled on a
-  # console with no X server. The core is on GLES here through USE_GLES=ON, which is a GLES-eboot
-  # arrangement; there is nothing to switch it to for the desktop one. Building it into the
-  # desktop set would produce a .prx that looks like the others and cannot get a context.
+  # console with no X server. The core is on GLES here through USE_GLES=ON, and there is nothing
+  # to switch it to for the desktop frontend - which, since RTRG00001 went away, is the only one
+  # that ships. Building it into the desktop set would produce a .prx that looks like the others
+  # and cannot get a context.
   if [[ "$GL_FLAVOUR" == desktop && "$core" == play ]]; then
     report "$core" SKIP - - "GLES only - bundled glew needs GLX (see --gl in the header)"
     continue
