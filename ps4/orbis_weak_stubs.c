@@ -49,3 +49,33 @@ void ZSTD_trace_decompress_end(unsigned long long ctx, const void *trace)
 __attribute__((weak)) int glsm_ctl(int state, void *data);
 __attribute__((weak)) int glsm_ctl(int state, void *data)
 { (void)state; (void)data; return 0; }
+
+/* ⚠ AND THE FRONTEND'S LOGGER, BECAUSE dylib.o IS IN THE SHARED ARCHIVE AND NOW CALLS IT.
+ *
+ * ps4/build-cores.sh assembles liborbis-retro-common.a out of the FRONTEND's compiled
+ * libretro-common objects, and libretro-common/dynamic/dylib.c is one of them. Its ORBIS arm - the
+ * constructor table that stops a reloaded .prx running its initialisers twice - reports through
+ * RARCH_LOG and ps4_log. Those live OUTSIDE libretro-common: RARCH_LOG in verbosity.c at the tree
+ * root, ps4_log in the application framework. So the moment a core pulls dylib.o in, it needs two
+ * symbols the archive cannot carry.
+ *
+ * Measured 2026-09-01, CI run 33489981683: melonDS DS references dylib_load for its libpcap probe,
+ * so ld.lld extracted dylib.o and stopped with
+ *
+ *     ld.lld: error: undefined symbol: RARCH_LOG   >>> referenced by dylib.o:(dylib_load)
+ *     ld.lld: error: undefined symbol: ps4_log     >>> referenced by dylib.o:(dylib_close)
+ *
+ * ⚠ AND IT PASSED LOCALLY, WHICH IS THE PART WORTH REMEMBERING. build-cores.sh caches
+ * liborbis-retro-common.a and rebuilds it only when it is absent, so every local sweep since that
+ * dylib.c change linked against an archive holding the PREVIOUS dylib.o. CI builds the archive from
+ * scratch every run and saw the truth first.
+ *
+ * Pulling in the real ones is not an option: verbosity.o needs frontend_driver_attach_console and
+ * would drag the frontend's driver into every core. These discard instead - a core has no netlog
+ * socket and no verbosity state to log through, and the messages are about the FRONTEND loading
+ * modules, which is not something a core does. */
+void RARCH_LOG(const char *fmt, ...);
+void ps4_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+void RARCH_LOG(const char *fmt, ...) { (void)fmt; }
+void ps4_log(const char *fmt, ...)   { (void)fmt; }
