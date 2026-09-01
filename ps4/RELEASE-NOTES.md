@@ -1,7 +1,7 @@
 RetroArch for the PlayStation 4, on a jailbroken console under GoldHEN.
 
-Vulkan through RADV, OpenGL ES 3.1 through zink, and a Core Downloader that serves PS4 cores
-rather than Linux shared objects.
+Vulkan through RADV, desktop OpenGL 4.6 through zink on top of it, and a Core Downloader that
+serves PS4 cores rather than Linux shared objects.
 
 ## Install
 
@@ -22,7 +22,7 @@ Do this once, before browsing the Core Downloader. Core metadata is not shipped 
 so on a fresh install the downloader lists `.prx` filenames instead of core names until those
 files arrive. Everything works either way; only the names are missing.
 
-Then **Online Updater → Core Downloader** lists 104 cores. Download one and it is ready to use.
+Then **Online Updater → Core Downloader** lists 112 cores. Download one and it is ready to use.
 
 ## Quitting
 
@@ -35,6 +35,32 @@ process down outside the path the system expects; this one asks the system to un
 **Closing it from the console instead** — PS button, *Close Application* — still shows
 `CE-34878-0`. The console returns to its menu and nothing needs restarting, but the application is
 killed outright there and never gets to shut itself down, so Quit is the better habit.
+
+## New in v0.1.7
+
+- **OpenGL 4.6.** The port advertised 3.3 until now, and the ceiling was not the hardware:
+  `_mesa_compute_version` stops at the first extension it cannot satisfy, and that was
+  `ARB_tessellation_shader`, because RADV reported no tessellation while the tessellation factor
+  ring had no memory behind it. Sony's ring is now mapped. The 44-case dEQP-VK.tessellation smoke
+  passes 44/44 with it and died on the first tessellated draw without it. ES 3.2 came with it.
+  Cores see the version through their own `glGetString`, so it is GLSL 4.60 to them as well.
+- **A memory leak that eventually killed the process is fixed.** Under the OpenGL driver the
+  console lost exactly 9,280 bytes of libkernel's internal pool per frame, until the pool ran out
+  and the title died with `[ScePthread/System] Internal Memory is running out`. zink's
+  `resource_object_create` initialises a `pthread_rwlock_t` on every resource object and nothing
+  ever destroyed it - 146 of them a frame, 64 bytes of that pool each on this console, and only
+  `pthread_rwlock_destroy` gives them back. It is an upstream Mesa bug, invisible on Linux.
+- **One package again.** For one day there were two: `RTRV00001` with GLES and `RTRG00001` with
+  desktop GL, while it was still an open question whether the desktop context worked at all. It
+  does, so the second application is gone. If you installed **RetroArchG**, delete it from the XMB
+  yourself - it has a different title id, so this package will not replace it. Saves, configs and
+  cores live in `/data/retroarch/` again; anything left in `/data/retroarch-glcore/` belongs to
+  that one day and has to be moved across by hand.
+- **A recompiler-corruption bug on Nintendo DS.** melonDS asks to promote two overlapping 128 MiB
+  code ranges whose bases are 224 KiB apart. The port's containment test missed both ways, so it
+  re-ran its "can this page execute" probe on every request - and that probe writes six bytes of
+  x86 into the buffer, over whatever the recompiler had generated there. Overlapping ranges now
+  take the verdict already established instead of probing again.
 
 ## New in v0.1.6
 
@@ -84,7 +110,7 @@ killed outright there and never gets to shut itself down, so Quit is the better 
 
 ## What is here
 
-- 104 cores, built for this console, at `cores.prx0.com`
+- 112 cores, built for this console, at `cores.prx0.com`
 - Nintendo 64 at 60 fps (GLideN64)
 - PlayStation at 50 fps (Beetle PSX HW, Lightrec, Vulkan renderer)
 - Online Updater: cores, core info, databases, thumbnails, assets
@@ -92,7 +118,7 @@ killed outright there and never gets to shut itself down, so Quit is the better 
 
 ## Known limits
 
-- **63 of 164 recipe cores do not build yet**, for reasons recorded per core. The ones that are
+- **67 of 182 recipe cores do not build yet**, for reasons recorded per core. The ones that are
   listed are the ones that link and carry `retro_run`.
 - **Closing from the console's own menu still shows CE-34878-0** — see above. It is cosmetic; the
   console recovers on its own.
