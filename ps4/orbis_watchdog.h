@@ -15,6 +15,10 @@ RETRO_BEGIN_DECLS
  * not inside them. */
 void orbis_watchdog_mark(const char *phase, int detail);
 
+/* Writes one line to /data/retroarch-watchdog.log as well as to RARCH_ERR, so a fact that decides
+   how a run is read survives a session with no log listener. Costs 8-15 ms; for facts, not events. */
+void orbis_watchdog_note(const char *fmt, ...);
+
 RETRO_END_DECLS
 
 #define ORBIS_WD(phase, detail) orbis_watchdog_mark((phase), (detail))

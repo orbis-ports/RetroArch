@@ -451,6 +451,8 @@ static void frontend_orbis_init(void *data)
     * shared file first, so a per-title one can override it. */
    frontend_orbis_apply_env_file("/data/tempest-env.txt");
    frontend_orbis_apply_env_file("/data/retroarch-env.txt");
+   /* ⚠ /data/tempest-env.txt IS SHARED WITH EVERY OTHER TITLE ON THIS CONSOLE, and a diagnostic
+    * left in it becomes this title's cost. Check it before blaming anything here. */
 
    /* Take the flexible-memory reading before the frontend has allocated anything much.
     * There is no way to ask this kernel for the flexible ceiling, so the first reading
