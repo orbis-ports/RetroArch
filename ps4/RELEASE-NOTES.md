@@ -22,7 +22,7 @@ Do this once, before browsing the Core Downloader. Core metadata is not shipped 
 so on a fresh install the downloader lists `.prx` filenames instead of core names until those
 files arrive. Everything works either way; only the names are missing.
 
-Then **Online Updater → Core Downloader** lists 112 cores. Download one and it is ready to use.
+Then **Online Updater → Core Downloader** lists 113 cores. Download one and it is ready to use.
 
 ## Quitting
 
@@ -56,6 +56,10 @@ killed outright there and never gets to shut itself down, so Quit is the better 
   yourself - it has a different title id, so this package will not replace it. Saves, configs and
   cores live in `/data/retroarch/` again; anything left in `/data/retroarch-glcore/` belongs to
   that one day and has to be moved across by hand.
+- **Nintendo DS is in the Core Downloader for the first time.** melonDS DS built here and ran on
+  the console, but never once survived the release build: `dylib.c`'s module loader reports through
+  two functions that live outside `libretro-common`, and melonDS reaches into that loader for its
+  libpcap probe - so it linked against a shared archive that could not carry them. It builds now.
 - **A recompiler-corruption bug on Nintendo DS.** melonDS asks to promote two overlapping 128 MiB
   code ranges whose bases are 224 KiB apart. The port's containment test missed both ways, so it
   re-ran its "can this page execute" probe on every request - and that probe writes six bytes of
@@ -110,7 +114,7 @@ killed outright there and never gets to shut itself down, so Quit is the better 
 
 ## What is here
 
-- 112 cores, built for this console, at `cores.prx0.com`
+- 113 cores, built for this console, at `cores.prx0.com`
 - Nintendo 64 at 60 fps (GLideN64)
 - PlayStation at 50 fps (Beetle PSX HW, Lightrec, Vulkan renderer)
 - Online Updater: cores, core info, databases, thumbnails, assets
@@ -118,7 +122,7 @@ killed outright there and never gets to shut itself down, so Quit is the better 
 
 ## Known limits
 
-- **67 of 182 recipe cores do not build yet**, for reasons recorded per core. The ones that are
+- **66 of 182 recipe cores do not build yet**, for reasons recorded per core. The ones that are
   listed are the ones that link and carry `retro_run`.
 - **Closing from the console's own menu still shows CE-34878-0** — see above. It is cosmetic; the
   console recovers on its own.
