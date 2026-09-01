@@ -313,4 +313,4 @@ cores/*.a
 .ps4-build-config
 /pkg-stage/
 RTRA*.pkg
-RTRG*.pkg
+# RTRG*.pkg - the desktop-GL package had a title of its own for one day; it does not now.

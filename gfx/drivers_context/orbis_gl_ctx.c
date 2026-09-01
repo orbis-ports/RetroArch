@@ -15,12 +15,15 @@
 /* OpenGL on the PlayStation 4, through Mesa's EGL and zink - ES or desktop, decided at BUILD
  * time by HAVE_OPENGLES.
  *
- * ⚠ TWO EBOOTS, NOT ONE BINARY THAT CHOOSES. HAVE_OPENGLES is a global -D rather than a
- * per-file one, and it decides more than this file: without it runloop.c REJECTS
+ * ⚠ ONE BINARY CARRIES ONE GL FLAVOUR, AND IT IS CHOSEN AT BUILD TIME. HAVE_OPENGLES is a global
+ * -D rather than a per-file one, and it decides more than this file: without it runloop.c REJECTS
  * RETRO_HW_CONTEXT_OPENGLES2/3 outright, and glsym_gl.c and glsym_es2.c both define
- * rglgen_symbol_map behind the same include guard. One binary can therefore carry one GL
- * flavour. The GLES package (RTRV00001) and the desktop-GL one (RTRG00001) are built from this
- * same tree by flags alone and installed side by side. See Makefile.orbis.
+ * rglgen_symbol_map behind the same include guard. So the flavour cannot be a runtime choice.
+ *
+ * The shipping package is RTRV00001 on DESKTOP GL - HAVE_OPENGL_CORE is the default in
+ * Makefile.orbis. HAVE_OPENGLES=1 still builds the ES flavour from this same tree for anyone who
+ * wants to compare; it does not get a title of its own. There was briefly a second package for
+ * desktop GL while it was unknown whether the context worked at all; it does, so there is not.
  *
  * ⚠ WHAT THIS UNBLOCKS, BECAUSE IT IS NOT "OPENGL CORES NOW WORK". The reason this file was
  * written is Nintendo 64. mupen64plus-next's fast renderer is GLideN64 driven by the HLE RSP,
