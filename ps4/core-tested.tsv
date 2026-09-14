@@ -1,0 +1,61 @@
+# Cores somebody has RUN ON A PLAYSTATION 4, and what happened. ps4/make-site.py reads this and
+# shows it on cores.prx0.com; nothing else does.
+#
+# ⚠ A ROW HERE IS AN OBSERVATION ON THE CONSOLE, NOT A BUILD RESULT. "It links", "it is in the
+# index" and "create-fself accepted it" are all true of cores that died on their first frame -
+# swanstation was all three for a week. A core goes in only when a run is written down somewhere a
+# reader can check, and the last column says where. No row means untested, and the page says so.
+#
+# Columns, tab-separated (runs of tabs are fine):
+#   core       the index name, without _libretro
+#   status     plays | slow | boots | broken - the vocabulary of ps4/CORE-STATUS.md
+#                plays   content runs and is playable
+#                slow    runs, below full speed - the figure goes in the note
+#                boots   loads and responds, no game recorded
+#                broken  loads and then fails - say how in the note
+#   note       one short public sentence: the game, the frame rate. "-" for none
+#   evidence   where the run is recorded. HANDOFF.md is ps4-mesa-docs/docs/retroarch/HANDOFF.md,
+#              the rest are in this directory. Not shown on the page.
+#
+# ⚠ THE TESTED BUILD IS NOT ALWAYS THE PUBLISHED ONE. Cores are rebuilt from upstream's tip on
+# every run, so a verdict describes the binary that was on the console that day. A regression
+# shows up as a changed verdict here, not as a silent one on the page.
+2048	plays	Game and menu both fine	CORE-STATUS.md:72; HANDOFF.md:223 'the module loads and runs'
+atari800	plays	-	CORE-STATUS.md:74
+bsnes_cplusplus98	plays	-	CORE-STATUS.md:45 'Confirmed playing afterwards', :76
+cannonball	plays	OutRun	CORE-STATUS.md:78
+cap32	boots	Takes every key from a USB keyboard; no game recorded	HANDOFF.md:2957-2959 'cap32 takes every key once Game Focus is on'
+clownmdemu	plays	-	CORE-STATUS.md:80
+dinothawr	plays	Dinothawr, with the data from the core's repository	CORE-STATUS.md:84
+dosbox_pure	boots	Boots to a DOS prompt with the USB keyboard working	HANDOFF.md:3675 'boots to a DOS prompt with the USB keyboard working'
+fbalpha2012_neogeo	plays	Metal Slug, with neogeo.zip beside it	CORE-STATUS.md:50 'plays Metal Slug', :90; HANDOFF.md:1444 'observed playing'
+fceumm	plays	Zelda	CORE-STATUS.md:91 'loads Zelda'; HANDOFF.md:1414 'a core known to work'
+fuse	plays	-	CORE-STATUS.md:96
+genesis_plus_gx	plays	-	CORE-STATUS.md:100
+genesis_plus_gx_wide	plays	Draws the picture twice side by side; cause not investigated	CORE-STATUS.md:101 'two images side by side'
+gong	plays	-	CORE-STATUS.md:103
+gpsp	plays	-	CORE-STATUS.md:104
+mednafen_gba	plays	-	CORE-STATUS.md:45 'Confirmed playing afterwards', :115
+mednafen_psx	slow	Spyro 3 at about 38% of full speed on the interpreter; withheld, use Beetle PSX HW	HANDOFF.md:645 '~38% of realtime', :2266; build-cores.sh:1057
+mednafen_psx_hw	plays	Spyro 3 (PAL) at full speed, 50 fps, Vulkan renderer at 2x internal	HANDOFF.md:1191-1203 '249 frames every window = 49.78 fps ... 49.76 requested, 49.78 delivered'
+melondsds	plays	A game ran and saved; frame rate not recorded	RELEASE-NOTES.md:59-60 'melonDS DS built here and ran on the console'; HANDOFF.md:5041-5043 'a melonDS save for the same game'
+mesen	plays	-	CORE-STATUS.md:45 'Confirmed playing afterwards', :127
+mesen-s	plays	-	CORE-STATUS.md:45 'Confirmed playing afterwards', :128
+mrboom	plays	-	CORE-STATUS.md:45 'Confirmed playing afterwards', :129
+mu	plays	-	CORE-STATUS.md:130
+mupen64plus_next	plays	Shadows of the Empire at 60 fps with GLideN64, measured on the earlier OpenGL ES build	HANDOFF.md:1593-1596 '303 frames in 5015 ms = 60.41 fps', :2469-2471; frame rate on desktop GL not re-measured, HANDOFF.md:4221-4223
+nestopia	broken	Runs and exits cleanly, but draws a green screen	CORE-STATUS.md:134; HANDOFF.md:1460 'renders a green screen'
+nxengine	plays	Cave Story, freeware data	CORE-STATUS.md:136
+play	slow	Grand Theft Auto III at 4-12 fps; withheld	HANDOFF.md:3523-3526 'boots GTA III and renders it ... not playable', :3554; build-cores.sh:1076 '4-12 fps'
+prboom	plays	Freedoom; a crash after Load State is still open	CORE-STATUS.md:143; HANDOFF.md:2223 'PrBoom crashes seconds after Load State'
+quicknes	plays	-	CORE-STATUS.md:45 'Confirmed playing afterwards', :148
+snes9x	plays	-	CORE-STATUS.md:45 'Confirmed playing afterwards', :155
+snes9x2002	plays	-	CORE-STATUS.md:156
+snes9x2005	plays	-	CORE-STATUS.md:157
+snes9x2005_plus	plays	-	CORE-STATUS.md:158
+snes9x2010	plays	-	CORE-STATUS.md:159
+swanstation	plays	A level played through at 2x upscale with 2xMLAA, 30-90 fps	HANDOFF.md:4333 '30-90 fps at 2x upscale with 2xMLAA, measured by the maintainer'; build-cores.sh:1062-1063
+trident	slow	The Legend of Zelda: A Link Between Worlds plays with correct 3D, 22-28 fps with stutter while shaders compile	the maintainer, 2026-09-14 - HANDOFF.md, Trident section
+vba_next	plays	-	CORE-STATUS.md:167
+vbam	plays	-	CORE-STATUS.md:45 'Confirmed playing afterwards', :168
+xrick	plays	Rick Dangerous, straight out of data.zip	CORE-STATUS.md:172; HANDOFF.md:1435 'played straight out of data.zip'

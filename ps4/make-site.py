@@ -110,6 +110,43 @@ def read_info(info_dir):
     return info
 
 
+# ⚠ WHAT HAS BEEN SEEN ON A CONSOLE, KEPT BESIDE THIS SCRIPT RATHER THAN IN IT. Every other input
+# here is produced by the build; this one is produced by somebody holding a pad, and a verdict typed
+# into a string literal would be the one fact on the page nobody could trace. core-tested.tsv names
+# where each run is written down.
+TESTED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "core-tested.tsv")
+STATUSES = {
+    # status -> (badge text, what it means, for the legend)
+    "plays":  ("Plays",  "a game runs and is playable"),
+    "slow":   ("Slow",   "runs, below full speed"),
+    "boots":  ("Boots",  "loads and responds; no game recorded yet"),
+    "broken": ("Broken", "loads, then fails"),
+}
+
+
+def read_tested(path):
+    """core -> (status, note), or None when there is no file to read."""
+    if not path or not os.path.exists(path):
+        return None
+    tested = {}
+    with open(path, encoding="utf-8") as fh:
+        for n, line in enumerate(fh, 1):
+            if line.startswith("#") or not line.strip():
+                continue
+            parts = re.split(r"\t+", line.rstrip("\n"))
+            if len(parts) < 2:
+                continue
+            core, status = parts[0].strip(), parts[1].strip()
+            note = parts[2].strip() if len(parts) > 2 else ""
+            # ⚠ A typo in the status column must not quietly read as "untested" - that is the
+            # one wrong answer this column exists not to give.
+            if status not in STATUSES:
+                sys.stderr.write("!! %s:%d: unknown status '%s' for %s\n" % (path, n, status, core))
+                continue
+            tested[core] = (status, "" if note == "-" else note)
+    return tested
+
+
 def source_url(repo, sha):
     """A repository URL and a sha, joined the way that host expects."""
     if not repo:
@@ -155,7 +192,7 @@ CSS = """
 :root{
   --ground:#12151c; --raised:#1a1f2b; --sunk:#0d1016;
   --ink:#e6e9f0; --muted:#939cad; --faint:#6b7386;
-  --rule:#262c3a; --accent:#e96a3a; --warn:#d9a441;
+  --rule:#262c3a; --accent:#e96a3a; --warn:#d9a441; --ok:#6cc08b; --bad:#e5707a;
 }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
@@ -229,7 +266,11 @@ ol.steps li{margin:.4em 0}
 table{border-collapse:collapse;width:100%;font-size:.86rem}
 th,td{text-align:left;padding:9px 13px;border-bottom:1px solid var(--rule);vertical-align:top}
 td:first-child{min-width:22ch}
-th:nth-child(3),td:nth-child(3){min-width:11ch}
+th:nth-child(4),td:nth-child(4){min-width:11ch}
+/* Second, not after System: at phone width only the first two columns show before the table
+   scrolls, and whether a core has worked on the console is what a visitor there came to find. */
+td.hw{min-width:18ch;color:var(--muted)}
+td.hw .hwnote{display:block;font-size:.8rem;margin-top:3px}
 th{background:var(--sunk);color:var(--muted);font-weight:600;position:sticky;top:0}
 tr:last-child td{border-bottom:0}
 td.num{font-variant-numeric:tabular-nums;color:var(--muted);white-space:nowrap}
@@ -237,6 +278,17 @@ td.mono{white-space:nowrap}
 td.sys{color:var(--muted);min-width:12ch}
 .nc{display:inline-block;background:rgba(217,164,65,.14);color:var(--warn);border-radius:4px;
   padding:1px 7px;font-size:.78rem;margin-left:6px}
+
+/* The status badge is the nc badge's shape in the status's colour, so a column of them reads as
+   one family with the licence marks rather than a second vocabulary. Untested is plain faint text:
+   it is the default state of most rows, and a badge on every one of them would be noise. */
+.hwb{display:inline-block;border-radius:4px;padding:1px 7px;font-size:.78rem;font-weight:600;white-space:nowrap}
+.hwb.plays{background:rgba(108,192,139,.14);color:var(--ok)}
+.hwb.slow{background:rgba(217,164,65,.14);color:var(--warn)}
+.hwb.boots{background:rgba(147,156,173,.16);color:var(--ink)}
+.hwb.broken{background:rgba(229,112,122,.14);color:var(--bad)}
+.untested{color:var(--faint)}
+ul.legend{list-style:none;padding:0;margin:0 0 14px;display:flex;flex-wrap:wrap;gap:6px 18px;font-size:.88rem;color:var(--muted)}
 
 footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--rule);color:var(--faint);font-size:.85rem}
 @media (max-width:600px){ header{padding-top:36px} h1{font-size:1.6rem} }
@@ -271,6 +323,8 @@ def render(ctx):
     e = html.escape
     rows = []
     nc_count = 0
+    tested = ctx["tested"] or {}
+    hw_count = 0
     for date, crc, filename, name in ctx["index"]:
         info = ctx["info"].get(name, {})
         display = info.get("display_name") or name
@@ -282,12 +336,34 @@ def render(ctx):
         src = source_url(ctx["repos"].get(name), sha)
         src_cell = ('<a href="%s">%s</a>' % (e(src), e(sha)) if src and sha and sha != "-"
                     else (('<a href="%s">source</a>' % e(src)) if src else "—"))
+        status, note = tested.get(name, ("", ""))
+        if status:
+            hw_count += 1
+            hw_cell = '<span class="hwb %s">%s</span>' % (status, STATUSES[status][0])
+            if note:
+                hw_cell += '<span class="hwnote">%s</span>' % e(note)
+        else:
+            # Without the file nothing is known either way, and "untested" would be a claim.
+            # With it, no row is exactly what "untested" means.
+            hw_cell = '<span class="untested">%s</span>' % ("untested" if ctx["tested"] is not None else "—")
         rows.append(
-            "<tr><td><a href=\"%s%s\">%s</a></td><td class=\"sys\">%s</td>"
+            "<tr><td><a href=\"%s%s\">%s</a></td><td class=\"hw\">%s</td><td class=\"sys\">%s</td>"
             "<td>%s%s</td><td class=\"num\">%s</td><td class=\"mono num\">%s</td></tr>"
-            % (e(ctx["base"]), e(filename), e(display), e(system),
+            % (e(ctx["base"]), e(filename), e(display), hw_cell, e(system),
                e(lic), '<span class="nc">non-commercial</span>' if is_noncommercial(lic) else "",
                e(size), src_cell))
+    legend = "".join('<li><span class="hwb %s">%s</span> %s</li>' % (k, v[0], e(v[1]))
+                     for k, v in STATUSES.items())
+    # ⚠ NO FILE, NO SENTENCE. "0 of the 113 have been run on a real PlayStation 4" is what this
+    # would otherwise print, and it is false in a way no reader could detect.
+    hw_intro = "" if ctx["tested"] is None else """\
+<p><b>%d of the %d have been run on a real PlayStation&nbsp;4</b>, and the <em>On a PS4</em> column
+says what happened. Everything else has only been built: it compiles, links and loads as a module,
+and nobody has yet written down what it does with a game. A report either way is useful.</p>
+<ul class="legend">%s<li><span class="untested">untested</span> built, never run on a console</li></ul>
+<p>A result describes the build that was on the console that day. Cores are rebuilt from upstream on
+every run, so the file here can be newer than the one that was tested.</p>""" % (
+        hw_count, len(ctx["index"]), legend)
 
     bundle_row = ""
     if ctx.get("bundle_name"):
@@ -463,9 +539,12 @@ it. Nothing here is sold, and nothing here should be.</p>
 </div>
 
 <h2>The cores</h2>
-<p class="prose">Every file the console's own Core Downloader offers, and where each came from.</p>
+<div class="prose">
+<p>Every file the console's own Core Downloader offers, and where each came from.</p>
+%s
+</div>
 <div class="tablewrap"><table>
-<thead><tr><th>Core</th><th>System</th><th>Licence</th><th>Size</th><th>Built from</th></tr></thead>
+<thead><tr><th>Core</th><th>On a PS4</th><th>System</th><th>Licence</th><th>Size</th><th>Built from</th></tr></thead>
 <tbody>
 %s
 </tbody></table></div>
@@ -485,6 +564,7 @@ it. Nothing here is sold, and nothing here should be.</p>
        e(ctx["firmware"]), e(ctx["goldhen"]),
        e(ctx["src_url"]), e(ctx["version"]),
        nc_count,
+       hw_intro,
        "\n".join(rows),
        e(ctx["index_date"]), e(ctx["base"]))
 
@@ -498,6 +578,8 @@ def main():
     ap.add_argument("--recipe", help="the libretro-super recipe the build was driven by")
     ap.add_argument("--info", help="directory of unpacked .info files")
     ap.add_argument("--icon", help="the application icon, inlined into the page")
+    ap.add_argument("--tested", default=TESTED,
+                    help="what has been run on a console (default: core-tested.tsv beside this script)")
     ap.add_argument("--firmware", default="11.00", help="console firmware this was tested on")
     ap.add_argument("--goldhen", default="2.4b18.10", help="GoldHEN build this was tested on")
     ap.add_argument("--dist", help="directory of *.prx.zip, for --bundle")
@@ -526,6 +608,7 @@ def main():
         "man": read_manifests(args.manifests),
         "repos": read_recipe(args.recipe),
         "info": read_info(args.info),
+        "tested": read_tested(args.tested),
         "base": base,
         "version": args.version,
         "pkg_url": args.pkg_url,
@@ -577,6 +660,20 @@ def main():
                          ("no licence", no_lic)):
         if names:
             print("== %d core(s) with %s: %s" % (len(names), label, " ".join(sorted(names))))
+
+    # ⚠ AND SAY WHICH VERDICTS DID NOT LAND. A core withheld on purpose (PS4_CORE_DROP) keeps its
+    # row, which is right - the verdict is still true - but a renamed core would lose its row here
+    # silently, and a tested core shown as "untested" is the column's one unforgivable error.
+    if ctx["tested"] is None:
+        print("== NO %s: the On a PS4 column will be blank for every core" % args.tested,
+              file=sys.stderr)
+    else:
+        listed = set(n for _, _, _, n in index)
+        unlisted = sorted(c for c in ctx["tested"] if c not in listed)
+        print("== %d core(s) with a hardware verdict" % (len(ctx["tested"]) - len(unlisted)))
+        if unlisted:
+            print("== %d verdict(s) for cores not in this index: %s"
+                  % (len(unlisted), " ".join(unlisted)))
 
     out_html = os.path.join(args.out, "index.html")
     with open(out_html, "w", encoding="utf-8") as fh:
