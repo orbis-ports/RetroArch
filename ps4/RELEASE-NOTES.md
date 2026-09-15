@@ -138,7 +138,7 @@ killed outright there and never gets to shut itself down, so Quit is the better 
 
 ## What is here
 
-- 113 cores, built for this console, at `cores.prx0.com`
+- 113 cores, built for this console, listed at [prx0.com/retroarch](https://prx0.com/retroarch/)
 - Nintendo 64 at 60 fps (GLideN64)
 - PlayStation at 50 fps (Beetle PSX HW, Lightrec, Vulkan renderer)
 - Nintendo 3DS at 60 fps in A Link Between Worlds (Trident)

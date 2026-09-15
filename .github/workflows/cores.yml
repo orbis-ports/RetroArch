@@ -653,7 +653,7 @@ jobs:
           # write cores-manifest-<n>.tsv and this job wrote nothing, so the published page had to
           # link the fork's repository without saying which commit - for a GPL notice, the least
           # precise entry on the page was the only core we maintain ourselves. Same five columns
-          # the shards use, so ps4/make-site.py needs no special case.
+          # the shards use, so cores.json needs no special case.
           sha="$(git -C .beetle rev-parse --short HEAD)"
           printf 'mednafen_psx_hw\tOK\t%s\t%s\t\n' \
             "$(du -h "$prx" | cut -f1)" "$sha" > out/cores-manifest-fork.tsv
@@ -743,7 +743,8 @@ jobs:
           [ "${#frags[@]}" -gt 0 ] || { echo "!! no index fragments were uploaded" >&2; exit 1; }
           echo "== ${#frags[@]} fragments"
           LC_ALL=C sort -k3,3 "${frags[@]}" > dist/.index-extended
-          rm -f "${frags[@]}"
+          # Kept outside dist/ for cores.json, which checks every manifest against the CRCs they carry.
+          mkdir -p fragments && mv "${frags[@]}" fragments/
 
           lines="$(wc -l < dist/.index-extended)"
           zips="$(find dist -maxdepth 1 -name '*.prx.zip' -type f | wc -l)"
@@ -1203,61 +1204,36 @@ jobs:
             npx --yes wrangler@4 r2 object delete "$BUCKET/${PREFIX:+$PREFIX/}$a" --remote
           done < /tmp/r2-stale
 
-      # ⚠ THE PAGE USED TO BE BUILT BY HAND, AND IT DRIFTED. ps4/make-site.py was called from no
-      # workflow at all: index.html was regenerated on a laptop whenever somebody remembered, so
-      # between a release and that moment the published page advertised the previous version and
-      # linked the previous all-cores bundle. On 2026-08-28 it was a full day behind a core set it
-      # was describing. A page that documents what is published has to be published by the same
-      # job that publishes it.
+      # ⚠ THE PAGE IS NOT BUILT HERE ANY MORE. https://prx0.com/retroarch/ is rendered by
+      # orbis-ports/website from cores.json, and cores.prx0.com/index.html is a redirect that site
+      # owns - uploading an index.html from this job would overwrite it. What stays here is what only
+      # this job can make, because it needs dist/: the all-cores bundle and cores.json.
       #
-      # ⚠ IT READS THE NEWEST FRONTEND RELEASE RATHER THAN A VERSION IN THE TREE, so the order that
-      # produces a correct page is: tag the frontend, let frontend.yml cut the release, THEN run
-      # this. Run in the other order and the page is right about the cores and a version behind on
-      # the package - which is the drift this step exists to end, just narrower.
-      - name: Build and publish the download page
+      # ⚠ cores.json IS WRITTEN BY THE WEBSITE'S OWN TOOL, checked out at its main branch, because
+      # that repository owns the schema. It goes up LAST, after .index-extended and the bundle it
+      # names, so a reader never sees it describe objects that are not there yet.
+      - name: Checkout the website
+        if: github.event.inputs.dry-run != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: orbis-ports/website
+          path: .website
+
+      - name: Publish the bundle and cores.json
         if: github.event.inputs.dry-run != 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          GH_TOKEN: ${{ github.token }}
           BUCKET: ${{ steps.r2.outputs.bucket }}
           PREFIX: ${{ steps.r2.outputs.prefix }}
           BASE: ${{ steps.r2.outputs.base }}
         run: |
           set -euo pipefail
-
-          tag="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 50 \
-                   --json tagName --jq '[.[] | select(.tagName | startswith("retroarch-ps4-v"))][0].tagName')"
-          [ -n "$tag" ] || { echo "!! no retroarch-ps4-v* release to point the page at" >&2; exit 1; }
-          asset="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
-                     --json assets --jq '[.assets[] | select(.name | endswith(".pkg"))][0]')"
-          pkg_url="$(printf '%s' "$asset" | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"])')"
-          pkg_bytes="$(printf '%s' "$asset" | python3 -c 'import json,sys; print(json.load(sys.stdin)["size"])')"
-          pkg_size="$(python3 -c "print('%.1f MB' % ($pkg_bytes/1000000.0))")"
-          version="${tag#retroarch-ps4-}"
-          echo "== page will offer $version, $pkg_size, from $pkg_url"
-
           mkdir -p site
-          python3 ps4/make-site.py \
-            --index dist/.index-extended \
-            --manifests dist \
-            --recipe "$RECIPE" \
-            --info .core-info \
-            --icon ps4/icon0.png \
-            --dist dist --bundle \
-            --out site \
-            --base "$BASE" \
-            --pkg-url "$pkg_url" \
-            --pkg-size "$pkg_size" \
-            --version "$version" \
-            --src-url "https://github.com/$GITHUB_REPOSITORY/tree/$tag"
-
-          bundle="$(cd site && ls orbis-cores-*.zip)"
+          bundle="orbis-cores-$(awk 'NR==1{print $1}' dist/.index-extended).zip"
+          python3 ps4/make-bundle.py --dist dist --out "site/$bundle"
           npx --yes wrangler@4 r2 object put "$BUCKET/${PREFIX:+$PREFIX/}$bundle" \
             --file "site/$bundle" --content-type application/zip --remote
-          npx --yes wrangler@4 r2 object put "$BUCKET/${PREFIX:+$PREFIX/}index.html" \
-            --file site/index.html --content-type 'text/html; charset=utf-8' \
-            --cache-control 'no-store' --remote
 
           # ⚠ THE BUNDLE IS NOT PRUNED BY THE STEP THAT PRUNES, because that one drops objects the
           # index does not name and the index never names the bundle - which is why a superseded
@@ -1273,10 +1249,42 @@ jobs:
             fi
           fi
 
-          code="$(curl -s -o /dev/null -w '%{http_code}' -L --retry 5 --retry-delay 3 \
-                    "${BASE}index.html?v=${GITHUB_RUN_ID}")"
-          [ "$code" = "200" ] || { echo "!! ${BASE}index.html -> HTTP $code" >&2; exit 1; }
-          echo "== ${BASE}index.html is live, offering $version"
+          python3 .website/tools/cores-json-from-live.py \
+            --index dist/.index-extended \
+            --base "$BASE" \
+            --manifests dist --manifests fragments \
+            --frontend-commit "$GITHUB_SHA" \
+            --recipe "$RECIPE" \
+            --recipe-extra ps4/core-recipe-extra \
+            --info .core-info \
+            --bundle "$bundle" --bundle-bytes "$(stat -c%s "site/$bundle")" \
+            --run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --out site/cores.json
+          npx --yes wrangler@4 r2 object put "$BUCKET/${PREFIX:+$PREFIX/}cores.json" \
+            --file site/cores.json --content-type 'application/json; charset=utf-8' \
+            --cache-control 'no-store' --remote
+
+          for f in "$bundle" cores.json; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' -I --retry 5 --retry-delay 3 "${BASE}${f}?v=${GITHUB_RUN_ID}")"
+            [ "$code" = "200" ] || { echo "!! ${BASE}${f} -> HTTP $code" >&2; exit 1; }
+          done
+          echo "== ${BASE}cores.json and ${BASE}$bundle are live"
+
+      # ⚠ SKIPPED WITH A WARNING, NOT FAILED, WITHOUT THE TOKEN. The website also rebuilds daily, so a
+      # missing token costs at most a day of the page describing the previous cores. GITHUB_TOKEN
+      # cannot dispatch to another repository; WEBSITE_DISPATCH_TOKEN is a fine-grained token with
+      # Contents: read and write on orbis-ports/website, set by the maintainer.
+      - name: Tell the website to rebuild
+        if: github.event.inputs.dry-run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::WEBSITE_DISPATCH_TOKEN is not set; prx0.com/retroarch/ picks these cores up at its daily build"
+            exit 0
+          fi
+          gh api repos/orbis-ports/website/dispatches -f event_type=retroarch-cores
+          echo "== dispatched retroarch-cores to orbis-ports/website"
 
       - name: R2 summary
         if: github.event.inputs.dry-run != 'true'
@@ -1291,4 +1299,5 @@ jobs:
             echo "- base URL: \`$BASE\` (this is what \`ORBIS_BUILDBOT_URL\` must be)"
             echo "- listing: \`${BASE}.index-extended\`, $(wc -l < dist/.index-extended) cores"
             echo "- pruned: $(wc -l 2>/dev/null < /tmp/r2-stale || echo 0) stale object(s)"
+            echo "- page data: \`${BASE}cores.json\`, rendered at https://prx0.com/retroarch/"
           } >> "$GITHUB_STEP_SUMMARY"
