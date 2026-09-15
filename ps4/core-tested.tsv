@@ -55,7 +55,7 @@ snes9x2005	plays	-	CORE-STATUS.md:157
 snes9x2005_plus	plays	-	CORE-STATUS.md:158
 snes9x2010	plays	-	CORE-STATUS.md:159
 swanstation	plays	A level played through at 2x upscale with 2xMLAA, 30-90 fps	HANDOFF.md:4333 '30-90 fps at 2x upscale with 2xMLAA, measured by the maintainer'; build-cores.sh:1062-1063
-trident	slow	The Legend of Zelda: A Link Between Worlds plays with correct 3D, 22-28 fps with stutter while shaders compile	the maintainer, 2026-09-14 - HANDOFF.md, Trident section
+trident	plays	A Link Between Worlds at 60 fps with correct 3D; Ocarina of Time 3D runs. Brief stutter while new shaders compile. Keep Hash textures on	the maintainer, 2026-09-15 - HANDOFF.md, "Trident reaches 60 fps" and "a second game"
 vba_next	plays	-	CORE-STATUS.md:167
 vbam	plays	-	CORE-STATUS.md:45 'Confirmed playing afterwards', :168
 xrick	plays	Rick Dangerous, straight out of data.zip	CORE-STATUS.md:172; HANDOFF.md:1435 'played straight out of data.zip'
