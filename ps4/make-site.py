@@ -147,6 +147,30 @@ def read_tested(path):
     return tested
 
 
+OPTIONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "core-options.tsv")
+
+
+def read_options(path):
+    """core -> [(label, value, why), ...] in file order, or None when there is no file to read."""
+    if not path or not os.path.exists(path):
+        return None
+    options = {}
+    with open(path, encoding="utf-8") as fh:
+        for n, line in enumerate(fh, 1):
+            if line.startswith("#") or not line.strip():
+                continue
+            parts = [p.strip() for p in re.split(r"\t+", line.rstrip("\n"))]
+            # ⚠ A SHORT ROW IS A MISTAKE, NOT A ROW WITH NOTHING TO SAY. Every column but evidence
+            # is shown or checked, and a recommendation with no value is an instruction nobody can
+            # follow.
+            if len(parts) < 5:
+                sys.stderr.write("!! %s:%d: expected core, key, label, value, why\n" % (path, n))
+                continue
+            core, _key, label, value, why = parts[:5]
+            options.setdefault(core, []).append((label, value, why))
+    return options
+
+
 def source_url(repo, sha):
     """A repository URL and a sha, joined the way that host expects."""
     if not repo:
@@ -288,6 +312,9 @@ td.sys{color:var(--muted);min-width:12ch}
 .hwb.boots{background:rgba(147,156,173,.16);color:var(--ink)}
 .hwb.broken{background:rgba(229,112,122,.14);color:var(--bad)}
 .untested{color:var(--faint)}
+.optlink{display:block;font-size:.8rem;margin-top:3px}
+.opts h3{margin:26px 0 8px;scroll-margin-top:16px}
+.opts td.val{white-space:nowrap;font-weight:600}
 ul.legend{list-style:none;padding:0;margin:0 0 14px;display:flex;flex-wrap:wrap;gap:6px 18px;font-size:.88rem;color:var(--muted)}
 
 footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--rule);color:var(--faint);font-size:.85rem}
@@ -325,9 +352,12 @@ def render(ctx):
     nc_count = 0
     tested = ctx["tested"] or {}
     hw_count = 0
+    options = ctx.get("options") or {}
+    displays = {}
     for date, crc, filename, name in ctx["index"]:
         info = ctx["info"].get(name, {})
         display = info.get("display_name") or name
+        displays[name] = display
         system = info.get("systemname") or ""
         lic = info.get("license") or "—"
         if is_noncommercial(lic):
@@ -346,6 +376,8 @@ def render(ctx):
             # Without the file nothing is known either way, and "untested" would be a claim.
             # With it, no row is exactly what "untested" means.
             hw_cell = '<span class="untested">%s</span>' % ("untested" if ctx["tested"] is not None else "—")
+        if name in options:
+            hw_cell += '<a class="optlink" href="#opt-%s">Recommended settings</a>' % e(name)
         rows.append(
             "<tr><td><a href=\"%s%s\">%s</a></td><td class=\"hw\">%s</td><td class=\"sys\">%s</td>"
             "<td>%s%s</td><td class=\"num\">%s</td><td class=\"mono num\">%s</td></tr>"
@@ -364,6 +396,31 @@ and nobody has yet written down what it does with a game. A report either way is
 <p>A result describes the build that was on the console that day. Cores are rebuilt from upstream on
 every run, so the file here can be newer than the one that was tested.</p>""" % (
         hw_count, len(ctx["index"]), legend)
+
+    # In index order, so the section reads in the same order as the table it links from; a core
+    # with advice but no row in this index has nothing to link to and is left out (main() says so).
+    opt_blocks = []
+    for _, _, _, name in ctx["index"]:
+        if name not in options:
+            continue
+        trs = "".join('<tr><td>%s</td><td class="val">%s</td><td class="sys">%s</td></tr>'
+                      % (e(label), e(value), e(why)) for label, value, why in options[name])
+        opt_blocks.append(
+            '<h3 id="opt-%s">%s</h3>\n<div class="tablewrap"><table>\n'
+            '<thead><tr><th>Option</th><th>Set to</th><th>Why</th></tr></thead>\n'
+            '<tbody>%s</tbody></table></div>' % (e(name), e(displays.get(name, name)), trs))
+    opt_section = "" if not opt_blocks else """\
+<h2>Recommended settings</h2>
+<div class="prose">
+<p>Most cores run well on their defaults. These are the exceptions: options whose default was
+chosen for a desktop computer and is wrong on this console, or that a game here was found to need.
+Change them under <b>Quick Menu &rarr; Options</b> while a game is running, and keep them with
+<b>Manage Core Options &rarr; Save Core Options</b>.</p>
+</div>
+<div class="opts">
+%s
+</div>
+""" % "\n".join(opt_blocks)
 
     bundle_row = ""
     if ctx.get("bundle_name"):
@@ -538,6 +595,7 @@ it. Nothing here is sold, and nothing here should be.</p>
 </ul>
 </div>
 
+%s
 <h2>The cores</h2>
 <div class="prose">
 <p>Every file the console's own Core Downloader offers, and where each came from.</p>
@@ -564,6 +622,7 @@ it. Nothing here is sold, and nothing here should be.</p>
        e(ctx["firmware"]), e(ctx["goldhen"]),
        e(ctx["src_url"]), e(ctx["version"]),
        nc_count,
+       opt_section,
        hw_intro,
        "\n".join(rows),
        e(ctx["index_date"]), e(ctx["base"]))
@@ -580,6 +639,8 @@ def main():
     ap.add_argument("--icon", help="the application icon, inlined into the page")
     ap.add_argument("--tested", default=TESTED,
                     help="what has been run on a console (default: core-tested.tsv beside this script)")
+    ap.add_argument("--options", default=OPTIONS,
+                    help="recommended core options (default: core-options.tsv beside this script)")
     ap.add_argument("--firmware", default="11.00", help="console firmware this was tested on")
     ap.add_argument("--goldhen", default="2.4b18.10", help="GoldHEN build this was tested on")
     ap.add_argument("--dist", help="directory of *.prx.zip, for --bundle")
@@ -609,6 +670,7 @@ def main():
         "repos": read_recipe(args.recipe),
         "info": read_info(args.info),
         "tested": read_tested(args.tested),
+        "options": read_options(args.options),
         "base": base,
         "version": args.version,
         "pkg_url": args.pkg_url,
@@ -674,6 +736,13 @@ def main():
         if unlisted:
             print("== %d verdict(s) for cores not in this index: %s"
                   % (len(unlisted), " ".join(unlisted)))
+
+    if ctx["options"]:
+        listed = set(n for _, _, _, n in index)
+        missing = sorted(c for c in ctx["options"] if c not in listed)
+        print("== recommended settings for %d core(s)" % (len(ctx["options"]) - len(missing)))
+        if missing:
+            print("== settings for cores not in this index, not shown: %s" % " ".join(missing))
 
     out_html = os.path.join(args.out, "index.html")
     with open(out_html, "w", encoding="utf-8") as fh:
