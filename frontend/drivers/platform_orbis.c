@@ -451,6 +451,16 @@ static void frontend_orbis_init(void *data)
     * shared file first, so a per-title one can override it. */
    frontend_orbis_apply_env_file("/data/tempest-env.txt");
    frontend_orbis_apply_env_file("/data/retroarch-env.txt");
+   /* Mesa's shader disk cache is off without a directory to put it in, and on this console it is what
+    * makes zink's pipeline compiles a first-run cost only. Database mode because the default layout's
+    * index is a shared file mapping; mesa-ps4 keeps that in memory, the database enforces its own size
+    * limit. Either file above can still point it elsewhere or set MESA_SHADER_CACHE_DISABLE. */
+   if (!getenv("MESA_SHADER_CACHE_DIR"))
+   {
+      path_mkdir(USER_PATH "shader-cache");
+      setenv("MESA_SHADER_CACHE_DIR", USER_PATH "shader-cache", 0);
+   }
+   setenv("MESA_DISK_CACHE_DATABASE", "1", 0);
    /* ⚠ /data/tempest-env.txt IS SHARED WITH EVERY OTHER TITLE ON THIS CONSOLE, and a diagnostic
     * left in it becomes this title's cost. Check it before blaming anything here. */
 

@@ -462,6 +462,10 @@ CXX_INCLUDES := -isystem $(TOOLCHAIN)/include/c++/v1 \
 INCDIRS += -I. -Ideps -Ilibretro-common/include -Ideps/rcheevos/include \
            -I$(ORBIS_COMPAT_DIR)/include
 
+# Mesa built with -Dshader-cache=enabled needs compression, and on this target zlib comes from Mesa's own
+# subproject rather than the SDK. Present only in such a build; absent, the link is unchanged.
+MESA_ZLIB_ARCHIVE := $(wildcard $(ORBIS_MESA_BUILD)/subprojects/zlib-*/libz.a)
+
 ifeq ($(HAVE_VULKAN),1)
   ifeq ($(wildcard $(RADV_ARCHIVE)),)
     $(error No RADV archive at $(RADV_ARCHIVE). Build it with mesa-ps4's build.sh, or set ORBIS_MESA_BUILD.)
@@ -473,7 +477,7 @@ ifeq ($(HAVE_VULKAN),1)
   # errors that read as a broken driver. --whole-archive because a statically linked driver
   # must have all of itself present - nothing later will dlopen the members the linker
   # decided were unreachable.
-  RADV_LINK := -Wl,--whole-archive $(RADV_ARCHIVE) -Wl,--no-whole-archive
+  RADV_LINK := -Wl,--whole-archive $(RADV_ARCHIVE) -Wl,--no-whole-archive $(MESA_ZLIB_ARCHIVE)
 endif
 
 # ⚠ ONE GL STACK, TWO FLAVOURS. Everything below - the archives, the link script, the context
@@ -494,6 +498,7 @@ ifneq ($(filter 1,$(HAVE_OPENGLES) $(HAVE_OPENGL_CORE)),)
                    $(ORBIS_MESA_BUILD)/src/mesa/glapi/es1api/libGLESv1_CM.a \
                    $(GALLIUM_ARCHIVE) \
                    -Wl,--whole-archive $(RADV_ARCHIVE) -Wl,--no-whole-archive \
+                   $(MESA_ZLIB_ARCHIVE) \
                    -Wl,--end-group
   # ⚠ libgallium CARRIES ITS OWN COPY OF PARTS OF THE VULKAN RUNTIME, because zink is a Vulkan
   # client - vk_enum_to_str.c ends up in both archives. Without this the link fails on symbols
