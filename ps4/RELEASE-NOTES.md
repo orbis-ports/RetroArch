@@ -36,6 +36,30 @@ process down outside the path the system expects; this one asks the system to un
 `CE-34878-0`. The console returns to its menu and nothing needs restarting, but the application is
 killed outright there and never gets to shut itself down, so Quit is the better habit.
 
+## New in v0.1.8
+
+- **Nintendo 3DS, through Trident.** A Link Between Worlds runs at 60 fps with correct 3D, and
+  Ocarina of Time 3D runs. Trident is now built from its own fork for this console
+  (`orbis-ports/3dsTrident`), because the fixes sit in four nested projects - Panda3DS, its ARM
+  recompiler, SDL and fmt. **Keep "Hash textures" on**: without it Ocarina of Time 3D shows garbled
+  text. Leave "Use ubershaders" off - it is steadier but slower.
+- **Where Trident's frame went.** It started at 10 fps. The largest single cause was a platform
+  fact: this GPU has no 8-bit index buffers, so every draw that used them was converted on the CPU
+  after reading the buffer back, and each readback forced the driver to flush. Games for the 3DS
+  use 8-bit indices constantly. The core now widens them while uploading. Any OpenGL core that
+  draws with `GL_UNSIGNED_BYTE` indices pays the same cost here.
+- **Switching games in Trident no longer aborts.** Each load leaked the emulated console's 128 MiB
+  of memory, and the second game ran out of room for its recompiler.
+- **Less stutter when new shaders appear.** The OpenGL driver's shader cache works on this console
+  for the first time and is on by default, in `/data/retroarch/shader-cache`: what was compiled
+  once is read back on the next run. Trident also no longer waits for a new shader - it draws with
+  its general-purpose one until the specialised one is ready. Short hitches remain when a new
+  scene first appears, and while the recompiler meets new game code.
+- **File operations that went wrong on this console**: creating a directory that already existed
+  reported an error, and deleting a directory tree failed with an I/O error. Both came from how
+  the system reports failures, and both are fixed in the platform layer every core links against.
+- **The cores page says which cores were actually tried on a PS4**, and how they did.
+
 ## New in v0.1.7
 
 - **OpenGL 4.6.** The port advertised 3.3 until now, and the ceiling was not the hardware:
@@ -117,12 +141,13 @@ killed outright there and never gets to shut itself down, so Quit is the better 
 - 113 cores, built for this console, at `cores.prx0.com`
 - Nintendo 64 at 60 fps (GLideN64)
 - PlayStation at 50 fps (Beetle PSX HW, Lightrec, Vulkan renderer)
+- Nintendo 3DS at 60 fps in A Link Between Worlds (Trident)
 - Online Updater: cores, core info, databases, thumbnails, assets
 - HTTPS, with certificate validation — the trust anchors ship in the package
 
 ## Known limits
 
-- **66 of 182 recipe cores do not build yet**, for reasons recorded per core. The ones that are
+- **69 of 182 recipe cores do not build yet**, for reasons recorded per core. The ones that are
   listed are the ones that link and carry `retro_run`.
 - **Closing from the console's own menu still shows CE-34878-0** — see above. It is cosmetic; the
   console recovers on its own.
