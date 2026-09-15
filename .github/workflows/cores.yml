@@ -902,25 +902,45 @@ jobs:
       # per core, so the index and the payloads cannot live on two hosts - which is why the
       # console reads Cloudflare R2 (steps below) and this Release is now only the archival
       # copy. It still carries the index under whatever name GitHub gives it; nothing fetches it.
+      #
+      # ⚠ ONE UPLOAD AT A TIME, WITH BACKOFF. action-gh-release sends every asset at once, and at
+      # 115 of them GitHub answered "You have exceeded a secondary rate limit" - run 34962509828,
+      # three attempts over 25 minutes, each dying a second in and each skipping every R2 step
+      # below, so the console's copy was never updated either. Uploads in sequence stay under the
+      # content-creation limit; a refusal waits and tries that file again.
       - name: Release
         if: github.event.inputs.dry-run != 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: cores
-          name: Cores
-          body: |
-            Libretro cores for the PlayStation 4, built by `.github/workflows/cores.yml`.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes="$(mktemp)"
+          cat > "$notes" <<'NOTES'
+          Libretro cores for the PlayStation 4, built by `.github/workflows/cores.yml`.
 
-            Rolling tag: the assets are replaced on every publish. This Release is the archival
-            copy. The console does NOT read it - GitHub renames `.index-extended` to
-            `default.index-extended`, and RetroArch's Core Downloader needs the listing and the
-            archives in one directory under the same names. That directory is the R2 bucket
-            `network_buildbot_url` points at.
-          files: |
-            dist/.index-extended
-            dist/*.prx.zip
-            dist/*.info
-          fail_on_unmatched_files: false
+          Rolling tag: the assets are replaced on every publish. This Release is the archival
+          copy. The console does NOT read it - GitHub renames `.index-extended` to
+          `default.index-extended`, and RetroArch's Core Downloader needs the listing and the
+          archives in one directory under the same names. That directory is the R2 bucket
+          `network_buildbot_url` points at.
+          NOTES
+          if gh release view cores > /dev/null 2>&1; then
+            gh release edit cores --title Cores --notes-file "$notes"
+          else
+            gh release create cores --title Cores --notes-file "$notes" --target "$GITHUB_SHA"
+          fi
+          shopt -s nullglob
+          n=0
+          for f in dist/.index-extended dist/*.prx.zip dist/*.info; do
+            for attempt in 1 2 3 4 5 6; do
+              if gh release upload cores "$f" --clobber; then break; fi
+              [ "$attempt" -lt 6 ] || { echo "!! $f would not upload after $attempt attempts" >&2; exit 1; }
+              echo "== $f refused (attempt $attempt), waiting $((attempt * 60)) s"
+              sleep $((attempt * 60))
+            done
+            n=$((n + 1))
+          done
+          echo "== $n assets uploaded"
 
       # ---------------------------------------------------------------------------------
       # CLOUDFLARE R2: THE COPY THE CONSOLE ACTUALLY READS.
