@@ -193,20 +193,20 @@ index fb39aa9..393232c 100644
  #ifdef HAVE_PARALLEL_RDP
              {"parallel", "ParaLLEl-RDP"},
  #endif
-+/* ⚠ OFFERED AGAIN ON THIS CONSOLE AS OF 2026-08-25, AND STILL NOT THE DEFAULT. It was absent
-+ * while the PlayStation 4 frontend had only orbis_vk_ctx.c: a renderer with no context draws
-+ * into nothing and reads as a broken core rather than an absent feature. There is now
-+ * gfx/drivers_context/orbis_gl_ctx.c, so GLideN64 has a context - GLES 3 over Mesa's EGL and
-+ * zink, which is to say OpenGL on top of the same Vulkan driver.
++/* ⚠ GLideN64 IS THE DEFAULT ON THIS CONSOLE, and "parallel" only where ParaLLEl-RDP is built.
++ * The PS4 build has no ParaLLEl-RDP, and a default missing from the list makes RetroArch take the
++ * FIRST value instead - Angrylion - which is what every fresh install got until 2026-09-15:
++ * 60 fps, but a software renderer at native resolution with no upscaling at all. GLideN64 over
++ * gfx/drivers_context/orbis_gl_ctx.c (OpenGL through zink on the same Vulkan driver) ran
++ * Shadows of the Empire at 60 fps with the HLE RSP and scales up.
 + *
-+ * It stays off by default because that is the unmeasured path and ParaLLEl-RDP is the measured
-+ * one. What makes it worth having is arithmetic rather than preference: ParaLLEl-RDP forces the
-+ * LLE RSP, and the LLE RSP alone costs 24 ms against a 16.7 ms budget, so full speed is not
-+ * reachable that way at all. See ps4/HANDOFF.md. */
++ * ParaLLEl-RDP is not the answer where it exists either: it forces the LLE RSP, and the LLE RSP
++ * alone costs 24 ms against a 16.7 ms budget, so full speed is not reachable that way at all.
++ * See ps4-mesa-docs docs/retroarch/HANDOFF.md, "OpenGL, and Nintendo 64 at full speed". */
              {"gliden64", "GLideN64"},
              { NULL, NULL },
          },
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) && defined(HAVE_PARALLEL_RDP)
 +        "parallel"
 +#else
          "gliden64"
