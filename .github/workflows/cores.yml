@@ -1209,6 +1209,10 @@ jobs:
       # owns - uploading an index.html from this job would overwrite it. What stays here is what only
       # this job can make, because it needs dist/: the all-cores bundle and cores.json.
       #
+      # The website rebuilds itself hourly and reads cores.json then, so nothing here has to tell it.
+      # There was a repository_dispatch step; it needed a token in this repository that expires, and
+      # an hour of staleness was judged cheaper than renewing one.
+      #
       # ⚠ cores.json IS WRITTEN BY THE WEBSITE'S OWN TOOL, checked out at its main branch, because
       # that repository owns the schema. It goes up LAST, after .index-extended and the bundle it
       # names, so a reader never sees it describe objects that are not there yet.
@@ -1269,22 +1273,6 @@ jobs:
             [ "$code" = "200" ] || { echo "!! ${BASE}${f} -> HTTP $code" >&2; exit 1; }
           done
           echo "== ${BASE}cores.json and ${BASE}$bundle are live"
-
-      # ⚠ SKIPPED WITH A WARNING, NOT FAILED, WITHOUT THE TOKEN. The website also rebuilds daily, so a
-      # missing token costs at most a day of the page describing the previous cores. GITHUB_TOKEN
-      # cannot dispatch to another repository; WEBSITE_DISPATCH_TOKEN is a fine-grained token with
-      # Contents: read and write on orbis-ports/website, set by the maintainer.
-      - name: Tell the website to rebuild
-        if: github.event.inputs.dry-run != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
-        run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::warning::WEBSITE_DISPATCH_TOKEN is not set; prx0.com/retroarch/ picks these cores up at its daily build"
-            exit 0
-          fi
-          gh api repos/orbis-ports/website/dispatches -f event_type=retroarch-cores
-          echo "== dispatched retroarch-cores to orbis-ports/website"
 
       - name: R2 summary
         if: github.event.inputs.dry-run != 'true'
