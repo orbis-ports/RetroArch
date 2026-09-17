@@ -139,9 +139,45 @@ else
   # make a module instead of an executable. Everything else matches the eboot link.
   # "cannot find entry symbol _start" is expected and not an error: a module has no entry
   # point, which is the whole difference from the eboot.
+  #
+  # ⚠ orbis-compat's crtlib.o, NOT THE SDK's, AND THE REASON IS THAT STATIC CONSTRUCTORS DO
+  # NOT RUN WITH THE SDK's. Measured 2026-09-17 by linking this exact command line both ways
+  # against a module carrying one static constructor:
+  #
+  #   .init_array (both)   addr 0x4000  size 0x08   <- the one constructor pointer
+  #   _GLOBAL__sub_I       0x50
+  #
+  #   SDK crtlib.o     __init_array_start 0xc030   __init_array_end 0xc038
+  #                    .bss               0xc028 .. 0xc040
+  #                    -> both bounds land INSIDE .bss, 8 bytes apart. module_start walks one
+  #                       entry of zeroed .bss and calls through a NULL pointer. The
+  #                       constructor at 0x50 never runs.
+  #   our crtlib.o     __init_array_start 0x4000   __init_array_end 0x4008
+  #                    -> exactly the real .init_array.
+  #
+  # Cause: the SDK's crtlib.c declares the two bounds as tentative definitions. Under -fcommon
+  # (clang's default up to clang 11) they were COMMON and the linker's real bounds won; the
+  # shipped object is built by clang 18.1.4, where they become two ordinary .bss objects that
+  # shadow them. Ours declares them extern, so the linker supplies the bounds as intended.
+  #
+  # The licence follows the same way: the SDK's crtlib.o is built from src/crt/crtlib.c in the
+  # OpenOrbis toolchain repository, which is GPL-3.0 with no per-file header and no linking
+  # exception, and it is the only such object that ends up inside a module. orbis-compat's is
+  # MIT. ORBIS_CRT=sdk restores the SDK's for an A/B without editing this file.
+  CRTLIB="${ORBIS_COMPAT}/build/crt/crtlib.o"
+  [[ "${ORBIS_CRT:-own}" == sdk ]] && CRTLIB="$TOOLCHAIN/lib/crtlib.o"
+  [[ -f "$CRTLIB" ]] || { echo "build-core: no $CRTLIB - run orbis-compat/build.sh first" >&2; exit 1; }
+  # ⚠ STILL $TOOLCHAIN/link.x, NOT orbis-compat's orbis-tls.ld, AND THAT IS UNRESOLVED RATHER
+  # THAN DECIDED. The overlay's script is link.x with `*(.tdata .tdata.*)` and
+  # `*(.tbss .tbss.*)` in place of the bare names, because -fdata-sections leaves thread-locals
+  # as orphan sections that lld places ahead of .data.rel.ro, and the console then refuses the
+  # image with "segment #1 is not page aligned". Executables go through the corrected script;
+  # modules built here do not, and nobody has measured whether a module can hit the same shape.
+  # Changing both the crt and the linker script in one step would make the A/B unreadable, so
+  # this line is left alone deliberately. See orbis-compat/cmake/orbis-tls.ld.
   ld.lld "${OBJS[@]}" -o "$INT/core.elf" \
     -m elf_x86_64 -pie --script "$TOOLCHAIN/link.x" --eh-frame-hdr --no-rosegment \
-    -L"$TOOLCHAIN/lib" -lc -lkernel -lc++ "$TOOLCHAIN/lib/crtlib.o" 2>&1 \
+    -L"$TOOLCHAIN/lib" -lc -lkernel -lc++ "$CRTLIB" 2>&1 \
     | grep -v "cannot find entry symbol _start" || true
 
   [[ -f "$INT/core.elf" ]] || { echo "build-core: the module did not link" >&2; exit 1; }
