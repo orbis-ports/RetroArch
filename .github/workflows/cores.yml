@@ -75,7 +75,7 @@ on:
       mesa-release:
         description: mesa-ps4 release tag whose orbis-mesa-<sha>.tar.gz to consume.
         required: false
-        default: orbis-mesa-a4fa6b57f8bd
+        default: orbis-mesa-4c934ebf9cda
       dry-run:
         description: Build, zip and index, but cut no release.
         required: false
@@ -116,7 +116,7 @@ env:
   LIBRETRO_SUPER_REF: ${{ github.event.inputs.libretro-super-ref || 'bc2b5463fe7e45a36295db54f74bc56b950dec4b' }}
   ORBIS_COMPAT_REF: ${{ github.event.inputs.orbis-compat-ref || 'cc75949e8f7b4811fa4f4a5bf1c106178a906f07' }}
   CORE_INFO_REF: ${{ github.event.inputs.libretro-core-info-ref || 'b03bfc451381e1a5eb92fda9e56a1e81bfeb92c9' }}
-  MESA_RELEASE: ${{ github.event.inputs.mesa-release || 'orbis-mesa-a4fa6b57f8bd' }}
+  MESA_RELEASE: ${{ github.event.inputs.mesa-release || 'orbis-mesa-4c934ebf9cda' }}
   OPENORBIS_SDK_TAG: v0.5.4
   SHARDS: ${{ github.event.inputs.shards || '8' }}
   CORES_SUBSET: ${{ github.event.inputs.cores }}
