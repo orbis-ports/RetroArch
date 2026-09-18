@@ -63,7 +63,12 @@ jobs:
           fetch-depth: 0
 
       - name: Orbis toolchain
-        uses: ./.github/actions/orbis-toolchain
+        # ⚠ THE PUBLISHED ACTION, NOT THIS REPOSITORY'S COPY. The copy originated here, was taken
+        # by sonic3air and then by OpenGothic, and by 2026-09-18 the three had drifted - 332 lines
+        # against 317, a cache key that named the overlay commit but not the SDK tag, and a shorter
+        # SDK sanity list. The published version is the merge and keeps the stricter half of each.
+        # v1 moves with v1.x; pin v1.0.0 to freeze the resolution.
+        uses: orbis-ports/orbis-porting-kit/.github/actions/setup-orbis@v1
         with:
           sdk-tag: ${{ env.OPENORBIS_SDK_TAG }}
           orbis-compat-ref: ${{ env.ORBIS_COMPAT_REF }}
