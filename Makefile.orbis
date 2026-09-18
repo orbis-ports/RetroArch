@@ -165,6 +165,14 @@ endif
 # the libc++/SDK include order decides whether std::abs(float) silently truncates to
 # int. Building without the overlay compiles and is wrong.
 ORBIS_COMPAT_LIB   := $(ORBIS_COMPAT_DIR)/build/liborbis-compat.a
+
+# ⚠ THE libc16 OBJECTS, AND THIS BUILD HAS TO NAME THEM ITSELF. This Makefile is a transcription of
+# the CMake toolchain file, which puts these on every executable's link line - a transcription that
+# stops at the archive gets a 32-bit mbtowc under regcomp/regexec/vfscanf, whose wchar_t slot on
+# the stack is two bytes. libgallium references regcomp for driconf, so this frontend is squarely
+# in scope. Empty against an overlay from before 2026-09-18, which has no 32-bit wide members
+# either, so the two halves cannot be out of step.
+ORBIS_LIBC16_OBJS  = $(wildcard $(ORBIS_COMPAT_DIR)/build/libc16/libc16_*.o)
 ifeq ($(wildcard $(ORBIS_COMPAT_DIR)/include/orbis_prefix.h),)
   $(error orbis-compat not found at '$(ORBIS_COMPAT_DIR)'. Set ORBIS_COMPAT_DIR.)
 endif
@@ -675,7 +683,10 @@ endif
 # application". orbis-compat's script is the same one with that hole closed - see the note in
 # mesa-ps4's build-support/orbis/tools/gllinkprobe.sh, which paid for this discovery.
 ifneq ($(filter 1,$(HAVE_OPENGLES) $(HAVE_OPENGL_CORE)),)
-  ORBIS_LINK_SCRIPT := $(ORBIS_COMPAT_DIR)/cmake/orbis-tls.ld
+  # The linker script moved to orbis-ports/orbis-porting-kit with the rest of cmake/ on
+  # 2026-09-18; the fallback is the overlay, which carried it until then. Recursive `=` for the
+  # same reason as ORBIS_VKLOADER_DIR: ORBIS_COMPAT_DIR is assigned further down this file.
+  ORBIS_LINK_SCRIPT = $(if $(wildcard $(ORBIS_KIT_DIR)/cmake/orbis-tls.ld),$(ORBIS_KIT_DIR)/cmake/orbis-tls.ld,$(ORBIS_COMPAT_DIR)/cmake/orbis-tls.ld)
 else
   ORBIS_LINK_SCRIPT := $(TOOLCHAIN)/link.x
 endif
@@ -691,7 +702,7 @@ ifeq ($(WHOLE_ARCHIVE_LINK),1)
 endif
 
 LIBS := $(CORE_LIB) $(ORBIS_GL_LINK) $(RADV_LINK) $(PS4_LIBS) \
-        -Wl,--whole-archive $(ORBIS_COMPAT_LIB) -Wl,--no-whole-archive \
+        -Wl,--whole-archive $(ORBIS_COMPAT_LIB) -Wl,--no-whole-archive $(ORBIS_LIBC16_OBJS) \
         -lc -lkernel -lc++ -lc++abi -lunwind $(TOOLCHAIN)/lib/crt1.o
 
 # ---------------------------------------------------------------------------

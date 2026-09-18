@@ -113,6 +113,13 @@ done
   exit 1
 }
 export ORBIS_COMPAT_DIR ORBIS_KIT_DIR
+
+# The linker script moved to the kit with the rest of cmake/ on 2026-09-18; the overlay is the
+# fallback because it carried it until then, and a pin older than the move still has it.
+ORBIS_LINK_SCRIPT="$ORBIS_KIT_DIR/cmake/orbis-tls.ld"
+[[ -f "$ORBIS_LINK_SCRIPT" ]] || ORBIS_LINK_SCRIPT="$ORBIS_COMPAT_DIR/cmake/orbis-tls.ld"
+[[ -f "$ORBIS_LINK_SCRIPT" ]] || { echo "build-cores: no orbis-tls.ld in the kit or the overlay" >&2; exit 1; }
+export ORBIS_LINK_SCRIPT
 . "${ORBIS_KIT_DIR}/scripts/ps4/orbis-env.sh"
 TOOLCHAIN="$OO_PS4_TOOLCHAIN"
 
@@ -386,7 +393,7 @@ set(CMAKE_ASM_FLAGS_INIT "${ORBIS_ARCH[*]} ${C_INCLUDES[*]}")
 #
 # ⚠ THE CORE'S OWN SHARED/MODULE LINK IS STILL EXPECTED TO FAIL and is left alone deliberately -
 # build-cores.sh collects the objects and links them against ps4/orbis-module.ld itself.
-set(CMAKE_EXE_LINKER_FLAGS_INIT "-nostdlib -fuse-ld=lld -pie -Wl,-m,elf_x86_64 -Wl,--script=$ORBIS_COMPAT_DIR/cmake/orbis-tls.ld -Wl,--eh-frame-hdr -Wl,--no-rosegment -L$TOOLCHAIN/lib $ORBIS_COMPAT_LINK")
+set(CMAKE_EXE_LINKER_FLAGS_INIT "-nostdlib -fuse-ld=lld -pie -Wl,-m,elf_x86_64 -Wl,--script=$ORBIS_LINK_SCRIPT -Wl,--eh-frame-hdr -Wl,--no-rosegment -L$TOOLCHAIN/lib $ORBIS_COMPAT_LINK")
 set(CMAKE_C_STANDARD_LIBRARIES   "-lc -lkernel -lc++ $TOOLCHAIN/lib/crt1.o")
 set(CMAKE_CXX_STANDARD_LIBRARIES "-lc -lkernel -lc++ $TOOLCHAIN/lib/crt1.o")
 
