@@ -52,14 +52,29 @@ set -euo pipefail
 # ⚠ The six lines that cannot be shared - see orbis-compat/scripts/ps4/orbis-env.sh. Sibling
 # directory first, because that is what a fresh clone of the orbis-ports organisation looks like.
 for _c in "${ORBIS_COMPAT_DIR:-}" "$(dirname "${BASH_SOURCE[0]}")/../../orbis-compat" "$HOME/src-ps4/orbis-compat"; do
-  [[ -n "$_c" && -f "$_c/scripts/ps4/orbis-env.sh" ]] && { ORBIS_COMPAT_DIR="$_c"; break; }
+  [[ -n "$_c" && -f "$_c/include/orbis_prefix.h" ]] && { ORBIS_COMPAT_DIR="$_c"; break; }
 done
 [[ -n "${ORBIS_COMPAT_DIR:-}" ]] || {
   echo "build-core: orbis-compat not found - clone https://github.com/orbis-ports/orbis-compat" >&2
   echo "            next to this repository, or set ORBIS_COMPAT_DIR" >&2
   exit 1
 }
-. "${ORBIS_COMPAT_DIR}/scripts/ps4/orbis-env.sh"
+
+# ⚠ TWO REPOSITORIES SINCE 2026-09-18: orbis-compat is include/ and the archive, the porting kit is
+# the toolchain file, the loader shim and these scripts. The overlay is found by a HEADER it owns,
+# because probing for scripts/ps4/orbis-env.sh would now find the kit and call it the overlay. The
+# kit's last candidate is the overlay itself, which carried these scripts until that date - so a
+# pinned checkout older than the move still works, and that is the arm CI uses today.
+for _k in "${ORBIS_KIT_DIR:-}" "$(dirname "${BASH_SOURCE[0]}")/../../orbis-porting-kit" "$HOME/src-ps4/orbis-porting-kit" "${ORBIS_COMPAT_DIR}"; do
+  [[ -n "$_k" && -f "$_k/scripts/ps4/orbis-env.sh" ]] && { ORBIS_KIT_DIR="$_k"; break; }
+done
+[[ -n "${ORBIS_KIT_DIR:-}" ]] || {
+  echo "orbis-porting-kit not found - clone https://github.com/orbis-ports/orbis-porting-kit next" >&2
+  echo "to this repository, or set ORBIS_KIT_DIR" >&2
+  exit 1
+}
+export ORBIS_COMPAT_DIR ORBIS_KIT_DIR
+. "${ORBIS_KIT_DIR}/scripts/ps4/orbis-env.sh"
 TOOLCHAIN="$OO_PS4_TOOLCHAIN"
 ORBIS_COMPAT="$ORBIS_COMPAT_DIR"
 CORE_DIR=""

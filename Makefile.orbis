@@ -848,7 +848,9 @@ eboot.bin: $(TARGET).elf
 # there is no core to ship yet, and everything writable resolves under /data, which the
 # frontend creates on first boot. A package that shipped assets it could not use would
 # only make the first hardware run slower to copy.
-PS4_MAKE_PKG := $(ORBIS_COMPAT_DIR)/scripts/ps4/make-pkg.sh
+# make-pkg.sh moved to orbis-ports/orbis-porting-kit on 2026-09-18; the fallback is the overlay,
+# which carried it until then and is what a pin older than the move still provides.
+PS4_MAKE_PKG = $(if $(wildcard $(ORBIS_KIT_DIR)/scripts/ps4/make-pkg.sh),$(ORBIS_KIT_DIR)/scripts/ps4/make-pkg.sh,$(ORBIS_COMPAT_DIR)/scripts/ps4/make-pkg.sh)
 
 pkg: eboot.bin
 	@$(if $(Q), $(shell echo echo PKG $(PS4_TITLE_ID)),)
