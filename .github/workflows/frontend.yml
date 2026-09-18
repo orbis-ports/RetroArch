@@ -27,7 +27,7 @@ on:
       orbis-compat-ref:
         description: orbis-compat commit to build against (a sha, never a branch).
         required: false
-        default: cc75949e8f7b4811fa4f4a5bf1c106178a906f07
+        default: 6af90a8600464af4e29b384a9533e8284c14c625
       mesa-release:
         description: mesa-ps4 release tag whose orbis-mesa-<sha>.tar.gz to consume.
         required: false
@@ -41,7 +41,7 @@ env:
   # values verbatim. Mesa's archives and orbis-compat's overlay decide struct layouts and
   # constants inside the eboot; a cache that serves yesterday's Mesa against today's headers
   # produces a binary that links cleanly and misbehaves at run time.
-  ORBIS_COMPAT_REF: ${{ github.event.inputs.orbis-compat-ref || 'cc75949e8f7b4811fa4f4a5bf1c106178a906f07' }}
+  ORBIS_COMPAT_REF: ${{ github.event.inputs.orbis-compat-ref || '6af90a8600464af4e29b384a9533e8284c14c625' }}
   MESA_RELEASE: ${{ github.event.inputs.mesa-release || 'orbis-mesa-4c934ebf9cda' }}
   OPENORBIS_SDK_TAG: v0.5.4
 
@@ -68,36 +68,6 @@ jobs:
           sdk-tag: ${{ env.OPENORBIS_SDK_TAG }}
           orbis-compat-ref: ${{ env.ORBIS_COMPAT_REF }}
           mesa-release: ${{ env.MESA_RELEASE }}
-
-      # ⚠ PkgTool.Core NEEDS OpenSSL 1.1 AND THE RUNNER HAS OPENSSL 3. It is an old
-      # self-contained .NET build; .NET's crypto shim dlopen()s libssl.so.1.1 by soname and
-      # refuses OpenSSL 3, so pkg_build fails inside a script whose every other step worked.
-      # make-pkg.sh reads PS4_PKGTOOL_OPENSSL_LIB first and only then probes /nix/store -
-      # which does not exist on a GitHub runner, hence this step.
-      #
-      # TODO(verify): this has NOT been run on a runner. What is established on disk:
-      # `strings bin/linux/PkgTool.Core` contains libssl.so.1.1 among its candidate sonames,
-      # and make-pkg.sh's own header documents both quirks. The focal .deb below is the usual
-      # way to get that soname onto a noble image, but the exact filename floats with the
-      # security pool, so it is discovered rather than named.
-      - name: OpenSSL 1.1 for PkgTool.Core
-        run: |
-          set -euo pipefail
-          lib="${GITHUB_WORKSPACE}/.orbis/openssl11/lib"
-          if [ ! -e "$lib/libssl.so.1.1" ]; then
-            tmp="$(mktemp -d)"
-            base=http://security.ubuntu.com/ubuntu/pool/main/o/openssl
-            deb="$(curl -sSfL "$base/" \
-                   | grep -oE 'libssl1\.1_[^"]*_amd64\.deb' | sort -V | tail -1)"
-            [ -n "$deb" ] || { echo "!! no libssl1.1 .deb in $base" >&2; exit 1; }
-            echo "== $deb"
-            curl -sSfL -o "$tmp/libssl.deb" "$base/$deb"
-            dpkg-deb -x "$tmp/libssl.deb" "$tmp/x"
-            mkdir -p "$lib"
-            cp -a "$tmp"/x/usr/lib/x86_64-linux-gnu/lib{ssl,crypto}.so.1.1 "$lib"/
-          fi
-          echo "PS4_PKGTOOL_OPENSSL_LIB=$lib" >> "$GITHUB_ENV"
-          ls -l "$lib"
 
       # The three switches below are ALL load-bearing and Makefile.orbis says so at length:
       # HAVE_DYNAMIC=1 makes the frontend load .prx cores through sceKernelLoadStartModule,
