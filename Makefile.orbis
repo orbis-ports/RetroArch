@@ -579,7 +579,13 @@ OBJ     += ps4/orbis_watchdog.o
 # there is one frontend and it always wants this, so there is nothing to select. It defines all
 # three entry points, which is every strong symbol in libc++.a's cxa_guard.cpp.o, so that member
 # is never pulled and nothing is defined twice. ps4/orbis_cxa_guard.c carries the measurement.
-OBJ     += ps4/orbis_cxa_guard.o
+#
+# ⚠ NOT LINKED HERE ANY MORE, AS OF 2026-09-18. orbis-compat carries this correction now, and this
+# frontend links that archive with --whole-archive - so adding the object as well is a duplicate
+# definition and a failed link, not a belt-and-braces. The FILE stays because ps4/build-cores.sh
+# still compiles it into each core's support archive: a core is a .prx linked on demand with the
+# cores' own flags, which is a different link model and a separate decision.
+# OBJ     += ps4/orbis_cxa_guard.o
 
 # ⚠ -Werror IS DELIBERATELY OFF, and the old build's was load-bearing for nothing:
 # it was only ever exercised by a CI job that linked HAVE_STATIC_DUMMY against stub

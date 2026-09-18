@@ -27,7 +27,7 @@ on:
       orbis-compat-ref:
         description: orbis-compat commit to build against (a sha, never a branch).
         required: false
-        default: 6af90a8600464af4e29b384a9533e8284c14c625
+        default: 603465a58d94e28fda263d4a957abbf5e0eece43
       mesa-release:
         description: mesa-ps4 release tag whose orbis-mesa-<sha>.tar.gz to consume.
         required: false
@@ -41,7 +41,7 @@ env:
   # values verbatim. Mesa's archives and orbis-compat's overlay decide struct layouts and
   # constants inside the eboot; a cache that serves yesterday's Mesa against today's headers
   # produces a binary that links cleanly and misbehaves at run time.
-  ORBIS_COMPAT_REF: ${{ github.event.inputs.orbis-compat-ref || '6af90a8600464af4e29b384a9533e8284c14c625' }}
+  ORBIS_COMPAT_REF: ${{ github.event.inputs.orbis-compat-ref || '603465a58d94e28fda263d4a957abbf5e0eece43' }}
   MESA_RELEASE: ${{ github.event.inputs.mesa-release || 'orbis-mesa-4c934ebf9cda' }}
   OPENORBIS_SDK_TAG: v0.5.4
 
