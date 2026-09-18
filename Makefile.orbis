@@ -39,6 +39,15 @@ HAVE_DYNAMIC       ?= 0
 
 # ⚠ PHASE 7: THE RADV PORT, AND IT IS OFF BY DEFAULT UNTIL IT DRAWS. With HAVE_VULKAN=1 the
 # frontend links Mesa's RADV as a static ICD and talks to it through orbis-compat's
+# ⚠ THE LOADER MOVED TO orbis-ports/orbis-porting-kit ON 2026-09-18. The overlay keeps include/
+# and the archive; the kit keeps the CMake, this shim and the examples. ORBIS_KIT_DIR is exported by
+# the kit's setup-orbis action and by an SDK bundle's env.sh, and the fallback is where the shim
+# lived before - so a pinned overlay older than that day, or an older bundle, still builds.
+ORBIS_KIT_DIR    ?=
+# ⚠ RECURSIVE (=), NOT IMMEDIATE (:=). ORBIS_COMPAT_DIR is assigned further down this file, so an
+# immediate expansion here would test an empty path and silently pick the wrong arm.
+ORBIS_VKLOADER_DIR = $(if $(wildcard $(ORBIS_KIT_DIR)/vkloader/vkloader.c),$(ORBIS_KIT_DIR)/vkloader,$(ORBIS_COMPAT_DIR)/vkloader)
+
 # vkloader, because this console has no Vulkan loader and cannot have one: the eboot is
 # statically linked, there is no libvulkan.so to dlopen and no icd.d to read.
 #
@@ -471,7 +480,7 @@ ifeq ($(HAVE_VULKAN),1)
     $(error No RADV archive at $(RADV_ARCHIVE). Build it with mesa-ps4's build.sh, or set ORBIS_MESA_BUILD.)
   endif
   # The driver's own headers first, and the loader's, which declares vk_icdGetInstanceProcAddr.
-  INCDIRS += -I$(ORBIS_MESA_SRC)/include -I$(ORBIS_COMPAT_DIR)/vkloader
+  INCDIRS += -I$(ORBIS_MESA_SRC)/include -I$(ORBIS_VKLOADER_DIR)
   # ⚠ ONE ARCHIVE, NOT THREE. meson merges addrlib and amd_common into libvulkan_radeon.a
   # and also emits them separately; adding those produces a thousand duplicate-symbol
   # errors that read as a broken driver. --whole-archive because a statically linked driver
@@ -744,11 +753,11 @@ ps4/oc_ps4_app.o: $(ORBIS_COMPAT_DIR)/optional/ps4_app.cpp
 	@$(if $(Q), $(shell echo echo CXX $<),)
 	$(Q)$(CXX) $(CXXFLAGS) $(OC_DEFINES) -c $(OBJOUT)$@ $<
 
-ps4/oc_vkloader.o: $(ORBIS_COMPAT_DIR)/vkloader/vkloader.c
+ps4/oc_vkloader.o: $(ORBIS_VKLOADER_DIR)/vkloader.c
 	@$(if $(Q), $(shell echo echo CC $<),)
 	$(Q)$(CC) $(CFLAGS) -c $(OBJOUT)$@ $<
 
-ps4/oc_vkthunks.o: $(ORBIS_COMPAT_DIR)/vkloader/vkthunks.c
+ps4/oc_vkthunks.o: $(ORBIS_VKLOADER_DIR)/vkthunks.c
 	@$(if $(Q), $(shell echo echo CC $<),)
 	$(Q)$(CC) $(CFLAGS) -c $(OBJOUT)$@ $<
 
