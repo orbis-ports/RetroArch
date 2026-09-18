@@ -71,11 +71,11 @@ on:
       orbis-compat-ref:
         description: orbis-compat commit to build against (a sha, never a branch).
         required: false
-        default: eb62bbd9e6e64de0cfde278acc4338ba54dc14a8
+        default: 91732677835cbe35f6da1f35464a2fb0352996db
       mesa-release:
         description: mesa-ps4 release tag whose orbis-mesa-<sha>.tar.gz to consume.
         required: false
-        default: orbis-mesa-4c934ebf9cda
+        default: orbis-mesa-1a59cc147b54
       dry-run:
         description: Build, zip and index, but cut no release.
         required: false
@@ -114,9 +114,9 @@ env:
   # rerun of one shard saw different recipes, the split would move under them and the publish
   # job would assemble an index over a set nobody chose.
   LIBRETRO_SUPER_REF: ${{ github.event.inputs.libretro-super-ref || 'bc2b5463fe7e45a36295db54f74bc56b950dec4b' }}
-  ORBIS_COMPAT_REF: ${{ github.event.inputs.orbis-compat-ref || 'eb62bbd9e6e64de0cfde278acc4338ba54dc14a8' }}
+  ORBIS_COMPAT_REF: ${{ github.event.inputs.orbis-compat-ref || '91732677835cbe35f6da1f35464a2fb0352996db' }}
   CORE_INFO_REF: ${{ github.event.inputs.libretro-core-info-ref || 'b03bfc451381e1a5eb92fda9e56a1e81bfeb92c9' }}
-  MESA_RELEASE: ${{ github.event.inputs.mesa-release || 'orbis-mesa-4c934ebf9cda' }}
+  MESA_RELEASE: ${{ github.event.inputs.mesa-release || 'orbis-mesa-1a59cc147b54' }}
   OPENORBIS_SDK_TAG: v0.5.4
   SHARDS: ${{ github.event.inputs.shards || '8' }}
   CORES_SUBSET: ${{ github.event.inputs.cores }}
