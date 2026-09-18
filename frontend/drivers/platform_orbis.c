@@ -314,7 +314,10 @@ static void frontend_orbis_shutdown(bool unused)
  *
  * The file is the driver's rather than any title's, so the shared name is read as well as
  * ours: a knob discovered while debugging one title belongs to whoever runs the driver
- * next. */
+ * next. Since 2026-09-18 that shared name is /data/orbis-env.txt - the one path every image
+ * on this console can agree on, and the only one a loadable module can find without knowing
+ * which product loaded it. /data/tempest-env.txt and /data/retroarch-env.txt are still read,
+ * for the packages already flashed, and are deprecated. */
 static void frontend_orbis_apply_env_file(const char *path)
 {
    char  line[512];
@@ -448,21 +451,40 @@ static void frontend_orbis_init(void *data)
    atexit(frontend_orbis_exit_marker_last);
 
    /* The driver's configuration, before anything can ask the driver for anything. The
-    * shared file first, so a per-title one can override it. */
-   frontend_orbis_apply_env_file("/data/tempest-env.txt");
-   frontend_orbis_apply_env_file("/data/retroarch-env.txt");
+    * shared file first, so a per-title one can override it.
+    *
+    * ⚠ /data/orbis-env.txt IS THE NAME TO WRITE, AND THE OTHER TWO ARE KEPT ONLY FOR THE FILES
+    * ALREADY ON CONSOLES - 2026-09-18. A knob set here has to reach a CORE, and setenv() in this
+    * image is invisible to one: the SDK's libc.a is a real static musl, every .prx links its own
+    * `environ`, and measured 2026-08-23 ORBIS_NCPU=1 written into /data/retroarch-env.txt applied
+    * to this eboot and never reached Lightrec, which still started 5 workers. A core reaches a knob
+    * only by reading the file itself through orbis-compat's orbis_env_get, and that reader cannot
+    * keep a list of every product's file name - a title it has never heard of would read three
+    * paths belonging to other programs and find nothing. So the generic name is the channel, and
+    * this frontend reads it FIRST, in the same order orbis_env.cpp loads them, because a module and
+    * its loader disagreeing about what the operator asked for is a whole wasted console run.
+    *
+    * The two below stay until a released package of each product writes the generic file: an
+    * operator who flashed an older .pkg has a knob sitting in /data under the old name, and
+    * dropping the read turns it into a silent no-op, which is the failure mode this port keeps
+    * paying for. */
+   frontend_orbis_apply_env_file("/data/orbis-env.txt");
+   frontend_orbis_apply_env_file("/data/tempest-env.txt");   /* deprecated 2026-09-18 */
+   frontend_orbis_apply_env_file("/data/retroarch-env.txt"); /* deprecated 2026-09-18 */
    /* Mesa's shader disk cache is off without a directory to put it in, and on this console it is what
     * makes zink's pipeline compiles a first-run cost only. Database mode because the default layout's
     * index is a shared file mapping; mesa-ps4 keeps that in memory, the database enforces its own size
-    * limit. Either file above can still point it elsewhere or set MESA_SHADER_CACHE_DISABLE. */
+    * limit. Any of the files above can still point it elsewhere or set MESA_SHADER_CACHE_DISABLE. */
    if (!getenv("MESA_SHADER_CACHE_DIR"))
    {
       path_mkdir(USER_PATH "shader-cache");
       setenv("MESA_SHADER_CACHE_DIR", USER_PATH "shader-cache", 0);
    }
    setenv("MESA_DISK_CACHE_DATABASE", "1", 0);
-   /* ⚠ /data/tempest-env.txt IS SHARED WITH EVERY OTHER TITLE ON THIS CONSOLE, and a diagnostic
-    * left in it becomes this title's cost. Check it before blaming anything here. */
+   /* ⚠ /data/orbis-env.txt (AND THE OLD /data/tempest-env.txt) IS SHARED WITH EVERY OTHER TITLE ON
+    * THIS CONSOLE, and a diagnostic left in it becomes this title's cost - a watermark left in on
+    * 2026-09-01 froze this menu for 1.5 s every 768 frames. Check both before blaming anything
+    * here. */
 
    /* Take the flexible-memory reading before the frontend has allocated anything much.
     * There is no way to ask this kernel for the flexible ceiling, so the first reading
