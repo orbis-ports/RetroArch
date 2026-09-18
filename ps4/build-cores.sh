@@ -123,9 +123,32 @@ export ORBIS_LINK_SCRIPT
 . "${ORBIS_KIT_DIR}/scripts/ps4/orbis-env.sh"
 TOOLCHAIN="$OO_PS4_TOOLCHAIN"
 
+# ⚠ ORDERED BY HOST, NOT BY NAME. bin/linux/create-fself exists on a Mac too - it is a Linux ELF
+# the kernel cannot execute - and a test for -x says yes to it. Naming it unconditionally produced
+# "cannot execute binary file: Exec format error" AFTER the core had compiled and linked, and the
+# table then reported the failure as "undefined weak: sceKernelInternalMemoryGetAvailableSize",
+# because the note is inferred when create-fself leaves no message. A wrong tool became a wrong
+# diagnosis about the core.
+case "$(uname -s)" in
+  Darwin) _fself_order=("$TOOLCHAIN/bin/macos/create-fself-macos" "$TOOLCHAIN/bin/macos/create-fself"
+                        "$TOOLCHAIN/bin/linux/create-fself") ;;
+  *)      _fself_order=("$TOOLCHAIN/bin/linux/create-fself" "$TOOLCHAIN/bin/macos/create-fself-macos"
+                        "$TOOLCHAIN/bin/macos/create-fself") ;;
+esac
+CREATE_FSELF=""
+for _c in "${_fself_order[@]}"; do [[ -x "$_c" ]] && { CREATE_FSELF="$_c"; break; }; done
+[[ -n "$CREATE_FSELF" ]] || { echo "build-cores: no create-fself in $TOOLCHAIN/bin/{linux,macos}" >&2; exit 1; }
+export CREATE_FSELF
+
+
 WORK="${HOME}/.cache/ps4-cores"; OUT=""; RECIPE=""
 PATCHES="$HERE/core-patches"
-JOBS="$(nproc)"; ALL=0; LIST=0; UPDATE=0; KEEP=0
+# ⚠ nproc IS A GNU COREUTILS TOOL AND macOS DOES NOT HAVE IT. This said `$(nproc)` and printed
+# "nproc: command not found" before doing anything else - the same shape as the stat/getconf fixes
+# the rest of this organisation already carries. ORBIS_JOBS comes from orbis-env.sh when it was
+# sourced, which is the answer this script should prefer to computing its own.
+JOBS="${ORBIS_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
+ALL=0; LIST=0; UPDATE=0; KEEP=0
 GL_FLAVOUR="${PS4_GL_FLAVOUR:-desktop}"
 # 1500s = 25 min. Chosen from measured data, not from taste - see the block above capped().
 CORE_TIMEOUT="${PS4_CORE_TIMEOUT:-1500}"
@@ -1398,7 +1421,7 @@ for core in "${CORES[@]}"; do
       report "$core" FORK "${#objs[@]}o" "$commit" "built, NOT written - $core has a port of its own"
       continue ;;
   esac
-  ( cd "$WORK" && export OO_PS4_TOOLCHAIN="$TOOLCHAIN" && capped "$TOOLCHAIN/bin/linux/create-fself" \
+  ( cd "$WORK" && export OO_PS4_TOOLCHAIN="$TOOLCHAIN" && capped "$CREATE_FSELF" \
       -in="$core.elf" -out="$core.oelf" --lib="$name.prx" --paid 0x3800000000000011 ) >"$WORK/$core.fself" 2>&1
   rc=$?
   if timed_out "$rc"; then
@@ -1410,6 +1433,14 @@ for core in "${CORES[@]}"; do
   # here is the difference between "it refused" and a verdict somebody can act on.
   if [[ ! -f "$WORK/$name.prx" ]]; then
     why="$(grep -m1 -oP 'missing library for symbol \(\K[^)]+' "$WORK/$core.fself" 2>/dev/null)"
+    # ⚠ BEFORE GUESSING, READ WHAT THE TOOL SAID. If create-fself could not run at all - a Linux
+    # binary on a Mac, a missing file, a killed process - the capture holds that message and the
+    # weak-symbol heuristic below would dress it up as a fact about the core. Measured: an
+    # "Exec format error" was reported as "undefined weak: sceKernelInternalMemoryGetAvailableSize".
+    if [[ -z "$why" ]]; then
+      why="$(grep -m1 -iE 'exec format error|no such file|permission denied|cannot execute' "$WORK/$core.fself" 2>/dev/null)"
+      [[ -n "$why" ]] && why="create-fself did not run: ${why##*: }"
+    fi
     if [[ -z "$why" ]]; then
       why="$(llvm-nm -u "$WORK/$core.elf" 2>/dev/null | awk '$1=="w"{print $2; exit}')"
       [[ -n "$why" ]] && why="undefined weak: $why"

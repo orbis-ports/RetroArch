@@ -184,6 +184,19 @@ else
   OO_BINDIR := $(TOOLCHAIN)/bin/linux
 endif
 
+# ⚠ THE TOOL IS NOT CALLED THE SAME THING ON BOTH HOSTS. bin/macos ships `create-fself-macos`;
+# bin/linux ships `create-fself`. This Makefile named the Linux spelling unconditionally and a
+# macOS build got as far as linking the ELF before dying with
+# "create-fself: No such file or directory" - after the whole compile, which is the most expensive
+# place to learn it. The CMake toolchain file has looked for both names since the macOS port;
+# this is the same lookup for the build that does not use it.
+CREATE_FSELF := $(firstword $(wildcard $(OO_BINDIR)/create-fself $(OO_BINDIR)/create-fself-macos))
+
+# stat(1) is not one program. GNU takes -c, BSD/macOS takes -f, and this line only prints a size -
+# so it falls back rather than failing, but it printed "stat: illegal option -- c" and an empty
+# number on every macOS build until now.
+STAT_SIZE = $$(stat -c %s $(1) 2>/dev/null || stat -f %z $(1) 2>/dev/null || echo '?')
+
 CC  := clang
 CXX := clang++
 LD  := clang
@@ -836,7 +849,7 @@ $(TARGET).elf: $(OBJ) $(ORBIS_COMPAT_LIB) \
 	@echo "== $@"
 	@echo "$$ORBIS_BUILD_SUMMARY"
 	@if [ "$(HAVE_VULKAN)" = "1" ]; then \
-	   echo "   driver:   built $$(date -r $(RADV_ARCHIVE) '+%Y-%m-%d %H:%M:%S') - $$(stat -c %s $(RADV_ARCHIVE)) bytes"; \
+	   echo "   driver:   built $$(date -r $(RADV_ARCHIVE) '+%Y-%m-%d %H:%M:%S') - $(call STAT_SIZE,$(RADV_ARCHIVE)) bytes"; \
 	 fi
 
 # create-fself turns the ELF into an Orbis ELF and the eboot.bin a console expects.
@@ -852,7 +865,8 @@ $(TARGET).elf: $(OBJ) $(ORBIS_COMPAT_LIB) \
 # It only ever worked because the shell that ran make happened to have the variable exported.
 eboot.bin: $(TARGET).elf
 	@$(if $(Q), $(shell echo echo FSELF $@),)
-	$(Q)OO_PS4_TOOLCHAIN=$(TOOLCHAIN) $(OO_BINDIR)/create-fself -in=$(TARGET).elf -out=$(TARGET).oelf \
+	$(Q)test -n "$(CREATE_FSELF)" || { echo "!! no create-fself or create-fself-macos in $(OO_BINDIR)" >&2; exit 1; }
+	$(Q)OO_PS4_TOOLCHAIN=$(TOOLCHAIN) $(CREATE_FSELF) -in=$(TARGET).elf -out=$(TARGET).oelf \
 		--eboot $@ --paid 0x3800000000000011 >/dev/null
 
 # ⚠ THE .pkg IS THE ONLY THING A CONSOLE CAN INSTALL. eboot.bin alone is what unemups4

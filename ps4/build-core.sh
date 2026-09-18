@@ -197,8 +197,28 @@ else
 
   [[ -f "$INT/core.elf" ]] || { echo "build-core: the module did not link" >&2; exit 1; }
 
+  # ⚠ TWO SPELLINGS AND TWO DIRECTORIES. bin/linux ships `create-fself`, bin/macos ships
+  # `create-fself-macos`. This named the Linux one by full path, so a macOS build compiled and
+  # linked the module and then produced a 46-byte file at the last step - the most expensive place
+  # to discover the tool is not there. The CMake toolchain file has looked for both names since the
+  # macOS port; this is the same lookup for the script that does not use it.
+  # ⚠ HOST FIRST, NOT NAME FIRST. bin/linux/create-fself exists on a Mac too - it is an ELF binary
+  # the kernel cannot run - and `[[ -x ]]` says yes to it, so a name-ordered search picks a tool
+  # that fails when executed. The candidate list is ordered by the host running this script.
+  case "$(uname -s)" in
+    Darwin) _fself_order=("$TOOLCHAIN/bin/macos/create-fself-macos" "$TOOLCHAIN/bin/macos/create-fself"
+                          "$TOOLCHAIN/bin/linux/create-fself") ;;
+    *)      _fself_order=("$TOOLCHAIN/bin/linux/create-fself" "$TOOLCHAIN/bin/macos/create-fself-macos"
+                          "$TOOLCHAIN/bin/macos/create-fself") ;;
+  esac
+  _fself=""
+  for _c in "${_fself_order[@]}"; do
+    [[ -x "$_c" ]] && { _fself="$_c"; break; }
+  done
+  [[ -n "$_fself" ]] || { echo "build-core: no create-fself in $TOOLCHAIN/bin/{linux,macos}" >&2; exit 1; }
+
   # create-fself writes --lib relative to the working directory, so it runs in one we own.
-  ( cd "$INT" && "$TOOLCHAIN/bin/linux/create-fself" \
+  ( cd "$INT" && "$_fself" \
       -in=core.elf -out=core.oelf \
       --lib="$(basename "$OUT")" --paid 0x3800000000000011 )
 
