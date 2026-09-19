@@ -142,7 +142,15 @@ export CREATE_FSELF
 
 
 WORK="${HOME}/.cache/ps4-cores"; OUT=""; RECIPE=""
+# ⚠ THE PATCH REGISTRY LIVES IN THE KIT SINCE 2026-09-19, and the fallback is what makes a pinned
+# older kit still work. The registry moved for two reasons neither of which is tidiness: it has to
+# serve software that is not a libretro core, and it needs an apply step reachable from CMake -
+# core-patches/melondsds/0004 patches trees that FetchContent creates during configure, which this
+# script cannot reach at all. See orbis-porting-kit/patches/README.md.
+#
+# --patches still overrides both, and ORBIS_KIT_DIR is already exported by orbis-env.sh above.
 PATCHES="$HERE/core-patches"
+[[ -n "${ORBIS_KIT_DIR:-}" && -d "$ORBIS_KIT_DIR/patches/libretro" ]] && PATCHES="$ORBIS_KIT_DIR/patches/libretro"
 # ⚠ nproc IS A GNU COREUTILS TOOL AND macOS DOES NOT HAVE IT. This said `$(nproc)` and printed
 # "nproc: command not found" before doing anything else - the same shape as the stat/getconf fixes
 # the rest of this organisation already carries. ORBIS_JOBS comes from orbis-env.sh when it was
